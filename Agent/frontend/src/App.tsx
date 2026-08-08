@@ -33,9 +33,29 @@ interface KubernetesEventEvidence {
   pod_name: string | null;
 }
 
+interface MetricSummary {
+  average?: number;
+  maximum?: number;
+  minimum?: number;
+  initial?: number;
+  final?: number;
+  increase?: number;
+}
+
+interface MetricEvidence {
+  metric_name: string;
+  metric_type: string;
+  unit: string;
+  status: string;
+  reason?: string;
+  labels: Record<string, string>;
+  summary?: MetricSummary;
+}
+
 interface InvestigationEvidence {
   application_logs: ApplicationLogEvidence[];
   kubernetes_events: KubernetesEventEvidence[];
+  metrics: MetricEvidence[];
   status: Record<string, string>;
   queries: Record<string, any>;
 }
@@ -63,7 +83,22 @@ function App() {
   // Collapse state for evidence
   const [showLogs, setShowLogs] = useState(false)
   const [showEvents, setShowEvents] = useState(false)
+  const [showMetrics, setShowMetrics] = useState(false)
   const [showQueries, setShowQueries] = useState(false)
+
+  const formatMetricValue = (val: number | undefined, unit: string) => {
+    if (val === undefined) return "N/A"
+    if (unit === "bytes") {
+      if (val > 1024 * 1024 * 1024) return `${(val / (1024 * 1024 * 1024)).toFixed(2)} GB`
+      if (val > 1024 * 1024) return `${(val / (1024 * 1024)).toFixed(2)} MB`
+      if (val > 1024) return `${(val / 1024).toFixed(2)} KB`
+      return `${val.toFixed(0)} B`
+    }
+    if (unit === "cores") {
+      return `${val.toFixed(3)} cores`
+    }
+    return `${val.toFixed(1)}`
+  }
 
   const handleInvestigate = async () => {
     if (!question.trim()) {
@@ -135,7 +170,7 @@ function App() {
           <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
             AI Log Analysis System
           </h1>
-          <p className="text-slate-400 mt-2">Phase 2: Evidence Gathering</p>
+          <p className="text-slate-400 mt-2">Phase 3: Metrics Collection</p>
         </header>
 
         <main className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -280,7 +315,7 @@ function App() {
                         >
                           <span className="font-medium text-amber-400 flex items-center gap-2">
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
-                            Raw OpenSearch Queries
+                            Raw Executed Queries
                           </span>
                         </div>
                         {showQueries && (
@@ -289,10 +324,65 @@ function App() {
                               <div key={tool} className="space-y-1">
                                 <span className="text-xs text-slate-400 uppercase tracking-wider font-bold ml-1">{tool}</span>
                                 <pre className="text-[10px] font-mono bg-slate-950 p-3 rounded text-slate-300 overflow-x-auto border border-slate-800 whitespace-pre-wrap">
-                                  {JSON.stringify(query, null, 2)}
+                                  {typeof query === 'string' ? query : JSON.stringify(query, null, 2)}
                                 </pre>
                               </div>
                             ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Metrics View */}
+                    {plan.required_data.includes('metrics') && (
+                      <div>
+                        <div 
+                          className="flex justify-between items-center bg-slate-900 p-3 rounded-lg cursor-pointer hover:bg-slate-700 transition"
+                          onClick={() => setShowMetrics(!showMetrics)}
+                        >
+                          <span className="font-medium text-slate-300">Metrics</span>
+                          <span className="bg-indigo-600 text-white text-xs px-2 py-1 rounded-full">
+                            {evidence.metrics?.length || 0} series
+                          </span>
+                        </div>
+                        {showMetrics && (
+                          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {(!evidence.metrics || evidence.metrics.length === 0) ? (
+                              <p className="text-sm text-slate-500 italic col-span-2">No metrics found.</p>
+                            ) : (
+                              evidence.metrics.map((metric, i) => (
+                                <div key={i} className="bg-slate-900 p-3 rounded border border-slate-800 flex flex-col justify-between">
+                                  <div className="flex justify-between items-start mb-2">
+                                    <h4 className="text-sm font-bold text-slate-200 capitalize">{metric.metric_name.replace(/_/g, ' ')}</h4>
+                                    {metric.status !== "success" && (
+                                      <span className="text-[10px] bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded uppercase">Error</span>
+                                    )}
+                                  </div>
+                                  
+                                  {metric.status === "unavailable" ? (
+                                    <p className="text-xs text-slate-500 italic">{metric.reason}</p>
+                                  ) : metric.summary ? (
+                                    <div className="space-y-1 text-xs">
+                                      {metric.metric_type === "gauge" ? (
+                                        <>
+                                          <div className="flex justify-between"><span className="text-slate-400">Average:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.average, metric.unit)}</span></div>
+                                          <div className="flex justify-between"><span className="text-slate-400">Maximum:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.maximum, metric.unit)}</span></div>
+                                          <div className="flex justify-between"><span className="text-slate-400">Minimum:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.minimum, metric.unit)}</span></div>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <div className="flex justify-between"><span className="text-slate-400">Initial:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.initial, metric.unit)}</span></div>
+                                          <div className="flex justify-between"><span className="text-slate-400">Final:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.final, metric.unit)}</span></div>
+                                          <div className="flex justify-between"><span className="text-slate-400 text-red-300 font-semibold">Increase:</span> <span className="text-red-300 font-mono font-semibold">+{formatMetricValue(metric.summary.increase, metric.unit)}</span></div>
+                                        </>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <p className="text-xs text-slate-500 italic">No summary available.</p>
+                                  )}
+                                </div>
+                              ))
+                            )}
                           </div>
                         )}
                       </div>
@@ -307,12 +397,12 @@ function App() {
                         >
                           <span className="font-medium text-slate-300">Application Logs</span>
                           <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded-full">
-                            {evidence.application_logs.length} records
+                            {evidence.application_logs?.length || 0} records
                           </span>
                         </div>
                         {showLogs && (
                           <div className="mt-3 max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                            {evidence.application_logs.length === 0 ? (
+                            {(!evidence.application_logs || evidence.application_logs.length === 0) ? (
                               <p className="text-sm text-slate-500 italic">No logs found or OpenSearch error.</p>
                             ) : (
                               evidence.application_logs.map((log, i) => (
@@ -344,12 +434,12 @@ function App() {
                         >
                           <span className="font-medium text-slate-300">Kubernetes Events</span>
                           <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded-full">
-                            {evidence.kubernetes_events.length} records
+                            {evidence.kubernetes_events?.length || 0} records
                           </span>
                         </div>
                         {showEvents && (
                           <div className="mt-3 max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                            {evidence.kubernetes_events.length === 0 ? (
+                            {(!evidence.kubernetes_events || evidence.kubernetes_events.length === 0) ? (
                               <p className="text-sm text-slate-500 italic">No events found or OpenSearch error.</p>
                             ) : (
                               evidence.kubernetes_events.map((evt, i) => (

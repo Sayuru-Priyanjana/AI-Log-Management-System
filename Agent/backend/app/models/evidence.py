@@ -36,9 +36,32 @@ class KubernetesEventEvidence(BaseModel):
     source_component: Optional[str] = None
     outcome: Optional[str] = None
 
+class MetricSample(BaseModel):
+    timestamp: datetime
+    value: float
+
+class MetricSummary(BaseModel):
+    average: Optional[float] = None
+    maximum: Optional[float] = None
+    minimum: Optional[float] = None
+    initial: Optional[float] = None
+    final: Optional[float] = None
+    increase: Optional[float] = None
+
+class MetricEvidence(BaseModel):
+    metric_name: str
+    metric_type: str  # e.g., "gauge", "counter"
+    unit: str
+    status: str = "success"  # "success" or "unavailable"
+    reason: Optional[str] = None
+    labels: Dict[str, str] = {}
+    samples: List[MetricSample] = []
+    summary: Optional[MetricSummary] = None
+
 class InvestigationEvidence(BaseModel):
     application_logs: List[ApplicationLogEvidence] = []
     kubernetes_events: List[KubernetesEventEvidence] = []
+    metrics: List[MetricEvidence] = []
     
     # We can track statuses of the queries to report partial failures to the frontend
     # Example: {"application_logs": "success", "kubernetes_events": "error: connection refused"}

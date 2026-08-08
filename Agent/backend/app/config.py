@@ -17,5 +17,12 @@ class Settings:
     OPENSEARCH_APPLICATION_LOG_INDEX = os.getenv("OPENSEARCH_APPLICATION_LOG_INDEX", "logs-application-*").strip()
     OPENSEARCH_KUBERNETES_EVENT_INDEX = os.getenv("OPENSEARCH_KUBERNETES_EVENT_INDEX", "events-kubernetes-*").strip()
     OPENSEARCH_MAX_RESULTS = int(os.getenv("OPENSEARCH_MAX_RESULTS", "500").strip())
+    
+    # Prometheus Settings
+    PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090").strip()
+    PROMETHEUS_NAMESPACE_LABEL = os.getenv("PROMETHEUS_NAMESPACE_LABEL", "namespace").strip()
+    PROMETHEUS_POD_LABEL = os.getenv("PROMETHEUS_POD_LABEL", "pod").strip()
+    PROMETHEUS_CONTAINER_LABEL = os.getenv("PROMETHEUS_CONTAINER_LABEL", "container").strip()
+    PROMETHEUS_DEFAULT_STEP = os.getenv("PROMETHEUS_DEFAULT_STEP", "60s").strip()
 
 settings = Settings()

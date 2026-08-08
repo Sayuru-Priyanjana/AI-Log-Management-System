@@ -4,6 +4,7 @@ from app.agents.orchestrator import OrchestratorAgent
 from app.llm.ollama import OllamaProvider
 from app.dispatcher import InvestigationDispatcher
 from app.opensearch.client import OpenSearchClient
+from app.prometheus.client import PrometheusClient
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,8 +17,14 @@ def get_orchestrator() -> OrchestratorAgent:
 def get_opensearch_client() -> OpenSearchClient:
     return OpenSearchClient()
 
-def get_dispatcher(os_client: OpenSearchClient = Depends(get_opensearch_client)) -> InvestigationDispatcher:
-    return InvestigationDispatcher(os_client)
+def get_prometheus_client() -> PrometheusClient:
+    return PrometheusClient()
+
+def get_dispatcher(
+    os_client: OpenSearchClient = Depends(get_opensearch_client),
+    prom_client: PrometheusClient = Depends(get_prometheus_client)
+) -> InvestigationDispatcher:
+    return InvestigationDispatcher(os_client, prom_client)
 
 @router.post("/investigations/plan")
 async def create_investigation_plan(

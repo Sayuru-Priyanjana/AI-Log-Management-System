@@ -6,15 +6,18 @@ from app.models.investigation import InvestigationPlan
 from app.models.evidence import InvestigationEvidence
 from app.tools.application_logs import ApplicationLogTool
 from app.tools.kubernetes_events import KubernetesEventTool
+from app.tools.metrics import MetricsTool
 from app.opensearch.client import OpenSearchClient
+from app.prometheus.client import PrometheusClient
 
 logger = logging.getLogger(__name__)
 
 class InvestigationDispatcher:
-    def __init__(self, opensearch_client: OpenSearchClient):
+    def __init__(self, opensearch_client: OpenSearchClient, prometheus_client: PrometheusClient):
         self.tools = {
             "application_logs": ApplicationLogTool(opensearch_client),
-            "kubernetes_events": KubernetesEventTool(opensearch_client)
+            "kubernetes_events": KubernetesEventTool(opensearch_client),
+            "metrics": MetricsTool(prometheus_client)
         }
 
     async def dispatch(self, plan: InvestigationPlan) -> InvestigationEvidence:
@@ -48,5 +51,7 @@ class InvestigationDispatcher:
                     evidence.application_logs = evidence_list
                 elif name == "kubernetes_events":
                     evidence.kubernetes_events = evidence_list
+                elif name == "metrics":
+                    evidence.metrics = evidence_list
                     
         return evidence
