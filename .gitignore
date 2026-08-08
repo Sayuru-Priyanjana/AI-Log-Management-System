@@ -1,0 +1,6 @@
+.vagrant/
+shared/
+fluent-bit-k3s-test/
+kubernetes-event-collector/
+metrics-collector/
+Vagrantfile
