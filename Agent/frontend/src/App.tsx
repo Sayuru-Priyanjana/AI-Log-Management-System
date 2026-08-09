@@ -101,6 +101,34 @@ interface CorrelatedEvidence {
   signals: OperationalSignal[];
 }
 
+interface CauseHypothesis {
+  description: string;
+  confidence: number;
+  evidence_ids: string[];
+  reasoning: string;
+}
+
+interface ContributingFactor {
+  factor: string;
+  confidence: number;
+  evidence_ids: string[];
+  explanation: string;
+}
+
+interface InvestigationAnalysis {
+  incident_detected: boolean;
+  severity: "low" | "medium" | "high" | "critical" | "unknown";
+  summary: string;
+  incident_timeline: string[];
+  likely_causes: CauseHypothesis[];
+  contributing_factors: ContributingFactor[];
+  supporting_evidence: string[];
+  conflicting_evidence: string[];
+  missing_evidence: string[];
+  recommended_next_steps: string[];
+  overall_confidence: number;
+}
+
 const SYSTEMS = [
   { id: "ecommerce-platform", name: "E-Commerce Platform" },
   { id: "payment-platform", name: "Payment Platform" },
@@ -117,11 +145,14 @@ function App() {
   const [plan, setPlan] = useState<InvestigationPlan | null>(null)
   const [evidence, setEvidence] = useState<InvestigationEvidence | null>(null)
   const [correlation, setCorrelation] = useState<CorrelatedEvidence | null>(null)
+  const [analysis, setAnalysis] = useState<InvestigationAnalysis | null>(null)
+  const [rawPrompt, setRawPrompt] = useState<string | null>(null)
   
   const [isInvestigating, setIsInvestigating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   
   const [activeNode, setActiveNode] = useState<string>("user")
+  const [showPromptModal, setShowPromptModal] = useState(false)
 
   const formatMetricValue = (val: number | undefined | null, unit: string) => {
     if (val === undefined || val === null) return "N/A"
@@ -148,6 +179,7 @@ function App() {
     setPlan(null)
     setEvidence(null)
     setCorrelation(null)
+    setAnalysis(null)
     setActiveNode("orchestrator")
 
     const systemName = SYSTEMS.find(s => s.id === systemId)?.name || systemId
@@ -169,11 +201,46 @@ function App() {
         throw new Error(data?.detail || `HTTP error! status: ${response.status}`)
       }
 
-      const data = await response.json()
-      setPlan(data.plan)
-      setEvidence(data.evidence)
-      setCorrelation(data.correlation)
-      setActiveNode("correlation")
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder("utf-8");
+      
+      if (reader) {
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          let boundary = buffer.indexOf('\n');
+          while (boundary !== -1) {
+            const line = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 1);
+            
+            if (line.trim()) {
+                const payload = JSON.parse(line);
+                if (payload.step === 'error') {
+                    setError(payload.message);
+                    setIsInvestigating(false);
+                    return;
+                } else if (payload.step === 'orchestrator') {
+                    setPlan(payload.data);
+                    setActiveNode("orchestrator");
+                } else if (payload.step === 'dispatcher') {
+                    setEvidence(payload.data);
+                    setActiveNode("evidence_agent");
+                } else if (payload.step === 'correlation') {
+                    setCorrelation(payload.data);
+                    setActiveNode("correlation");
+                } else if (payload.step === 'analysis') {
+                    setAnalysis(payload.data);
+                    setRawPrompt(payload.prompt);
+                    setActiveNode("analysis");
+                }
+            }
+            boundary = buffer.indexOf('\n');
+          }
+        }
+      }
 
     } catch (err: any) {
       if (err.message === "Failed to fetch") {
@@ -212,7 +279,7 @@ function App() {
 
   // --- Data Inspector Renderer ---
   const renderDataInspector = () => {
-    if (isInvestigating) {
+    if (isInvestigating && !plan && activeNode === 'orchestrator') {
       return (
         <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4">
           <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
@@ -429,6 +496,120 @@ function App() {
           </div>
         )
 
+      case 'analysis':
+        return (
+          <div className="space-y-6 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-cyan-400 mb-4 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <span className="bg-cyan-900/50 w-8 h-8 rounded-full flex items-center justify-center">🤖</span>
+                AI Analysis (Qwen 2.5 Coder)
+              </div>
+              {rawPrompt && (
+                <button 
+                  onClick={() => setShowPromptModal(true)}
+                  className="px-3 py-1 bg-cyan-900/50 hover:bg-cyan-800/80 text-cyan-300 text-xs font-bold rounded-full transition-colors border border-cyan-700/50"
+                >
+                  View Raw Prompt
+                </button>
+              )}
+            </h3>
+            {!analysis ? <p className="text-slate-500 italic">No analysis available.</p> : (
+              <div className="space-y-6 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                
+                {/* Summary & Severity */}
+                <div className="bg-slate-800 p-5 rounded-xl border border-slate-700">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="text-slate-300 font-bold uppercase tracking-wider text-xs">Summary</h4>
+                    <span className={`text-[10px] px-2 py-1 rounded uppercase font-bold ${
+                      analysis.severity === 'critical' ? 'bg-red-900 text-red-100' :
+                      analysis.severity === 'high' ? 'bg-orange-900 text-orange-200' :
+                      analysis.severity === 'medium' ? 'bg-amber-900 text-amber-200' :
+                      'bg-slate-700 text-slate-300'
+                    }`}>Severity: {analysis.severity}</span>
+                  </div>
+                  <p className="text-slate-200 text-sm leading-relaxed">{analysis.summary}</p>
+                </div>
+
+                {/* Likely Causes */}
+                <div>
+                  <h4 className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-3">AI Inference: Likely Causes</h4>
+                  <div className="space-y-3">
+                    {analysis.likely_causes.map((cause, i) => (
+                      <div key={i} className="bg-cyan-900/10 p-4 rounded-xl border border-cyan-800/30">
+                        <div className="flex justify-between items-start mb-2">
+                          <p className="text-cyan-300 font-bold text-sm">{cause.description}</p>
+                          <span className="text-cyan-400 text-xs bg-cyan-900/50 px-2 py-1 rounded">{(cause.confidence * 100).toFixed(0)}% Conf</span>
+                        </div>
+                        <p className="text-slate-300 text-xs mt-2 italic">{cause.reasoning}</p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {cause.evidence_ids.map(id => (
+                            <span key={id} className="text-[10px] font-mono bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700 cursor-pointer hover:bg-slate-700">{id}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Contributing Factors */}
+                {analysis.contributing_factors.length > 0 && (
+                  <div>
+                    <h4 className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-3">Contributing Factors</h4>
+                    <div className="space-y-3">
+                      {analysis.contributing_factors.map((factor, i) => (
+                        <div key={i} className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                          <div className="flex justify-between items-start mb-2">
+                            <p className="text-slate-200 font-bold text-sm">{factor.factor}</p>
+                            <span className="text-slate-400 text-xs bg-slate-800 px-2 py-1 rounded">{(factor.confidence * 100).toFixed(0)}% Conf</span>
+                          </div>
+                          <p className="text-slate-400 text-xs mt-2">{factor.explanation}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Timeline Inference */}
+                {analysis.incident_timeline.length > 0 && (
+                  <div>
+                    <h4 className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-3">Incident Timeline</h4>
+                    <ul className="list-disc pl-5 space-y-1">
+                      {analysis.incident_timeline.map((item, i) => (
+                        <li key={i} className="text-slate-300 text-sm">{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Missing Evidence & Next Steps */}
+                <div className="grid grid-cols-1 gap-4">
+                  {analysis.missing_evidence.length > 0 && (
+                    <div className="bg-amber-900/10 p-4 rounded-xl border border-amber-800/30">
+                      <h4 className="text-amber-500 font-bold uppercase tracking-wider text-[10px] mb-2">Missing Evidence</h4>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {analysis.missing_evidence.map((item, i) => (
+                          <li key={i} className="text-amber-200/80 text-xs">{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {analysis.recommended_next_steps.length > 0 && (
+                    <div className="bg-blue-900/10 p-4 rounded-xl border border-blue-800/30">
+                      <h4 className="text-blue-400 font-bold uppercase tracking-wider text-[10px] mb-2">Recommended Next Steps</h4>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {analysis.recommended_next_steps.map((item, i) => (
+                          <li key={i} className="text-blue-200/80 text-xs">{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
+          </div>
+        )
+
       case 'timeline':
         return (
           <div className="space-y-4 h-full flex flex-col">
@@ -629,6 +810,11 @@ function App() {
             {/* 6. Correlation Engine */}
             {renderNode("correlation", "Correlation Engine", "bg-fuchsia-600/20 border-fuchsia-500 text-fuchsia-400", !!correlation || isInvestigating)}
 
+            <div className="h-6 border-l-2 border-dashed border-slate-600 z-0"></div>
+
+            {/* 7. Analysis Agent */}
+            {renderNode("analysis", "Analysis Agent", "bg-cyan-600/20 border-cyan-500 text-cyan-400", !!analysis || isInvestigating)}
+
             {/* Branching Lines Out */}
             <div className="w-full flex justify-center mt-5 relative z-0">
               <div className="absolute top-0 w-[70%] h-px bg-slate-600 border-t-2 border-dashed border-slate-600"></div>
@@ -673,6 +859,33 @@ function App() {
           background: rgba(100, 116, 139, 1); 
         }
       `}} />
+      
+      {/* Prompt Modal */}
+      {showPromptModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm" onClick={() => setShowPromptModal(false)}>
+          <div 
+            className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden" 
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <span className="text-cyan-400">🤖</span> Raw LLM Prompt Payload
+              </h3>
+              <button 
+                onClick={() => setShowPromptModal(false)}
+                className="text-slate-400 hover:text-white bg-slate-700/50 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto custom-scrollbar flex-1">
+              <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap break-words bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                {rawPrompt}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
