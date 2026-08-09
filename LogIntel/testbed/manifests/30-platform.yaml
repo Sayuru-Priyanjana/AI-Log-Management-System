@@ -1,0 +1,137 @@
+---
+# ==========================================================================
+# Kubernetes event collector
+# ==========================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: event-collector, namespace: logintel-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: event-collector }
+rules:
+  - apiGroups: [""]
+    resources: [events, pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: event-collector }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: event-collector }
+subjects:
+  - { kind: ServiceAccount, name: event-collector, namespace: logintel-system }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-collector
+  namespace: logintel-system
+  labels: { app: event-collector }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: event-collector } }
+  template:
+    metadata:
+      labels:
+        app: event-collector
+        logintel/log: "true"
+        logintel/system-id: logintel-platform
+        logintel/system-name: LogIntel_Platform
+        logintel/environment: staging
+    spec:
+      serviceAccountName: event-collector
+      containers:
+        - name: app
+          image: python:3.11-slim
+          command: ["python3", "-u", "/src/event_collector.py"]
+          env:
+            - { name: OPENSEARCH_URL,      value: "http://${OPENSEARCH_HOST}:${OPENSEARCH_PORT}" }
+            - { name: INDEX_PREFIX,        value: "logintel-events" }
+            - { name: WATCH_NAMESPACES,    value: "shopdemo" }
+            - { name: DEFAULT_SYSTEM_ID,   value: "shopdemo" }
+            - { name: DEFAULT_SYSTEM_NAME, value: "Shop Demo" }
+            - { name: DEFAULT_ENVIRONMENT, value: "staging" }
+            - { name: POLL_SECONDS,        value: "15" }
+            - { name: PYTHONUNBUFFERED,    value: "1" }
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            limits:   { memory: 128Mi }
+          volumeMounts: [{ name: src, mountPath: /src }]
+      volumes:
+        - { name: src, configMap: { name: event-collector-src } }
+---
+# ==========================================================================
+# Incident controller
+# ==========================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: incident-controller, namespace: logintel-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: incident-controller, namespace: shopdemo }
+rules:
+  - apiGroups: ["apps"]
+    resources: [deployments, deployments/scale]
+    verbs: [get, list, patch, update]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: incident-controller, namespace: shopdemo }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: incident-controller }
+subjects:
+  - { kind: ServiceAccount, name: incident-controller, namespace: logintel-system }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-controller
+  namespace: logintel-system
+  labels: { app: incident-controller }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: incident-controller } }
+  template:
+    metadata:
+      labels:
+        app: incident-controller
+        logintel/log: "true"
+        logintel/system-id: logintel-platform
+        logintel/system-name: LogIntel_Platform
+        logintel/environment: staging
+    spec:
+      serviceAccountName: incident-controller
+      containers:
+        - name: app
+          image: python:3.11-slim
+          command: ["python3", "-u", "/src/incident_controller.py"]
+          env:
+            - { name: TARGET_NAMESPACE, value: "shopdemo" }
+            - { name: PORT,             value: "8080" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          ports: [{ containerPort: 8080, name: http }]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { memory: 96Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts: [{ name: src, mountPath: /src }]
+      volumes:
+        - { name: src, configMap: { name: incident-controller-src } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-controller
+  namespace: logintel-system
+  labels: { app: incident-controller }
+spec:
+  type: NodePort
+  selector: { app: incident-controller }
+  ports:
+    - { name: http, port: 8080, targetPort: http, nodePort: 30099 }

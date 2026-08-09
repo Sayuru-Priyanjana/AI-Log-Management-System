@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # --- OpenSearch -------------------------------------------------------
+    opensearch_url: str = "http://localhost:9200"
+    opensearch_username: str = ""
+    opensearch_password: str = ""
+    opensearch_verify_ssl: bool = False
+    opensearch_log_index: str = "logintel-logs-*"
+    opensearch_event_index: str = "logintel-events-*"
+    opensearch_investigation_index: str = "logintel-investigations"
+    opensearch_timeout: float = 30.0
+
+    # --- Prometheus -------------------------------------------------------
+    prometheus_url: str = "http://localhost:30090"
+    prometheus_timeout: float = 30.0
+
+    # --- Ollama -----------------------------------------------------------
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5-coder"
+    ollama_timeout: float = 180.0
+    # Ollama defaults num_ctx to 2048 and silently truncates longer prompts,
+    # discarding the *head*. Every prompt this agent sends exceeds that, so this
+    # value is load-bearing rather than a tuning knob.
+    ollama_num_ctx: int = 16384
+    ollama_temperature: float = 0.0
+    ollama_seed: int = 42
+
+    # --- Pipeline tuning --------------------------------------------------
+    # Onset detection
+    onset_bucket_seconds: int = 60
+    onset_mad_multiplier: float = 4.0
+    onset_min_absolute: int = 3
+    onset_lookback_multiplier: int = 4
+    onset_max_lookback_hours: int = 12
+
+    # Windows
+    min_baseline_minutes: int = 10
+    incident_pre_roll_seconds: int = 120
+
+    # Evidence budgets — these bound the LLM prompt by construction rather than
+    # by truncating it afterwards.
+    max_log_patterns: int = 25
+    max_log_samples_per_pattern: int = 2
+    max_events: int = 40
+    max_metric_points: int = 20
+    max_prompt_patterns: int = 12
+    max_prompt_events: int = 10
+
+    # Signal thresholds. All are ratios or baseline-relative multiples; none
+    # compares a raw value against a bare constant.
+    error_rate_spike_multiplier: float = 3.0
+    error_rate_min_per_minute: float = 1.0
+    latency_degradation_multiplier: float = 2.0
+    latency_min_seconds: float = 0.25
+    http_5xx_ratio_threshold: float = 0.10
+    cpu_saturation_ratio: float = 0.85
+    cpu_throttle_ratio: float = 0.20
+    memory_pressure_ratio: float = 0.85
+    traffic_surge_multiplier: float = 2.5
+
+    # Candidate selection
+    candidate_ambiguity_margin: float = 0.15
+
+    # --- Misc -------------------------------------------------------------
+    incident_controller_url: str = "http://localhost:30099"
+    log_level: str = "INFO"
+    persist_investigations: bool = True
+
+    @property
+    def opensearch_auth(self) -> tuple[str, str] | None:
+        if self.opensearch_username:
+            return (self.opensearch_username, self.opensearch_password)
+        return None
+
+
+settings = Settings()

@@ -1,0 +1,16 @@
+# agent
+agent/venv/
+agent/.env
+agent/.env.bak
+agent/eval-report.json
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# vagrant
+testbed/.vagrant/
+
+# ui
+ui/node_modules/
+ui/dist/
+ui/.env

@@ -1,0 +1,233 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: fluent-bit, namespace: logintel-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: fluent-bit }
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: fluent-bit }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: fluent-bit }
+subjects:
+  - { kind: ServiceAccount, name: fluent-bit, namespace: logintel-system }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: fluent-bit-config, namespace: logintel-system }
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush              2
+        Daemon             Off
+        Log_Level          info
+        Parsers_File       parsers.conf
+        HTTP_Server        On
+        HTTP_Listen        0.0.0.0
+        HTTP_Port          2020
+        storage.metrics    On
+
+    [INPUT]
+        Name               tail
+        Tag                kube.*
+        Path               /var/log/containers/*.log
+        Exclude_Path       /var/log/containers/*fluent-bit*.log
+        multiline.parser   cri
+        DB                 /var/log/flb-kube.db
+        DB.locking         true
+        Mem_Buf_Limit      16MB
+        Skip_Long_Lines    On
+        Refresh_Interval   5
+
+    # Rejoins language-level stack traces before anything else looks at the
+    # record. Without this a single traceback becomes dozens of documents and
+    # swamps every log-pattern aggregation downstream.
+    [FILTER]
+        Name                  multiline
+        Match                 kube.*
+        multiline.key_content log
+        multiline.parser      python, go, java
+        buffer                on
+
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Keep_Log            Off
+        Labels              On
+        Annotations         Off
+        Buffer_Size         64k
+
+    [FILTER]
+        Name    lua
+        Match   kube.*
+        script  /fluent-bit/scripts/normalize.lua
+        call    normalize
+        time_as_table true
+
+    [OUTPUT]
+        Name                opensearch
+        Match               kube.*
+        Host                ${OPENSEARCH_HOST}
+        Port                ${OPENSEARCH_PORT}
+        Logstash_Format     On
+        Logstash_Prefix     logintel-logs
+        Logstash_DateFormat %Y.%m.%d
+        Time_Key            @timestamp
+        Time_Key_Format     %Y-%m-%dT%H:%M:%S
+        Time_Key_Nanos      On
+        Suppress_Type_Name  On
+        Replace_Dots        On
+        Generate_ID         On
+        Trace_Error         On
+        # Never drop application logs because OpenSearch was briefly down; the
+        # testbed is routinely started before OpenSearch is up.
+        Retry_Limit         False
+        storage.total_limit_size 256M
+
+  parsers.conf: |
+    [PARSER]
+        Name        json
+        Format      json
+        Time_Key    @timestamp
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: fluent-bit-lua, namespace: logintel-system }
+data:
+  normalize.lua: |
+    -- Attaches identity to each log record. It deliberately does NOT rename any
+    -- application field: the services already emit the final nested schema, so
+    -- there is no mapping layer here to drift out of sync.
+
+    local function iso_to_epoch(value)
+      -- "2026-08-09T15:15:57.972Z" -> epoch seconds, fractional part separately
+      if type(value) ~= "string" then return nil, nil end
+      local y, mo, d, h, mi, s, frac =
+        value:match("^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)")
+      if not y then return nil, nil end
+      -- The container runs with TZ=UTC, so os.time interprets these as UTC.
+      local epoch = os.time({
+        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false
+      })
+      local nanos = 0
+      if frac ~= "" then
+        nanos = tonumber((frac .. "000000000"):sub(1, 9)) or 0
+      end
+      return epoch, nanos
+    end
+
+    function normalize(tag, timestamp, record)
+      local kube = record["kubernetes"]
+      if kube == nil then return -1, 0, 0 end
+
+      local labels = kube["labels"] or {}
+      -- Only ship what is explicitly opted in. Cluster infrastructure noise is
+      -- not evidence about anyone's system.
+      if labels["logintel/log"] ~= "true" then return -1, 0, 0 end
+
+      local out = {}
+
+      -- Identity ---------------------------------------------------------
+      -- Kubernetes label values cannot contain spaces, so display names are
+      -- carried with underscores and expanded here.
+      local display = labels["logintel/system-name"] or labels["logintel/system-id"] or "Unknown"
+      out["system"] = {
+        id   = labels["logintel/system-id"] or "unknown",
+        name = (display:gsub("_", " "))
+      }
+      out["environment"] = labels["logintel/environment"] or "unknown"
+      out["source"] = { type = "kubernetes", collector = "fluent-bit" }
+      out["kubernetes"] = {
+        cluster   = "logintel-testbed",
+        namespace = kube["namespace_name"],
+        pod       = { name = kube["pod_name"], uid = kube["pod_id"] },
+        container = { name = kube["container_name"], image = kube["container_image"] },
+        node      = { name = kube["host"] }
+      }
+
+      -- Application payload ----------------------------------------------
+      local body = record["log"]
+      local record_ts, record_ns = nil, nil
+
+      if type(body) == "table" then
+        -- Structured line: copy every field through untouched.
+        for key, value in pairs(record) do
+          if key ~= "kubernetes" and key ~= "stream" and key ~= "time" and key ~= "logtag" then
+            out[key] = value
+          end
+        end
+        out["log"] = body
+        if body["level"] == nil then out["log"]["level"] = "UNKNOWN" end
+        if body["message"] == nil then out["log"]["message"] = "" end
+        record_ts, record_ns = iso_to_epoch(record["@timestamp"])
+      else
+        -- Unstructured line: keep it, but mark it so log-pattern analysis can
+        -- exclude it rather than silently treating noise as evidence.
+        out["log"] = { level = "UNKNOWN", message = tostring(body or "") }
+        out["parse"] = { failed = true, stream = record["stream"] }
+      end
+
+      -- The service's own name is more precise than the pod's app label.
+      if out["service"] == nil and labels["app"] ~= nil then
+        out["service"] = { name = labels["app"] }
+      end
+
+      out["@timestamp"] = nil  -- rewritten by the OpenSearch output from the record time
+
+      if record_ts ~= nil then
+        return 2, { sec = record_ts, nsec = record_ns }, out
+      end
+      return 2, timestamp, out
+    end
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: logintel-system
+  labels: { app: fluent-bit }
+spec:
+  selector: { matchLabels: { app: fluent-bit } }
+  template:
+    metadata:
+      labels: { app: fluent-bit }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2020"
+    spec:
+      serviceAccountName: fluent-bit
+      tolerations:
+        - { operator: Exists }
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:3.1.9
+          env:
+            - { name: TZ, value: UTC }   # the Lua timestamp parser assumes UTC
+          ports: [{ containerPort: 2020, name: http }]
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits:   { memory: 192Mi }
+          volumeMounts:
+            - { name: varlog,    mountPath: /var/log }
+            - { name: container-logs, mountPath: /var/lib/docker/containers, readOnly: true }
+            - { name: config,    mountPath: /fluent-bit/etc/fluent-bit.conf, subPath: fluent-bit.conf }
+            - { name: config,    mountPath: /fluent-bit/etc/parsers.conf,    subPath: parsers.conf }
+            - { name: scripts,   mountPath: /fluent-bit/scripts }
+      volumes:
+        - { name: varlog,         hostPath: { path: /var/log } }
+        - { name: container-logs, hostPath: { path: /var/lib/docker/containers } }
+        - { name: config,         configMap: { name: fluent-bit-config } }
+        - { name: scripts,        configMap: { name: fluent-bit-lua } }
