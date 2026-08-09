@@ -1,0 +1,208 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-api-script
+  namespace: incident-test
+data:
+  app.py: |
+    import time
+    import json
+    import random
+    import sys
+    import os
+    import urllib.request
+    import threading
+    from datetime import datetime, timezone
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+
+    REQUESTS = Counter('http_requests_total', 'Total HTTP Requests', ['method', 'route', 'status', 'service'])
+    FAILURES = Counter('payment_failures_total', 'Total Payment Failures', ['service'])
+    PAYMENTS = Counter('payment_requests_total', 'Total Payment Requests', ['service'])
+    LATENCY = Histogram('http_request_duration_seconds', 'HTTP Request Latency', ['method', 'route', 'service'])
+
+    SERVICE = "payment-api"
+    SYSTEM_ID = "ecommerce-platform"
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "test")
+
+    def memory_leaker():
+        leak = []
+        while True:
+            if os.path.exists('/tmp/oom'):
+                leak.append(' ' * (1024 * 1024 * 10)) # 10MB chunks
+            else:
+                leak = []
+            time.sleep(0.5)
+
+    class PaymentHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass
+
+        def do_GET(self):
+            if self.path == '/metrics':
+                self.send_response(200)
+                self.send_header('Content-Type', CONTENT_TYPE_LATEST)
+                self.end_headers()
+                self.wfile.write(generate_latest())
+                return
+                
+            if self.path == '/health':
+                if os.path.exists('/tmp/unhealthy'):
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(b"UNHEALTHY")
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+                return
+                
+            self.send_response(404)
+            self.end_headers()
+            
+        def do_POST(self):
+            start_time = time.time()
+            if self.path == '/api/payment':
+                PAYMENTS.labels(service=SERVICE).inc()
+                
+                force_500 = os.path.exists('/tmp/force_500')
+                
+                burn_time = 0.01
+                if os.path.exists('/tmp/high_cpu'):
+                    burn_time = 0.5 
+
+                end_burn = time.time() + burn_time
+                while time.time() < end_burn:
+                    pass 
+                    
+                db_ok = True
+                try:
+                    resp = urllib.request.urlopen("http://payment-db:8080/", timeout=1.0)
+                    if resp.getcode() != 200:
+                        db_ok = False
+                except Exception as e:
+                    db_ok = False
+
+                if force_500 or not db_ok or random.random() < 0.05:
+                    FAILURES.labels(service=SERVICE).inc()
+                    self.send_response(500)
+                    status = 500
+                    if not db_ok:
+                        msg = "Database connection timeout"
+                    elif force_500:
+                        msg = "Internal server error during payment processing"
+                    else:
+                        msg = "Payment failed randomly"
+                    lvl = "ERROR"
+                else:
+                    self.send_response(200)
+                    status = 200
+                    msg = "Payment processed successfully"
+                    lvl = "INFO"
+                    
+                self.end_headers()
+                self.wfile.write(msg.encode())
+                duration = time.time() - start_time
+                
+                REQUESTS.labels(method='POST', route='/api/payment', status=str(status), service=SERVICE).inc()
+                LATENCY.labels(method='POST', route='/api/payment', service=SERVICE).observe(duration)
+                
+                print(json.dumps({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "level": lvl,
+                    "message": msg,
+                    "event_type": "application",
+                    "service_name": SERVICE,
+                    "system_id": SYSTEM_ID,
+                    "environment": ENVIRONMENT,
+                    "http_status": status,
+                    "duration_ms": round(duration * 1000, 2),
+                    "trace_id": f"trace-{random.randint(1000, 9999)}"
+                }), flush=True)
+                return
+
+    def run_server():
+        if os.path.exists('/tmp/crash'):
+            print(json.dumps({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": "FATAL",
+                "message": "Failed to initialize payment gateway",
+                "service_name": SERVICE,
+                "system_id": SYSTEM_ID
+            }), flush=True)
+            sys.exit(1)
+
+        threading.Thread(target=memory_leaker, daemon=True).start()
+        
+        server = HTTPServer(('0.0.0.0', 8000), PaymentHandler)
+        print("Starting real payment-api on port 8000...", file=sys.stderr)
+        server.serve_forever()
+
+    if __name__ == '__main__':
+        run_server()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: incident-test
+  labels:
+    app: payment-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-api
+  template:
+    metadata:
+      labels:
+        app: payment-api
+        ai-log/type: application
+        ai-log/system-id: ecommerce-platform
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8000'
+    spec:
+      containers:
+      - name: payment-api
+        image: python:3.9-slim
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install prometheus_client && python3 /app/app.py
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: 50m
+            memory: 50Mi
+          limits:
+            cpu: 500m
+            memory: 200Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: script-volume
+          mountPath: /app
+      volumes:
+      - name: script-volume
+        configMap:
+          name: payment-api-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api
+  namespace: incident-test
+spec:
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  selector:
+    app: payment-api

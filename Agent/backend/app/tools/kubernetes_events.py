@@ -15,11 +15,9 @@ class KubernetesEventTool(InvestigationTool):
     async def execute(self, plan: InvestigationPlan) -> tuple[List[KubernetesEventEvidence], dict]:
         start_time, end_time = self.resolve_time_range(plan.time_range)
         
-        # Build OpenSearch Query
-        must_clauses = [
-            {"term": {"system.id.keyword": plan.system_id}},
-            {"term": {"environment.keyword": plan.environment}}
-        ]
+        # Kubernetes events currently do not have system.id attached by the collector.
+        # We will rely on service name and timestamp to filter events.
+        must_clauses = []
         
         # If service is specified, we try to match namespace or pod using wildcard since
         # kubernetes events might not have a direct "service" label.

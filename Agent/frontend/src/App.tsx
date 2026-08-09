@@ -60,6 +60,47 @@ interface InvestigationEvidence {
   queries: Record<string, any>;
 }
 
+interface TimelineEvidence {
+  id: string;
+  timestamp: string;
+  source_type: "application_log" | "kubernetes_event" | "metric";
+  system_id: string;
+  environment: string;
+  service_name?: string;
+  severity?: string;
+  title: string;
+  message?: string;
+  metric_name?: string;
+  metric_value?: number;
+  metric_unit?: string;
+}
+
+interface OperationalSignal {
+  type: string;
+  severity: string;
+  timestamp: string;
+  service?: string;
+  pod?: string;
+  count?: number;
+  increase?: number;
+}
+
+interface CorrelationGroup {
+  id: string;
+  start_time: string;
+  end_time: string;
+  evidence_ids: string[];
+  signals: string[];
+  summary?: string;
+}
+
+interface CorrelatedEvidence {
+  timeline: TimelineEvidence[];
+  relationships: any[];
+  groups: CorrelationGroup[];
+  signals: OperationalSignal[];
+}
+
 const SYSTEMS = [
   { id: "ecommerce-platform", name: "E-Commerce Platform" },
   { id: "payment-platform", name: "Payment Platform" },
@@ -75,19 +116,15 @@ function App() {
   
   const [plan, setPlan] = useState<InvestigationPlan | null>(null)
   const [evidence, setEvidence] = useState<InvestigationEvidence | null>(null)
+  const [correlation, setCorrelation] = useState<CorrelatedEvidence | null>(null)
   
-  const [loadingPlan, setLoadingPlan] = useState(false)
-  const [loadingEvidence, setLoadingEvidence] = useState(false)
+  const [isInvestigating, setIsInvestigating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   
-  // Collapse state for evidence
-  const [showLogs, setShowLogs] = useState(false)
-  const [showEvents, setShowEvents] = useState(false)
-  const [showMetrics, setShowMetrics] = useState(false)
-  const [showQueries, setShowQueries] = useState(false)
+  const [activeNode, setActiveNode] = useState<string>("user")
 
-  const formatMetricValue = (val: number | undefined, unit: string) => {
-    if (val === undefined) return "N/A"
+  const formatMetricValue = (val: number | undefined | null, unit: string) => {
+    if (val === undefined || val === null) return "N/A"
     if (unit === "bytes") {
       if (val > 1024 * 1024 * 1024) return `${(val / (1024 * 1024 * 1024)).toFixed(2)} GB`
       if (val > 1024 * 1024) return `${(val / (1024 * 1024)).toFixed(2)} MB`
@@ -106,16 +143,17 @@ function App() {
       return
     }
 
-    setLoadingPlan(true)
+    setIsInvestigating(true)
     setError(null)
     setPlan(null)
     setEvidence(null)
+    setCorrelation(null)
+    setActiveNode("orchestrator")
 
     const systemName = SYSTEMS.find(s => s.id === systemId)?.name || systemId
 
     try {
-      // 1. Get the Investigation Plan from Orchestrator
-      const planResponse = await fetch("http://localhost:8000/api/investigations/plan", {
+      const response = await fetch("http://localhost:8000/api/investigations/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -126,353 +164,515 @@ function App() {
         })
       })
 
-      if (!planResponse.ok) {
-        const data = await planResponse.json().catch(() => null)
-        throw new Error(data?.detail || `HTTP error! status: ${planResponse.status}`)
+      if (!response.ok) {
+        const data = await response.json().catch(() => null)
+        throw new Error(data?.detail || `HTTP error! status: ${response.status}`)
       }
 
-      const planData = await planResponse.json()
-      setPlan(planData.plan)
-      setLoadingPlan(false)
-
-      // 2. Fetch Evidence using the tools
-      setLoadingEvidence(true)
-      const evidenceResponse = await fetch("http://localhost:8000/api/investigations/evidence", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(planData.plan)
-      })
-
-      if (!evidenceResponse.ok) {
-        const data = await evidenceResponse.json().catch(() => null)
-        throw new Error(data?.detail || `HTTP error! status: ${evidenceResponse.status}`)
-      }
-
-      const evidenceData = await evidenceResponse.json()
-      setEvidence(evidenceData.evidence)
+      const data = await response.json()
+      setPlan(data.plan)
+      setEvidence(data.evidence)
+      setCorrelation(data.correlation)
+      setActiveNode("correlation")
 
     } catch (err: any) {
       if (err.message === "Failed to fetch") {
-        setError("Unable to contact the local AI model or API backend. Make sure the backend and Ollama are running.")
+        setError("Unable to contact the local AI model or API backend.")
       } else {
         setError(err.message || "An unexpected error occurred.")
       }
     } finally {
-      setLoadingPlan(false)
-      setLoadingEvidence(false)
+      setIsInvestigating(false)
+    }
+  }
+
+  // --- Node Rendering Helper ---
+  const renderNode = (id: string, label: string, colorClass: string, isAvailable: boolean = true) => {
+    const isActive = activeNode === id
+    return (
+      <button
+        onClick={() => setActiveNode(id)}
+        disabled={!isAvailable && id !== 'user'}
+        className={`relative flex items-center justify-center px-4 py-3 text-sm font-bold rounded-lg border-2 transition-all duration-300 w-48 z-10 
+          ${isActive ? 'ring-4 ring-white shadow-[0_0_20px_rgba(255,255,255,0.3)] scale-110' : 'hover:scale-105'}
+          ${!isAvailable && id !== 'user' ? 'opacity-30 cursor-not-allowed grayscale' : 'shadow-xl cursor-pointer'}
+          ${colorClass}
+        `}
+      >
+        {label}
+        {isInvestigating && isActive && (
+           <span className="absolute -top-2 -right-2 flex h-4 w-4">
+             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+             <span className="relative inline-flex rounded-full h-4 w-4 bg-white"></span>
+           </span>
+        )}
+      </button>
+    )
+  }
+
+  // --- Data Inspector Renderer ---
+  const renderDataInspector = () => {
+    if (isInvestigating) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4">
+          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="animate-pulse">Analyzing system state...</p>
+        </div>
+      )
+    }
+
+    switch (activeNode) {
+      case 'user':
+        return (
+          <div className="space-y-4">
+            <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+              <span className="bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center">👤</span>
+              User Input
+            </h3>
+            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+              <label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Prompt</label>
+              <p className="text-slate-200 mt-1 text-lg">"{question || "No prompt provided."}"</p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Target System</label>
+                <p className="text-slate-200 mt-1">{SYSTEMS.find(s => s.id === systemId)?.name}</p>
+              </div>
+              <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Environment</label>
+                <p className="text-slate-200 mt-1 capitalize">{environment}</p>
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'orchestrator':
+        return (
+          <div className="space-y-4">
+            <h3 className="text-xl font-bold text-emerald-400 mb-4 flex items-center gap-2">
+              <span className="bg-emerald-900/50 w-8 h-8 rounded-full flex items-center justify-center">🧠</span>
+              Orchestrator Agent Output
+            </h3>
+            {!plan ? <p className="text-slate-500 italic">No investigation plan generated yet.</p> : (
+              <>
+                <div className="bg-emerald-900/20 p-4 rounded-xl border border-emerald-800/50">
+                  <label className="text-xs text-emerald-500 uppercase font-bold tracking-wider">Detected Intent</label>
+                  <p className="text-emerald-100 mt-1">{plan.intent}</p>
+                </div>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                  <label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Time Range</label>
+                  <p className="text-slate-200 mt-1 font-mono">
+                    {plan.time_range.type === 'relative' ? plan.time_range.duration : `${plan.time_range.start} - ${plan.time_range.end}`}
+                  </p>
+                </div>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                  <label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Target Service</label>
+                  <p className="text-slate-200 mt-1">{plan.service || 'Global'}</p>
+                </div>
+              </>
+            )}
+          </div>
+        )
+
+      case 'dispatcher':
+        return (
+          <div className="space-y-4">
+            <h3 className="text-xl font-bold text-slate-200 mb-4 flex items-center gap-2">
+              <span className="bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center">⚙️</span>
+              Dispatcher Activity
+            </h3>
+            <p className="text-slate-400">The dispatcher routes the investigation plan to the specialized tools.</p>
+            {plan && (
+              <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Tools Activated</label>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <span className="px-3 py-1 bg-pink-900/30 text-pink-300 border border-pink-800 rounded-full text-xs">Log Search</span>
+                  <span className="px-3 py-1 bg-pink-900/30 text-pink-300 border border-pink-800 rounded-full text-xs">Event Search</span>
+                  <span className="px-3 py-1 bg-pink-900/30 text-pink-300 border border-pink-800 rounded-full text-xs">Metrics Tool</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+
+      case 'tool_log':
+        return (
+          <div className="space-y-4 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-pink-400 mb-4 flex items-center gap-2 shrink-0">
+              <span className="bg-pink-900/50 w-8 h-8 rounded-full flex items-center justify-center">📄</span>
+              Log Search Output
+            </h3>
+            {!evidence ? <p className="text-slate-500 italic">No logs collected.</p> : (
+              <div className="space-y-3 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                <div className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex justify-between items-center sticky top-0 z-10 shadow-md">
+                  <span className="text-slate-300">Total Logs Retrieved:</span>
+                  <span className="text-white font-bold bg-pink-600 px-2 py-1 rounded-md">{evidence.application_logs.length}</span>
+                </div>
+                {evidence.application_logs.slice(0, 50).map((log, i) => (
+                  <div key={i} className="bg-slate-900 p-3 rounded border border-slate-800 text-sm">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="text-xs text-slate-500 font-mono">{log.timestamp}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${log.level === 'ERROR' ? 'bg-red-900/50 text-red-400' : 'bg-slate-800 text-slate-300'}`}>{log.level || 'INFO'}</span>
+                    </div>
+                    <p className="text-slate-300 font-mono text-xs break-all">{log.message}</p>
+                  </div>
+                ))}
+                {evidence.application_logs.length > 50 && <p className="text-xs text-center text-slate-500 py-2">...and {evidence.application_logs.length - 50} more items hidden.</p>}
+              </div>
+            )}
+          </div>
+        )
+
+      case 'tool_event':
+        return (
+          <div className="space-y-4 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-pink-400 mb-4 flex items-center gap-2 shrink-0">
+              <span className="bg-pink-900/50 w-8 h-8 rounded-full flex items-center justify-center">⚡</span>
+              Kubernetes Events Output
+            </h3>
+            {!evidence ? <p className="text-slate-500 italic">No events collected.</p> : (
+              <div className="space-y-3 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                <div className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex justify-between items-center sticky top-0 z-10 shadow-md">
+                  <span className="text-slate-300">Total Events Retrieved:</span>
+                  <span className="text-white font-bold bg-pink-600 px-2 py-1 rounded-md">{evidence.kubernetes_events.length}</span>
+                </div>
+                {evidence.kubernetes_events.map((ev, i) => (
+                  <div key={i} className="bg-slate-900 p-3 rounded border border-slate-800 text-sm">
+                    <div className="flex justify-between mb-1">
+                      <span className="text-xs font-bold text-indigo-400">{ev.reason}</span>
+                      <span className="text-xs text-slate-500">{ev.pod_name}</span>
+                    </div>
+                    <p className="text-slate-300 text-xs">{ev.message}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+
+      case 'tool_metrics':
+        return (
+          <div className="space-y-4 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-pink-400 mb-4 flex items-center gap-2 shrink-0">
+              <span className="bg-pink-900/50 w-8 h-8 rounded-full flex items-center justify-center">📈</span>
+              Metrics Tool Output
+            </h3>
+            {!evidence ? <p className="text-slate-500 italic">No metrics collected.</p> : (
+              <div className="space-y-4 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                {evidence.metrics.map((m, i) => (
+                  <div key={i} className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="font-bold text-slate-200">{m.metric_name}</h4>
+                      <span className={`text-[10px] px-2 py-1 rounded uppercase font-bold ${m.status === 'success' ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'}`}>{m.status}</span>
+                    </div>
+                    {m.summary && (
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        {m.summary.average !== undefined && <div className="bg-slate-800 p-2 rounded">Avg: {formatMetricValue(m.summary.average, m.unit)}</div>}
+                        {m.summary.maximum !== undefined && <div className="bg-slate-800 p-2 rounded">Max: {formatMetricValue(m.summary.maximum, m.unit)}</div>}
+                        {m.summary.increase !== undefined && <div className="bg-slate-800 p-2 rounded text-amber-400">Inc: +{formatMetricValue(m.summary.increase, m.unit)}</div>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+
+      case 'evidence_agent':
+        return (
+          <div className="space-y-4">
+            <h3 className="text-xl font-bold text-emerald-400 mb-4 flex items-center gap-2">
+              <span className="bg-emerald-900/50 w-8 h-8 rounded-full flex items-center justify-center">📦</span>
+              Aggregated Evidence
+            </h3>
+            {!evidence ? <p className="text-slate-500 italic">No evidence aggregated.</p> : (
+              <div className="grid grid-cols-1 gap-4">
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                  <span className="text-4xl font-bold text-blue-400">{evidence.application_logs.length}</span>
+                  <span className="text-sm text-slate-400 mt-2 uppercase tracking-wider">Log Entries</span>
+                </div>
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                  <span className="text-4xl font-bold text-indigo-400">{evidence.kubernetes_events.length}</span>
+                  <span className="text-sm text-slate-400 mt-2 uppercase tracking-wider">K8s Events</span>
+                </div>
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center">
+                  <span className="text-4xl font-bold text-pink-400">{evidence.metrics.length}</span>
+                  <span className="text-sm text-slate-400 mt-2 uppercase tracking-wider">Metric Streams</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+
+      case 'correlation':
+        return (
+          <div className="space-y-4 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-fuchsia-400 mb-4 flex items-center gap-2 shrink-0">
+              <span className="bg-fuchsia-900/50 w-8 h-8 rounded-full flex items-center justify-center">🔗</span>
+              Correlation Engine
+            </h3>
+            {!correlation ? <p className="text-slate-500 italic">No correlation performed yet.</p> : (
+              <div className="space-y-4 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                <p className="text-slate-300">Phase 3 Deterministic Correlation Engine processed the evidence and identified the following relationships:</p>
+                {correlation.groups.map((group, i) => (
+                  <div key={i} className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-800/30">
+                    <p className="text-fuchsia-200 text-sm font-medium">{group.summary}</p>
+                    <div className="flex justify-between items-center mt-3 text-xs">
+                      <span className="text-slate-400">Events: {group.evidence_ids.length}</span>
+                      <span className="text-slate-400">Signals: {group.signals.length}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+
+      case 'timeline':
+        return (
+          <div className="space-y-4 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-slate-200 mb-4 shrink-0">Correlated Timeline</h3>
+            {!correlation ? <p className="text-slate-500 italic">No timeline available.</p> : (
+              <div className="space-y-4 pl-4 border-l-2 border-slate-700 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                {correlation.timeline.map((item, i) => (
+                  <div key={i} className="relative">
+                    <div className={`absolute -left-[21px] w-3 h-3 rounded-full mt-1 ${item.source_type === 'application_log' ? 'bg-blue-500' : item.source_type === 'kubernetes_event' ? 'bg-emerald-500' : 'bg-pink-500'}`}></div>
+                    <div className="bg-slate-900 p-3 rounded-lg border border-slate-800">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className="text-xs font-mono text-slate-400">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold ${item.severity === 'ERROR' || item.severity === 'HIGH' || item.severity === 'CRITICAL' ? 'bg-red-900/50 text-red-300' : 'bg-slate-800 text-slate-300'}`}>
+                          {item.severity || item.source_type.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <h5 className="text-sm font-bold text-slate-200">{item.title}</h5>
+                      {item.service_name && <p className="text-xs text-indigo-400 mt-1">{item.service_name}</p>}
+                      {item.message && <p className="text-xs text-slate-400 mt-1 line-clamp-2">{item.message}</p>}
+                      {item.metric_value !== undefined && <p className="text-xs font-mono text-slate-300 mt-1">{formatMetricValue(item.metric_value, item.metric_unit || '')}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      
+      case 'signals':
+        return (
+          <div className="space-y-4 h-full flex flex-col">
+            <h3 className="text-xl font-bold text-slate-200 mb-4 shrink-0">Operational Signals</h3>
+            {!correlation ? <p className="text-slate-500 italic">No signals detected.</p> : (
+              <div className="grid grid-cols-1 gap-3 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                {correlation.signals.map((sig, i) => (
+                  <div key={i} className={`p-4 rounded-xl border flex items-center gap-4 ${sig.severity === 'high' ? 'bg-red-900/20 border-red-800/50' : sig.severity === 'medium' ? 'bg-amber-900/20 border-amber-800/50' : 'bg-slate-800 border-slate-700'}`}>
+                    <div className={`text-2xl ${sig.severity === 'high' ? 'text-red-400' : 'text-amber-400'}`}>⚠</div>
+                    <div>
+                      <p className="font-bold text-slate-200 capitalize">{sig.type.replace(/_/g, ' ')}</p>
+                      <p className="text-xs text-slate-400 mt-1">{new Date(sig.timestamp).toLocaleTimeString()} {sig.service ? `• ${sig.service}` : ''}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      
+      case 'relationships':
+        return (
+          <div className="space-y-4">
+            <h3 className="text-xl font-bold text-slate-200 mb-4">Entity Relationships</h3>
+            {!correlation ? <p className="text-slate-500 italic">No relationships mapped.</p> : (
+              <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 text-center">
+                <p className="text-slate-400">Graph mapping of {correlation.relationships.length} entity relationships (Pods, Services, Nodes) derived from the evidence.</p>
+              </div>
+            )}
+          </div>
+        )
+
+      default:
+        return null
     }
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-8 font-sans pb-24">
-      <div className="max-w-5xl mx-auto space-y-8">
-        <header className="border-b border-slate-700 pb-4">
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-            AI Log Analysis System
-          </h1>
-          <p className="text-slate-400 mt-2">Phase 3: Metrics Collection</p>
-        </header>
+    <div className="min-h-screen bg-[#0B1120] text-slate-100 font-sans">
+      {/* Header */}
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-[1400px] mx-auto p-4 flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-black bg-gradient-to-r from-blue-400 via-indigo-400 to-fuchsia-400 bg-clip-text text-transparent">
+              AI Log Analysis System
+            </h1>
+            <p className="text-xs font-semibold text-slate-500 tracking-widest uppercase mt-1">Architecture Visualizer Mode</p>
+          </div>
+        </div>
+      </header>
 
-        <main className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="space-y-6 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl self-start">
-            <h2 className="text-xl font-semibold text-white">Investigation Request</h2>
+      {/* Main Grid 3-Column Layout */}
+      <main className="max-w-[1600px] mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8 h-[calc(100vh-80px)]">
+        
+        {/* LEFT COL: Form */}
+        <div className="col-span-12 lg:col-span-3 flex flex-col space-y-6">
+          <div className="bg-slate-900/80 backdrop-blur p-6 rounded-2xl border border-slate-800 shadow-2xl h-full flex flex-col">
+            <h2 className="text-lg font-bold text-white mb-4">Investigation Setup</h2>
             
-            <div className="space-y-4">
+            <div className="space-y-4 flex-1">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">System</label>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">System</label>
                 <select 
                   value={systemId} 
                   onChange={(e) => setSystemId(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-2.5 text-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                  className="w-full bg-[#0F172A] border border-slate-700 rounded-lg p-2.5 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                 >
-                  {SYSTEMS.map(sys => (
-                    <option key={sys.id} value={sys.id}>{sys.name}</option>
-                  ))}
+                  {SYSTEMS.map(sys => <option key={sys.id} value={sys.id}>{sys.name}</option>)}
                 </select>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Environment</label>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Environment</label>
                 <select 
                   value={environment} 
                   onChange={(e) => setEnvironment(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-2.5 text-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                  className="w-full bg-[#0F172A] border border-slate-700 rounded-lg p-2.5 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                 >
-                  {ENVIRONMENTS.map(env => (
-                    <option key={env} value={env}>{env}</option>
-                  ))}
+                  {ENVIRONMENTS.map(env => <option key={env} value={env}>{env}</option>)}
                 </select>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Question</label>
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Incident Prompt</label>
                 <textarea 
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="Why is payment-api failing?"
-                  rows={4}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all resize-none placeholder-slate-500"
+                  placeholder="e.g., Why is payment-api failing right now?"
+                  rows={6}
+                  className="w-full bg-[#0F172A] border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none resize-none placeholder-slate-600"
                 />
               </div>
 
               <button 
                 onClick={handleInvestigate}
-                disabled={loadingPlan || loadingEvidence}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:opacity-50 flex justify-center items-center gap-2"
+                disabled={isInvestigating}
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-3 rounded-lg shadow-[0_0_15px_rgba(79,70,229,0.3)] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {loadingPlan ? (
+                {isInvestigating ? (
                   <>
-                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Thinking (Orchestrator)...
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Analyzing...
                   </>
-                ) : loadingEvidence ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Gathering Evidence (Tools)...
-                  </>
-                ) : (
-                  'Investigate'
-                )}
+                ) : 'Launch Investigation'}
               </button>
+              
+              {error && (
+                <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-xs mt-2">
+                  {error}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* MIDDLE COL: Architecture Flowchart */}
+        <div className="col-span-12 lg:col-span-5 bg-[#0F172A] relative flex items-center justify-center py-10 rounded-2xl border border-slate-800 shadow-inner overflow-hidden h-full">
+          {/* Subtle grid background */}
+          <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
+          
+          <div className="relative flex flex-col items-center w-full max-w-[500px] mx-auto pb-4 overflow-y-auto custom-scrollbar h-full px-2">
+            
+            {/* 1. User */}
+            {renderNode("user", "User Prompt", "bg-slate-900/50 border-slate-600 text-slate-300", true)}
+
+            <div className="h-6 border-l-2 border-dashed border-slate-600 z-0"></div>
+
+            {/* 2. Orchestrator */}
+            {renderNode("orchestrator", "Orchestrator Agent", "bg-emerald-600/20 border-emerald-500 text-emerald-400", !!plan || isInvestigating)}
+
+            <div className="h-6 border-l-2 border-dashed border-slate-600 z-0"></div>
+
+            {/* 3. Dispatcher */}
+            <div className="relative w-full flex flex-col items-center z-10">
+              {renderNode("dispatcher", "Dispatcher", "bg-slate-800 border-slate-500 text-slate-200", !!plan || isInvestigating)}
+              
+              {/* Branching Lines */}
+              <div className="w-full flex justify-center mt-5 relative z-0">
+                <div className="absolute top-0 w-[80%] h-px bg-slate-600 border-t-2 border-dashed border-slate-600"></div>
+                <div className="absolute top-0 left-[10%] w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600"></div>
+                <div className="absolute top-0 left-1/2 w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600 -translate-x-1/2"></div>
+                <div className="absolute top-0 right-[10%] w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600"></div>
+              </div>
+
+              {/* 4. Tools Row */}
+              <div className="w-full flex justify-between px-[5%] mt-5 z-10">
+                {renderNode("tool_log", "Log Search Tool", "bg-pink-600/20 border-pink-500 text-pink-400 !w-28 text-[11px] px-1", !!evidence || isInvestigating)}
+                {renderNode("tool_event", "Event Search Tool", "bg-pink-600/20 border-pink-500 text-pink-400 !w-28 text-[11px] px-1", !!evidence || isInvestigating)}
+                {renderNode("tool_metrics", "Metrics Tool", "bg-pink-600/20 border-pink-500 text-pink-400 !w-28 text-[11px] px-1", !!evidence || isInvestigating)}
+              </div>
+
+              {/* Merging Lines */}
+              <div className="w-full flex justify-center mt-5 relative h-5 z-0">
+                <div className="absolute bottom-0 w-[80%] h-px bg-slate-600 border-t-2 border-dashed border-slate-600"></div>
+                <div className="absolute bottom-0 left-[10%] w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600"></div>
+                <div className="absolute bottom-0 left-1/2 w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600 -translate-x-1/2"></div>
+                <div className="absolute bottom-0 right-[10%] w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600"></div>
+              </div>
+            </div>
+
+            <div className="h-6 border-l-2 border-dashed border-slate-600 z-0"></div>
+
+            {/* 5. Investigation Evidence Agent */}
+            <div className="w-full flex flex-col items-center z-10">
+              {renderNode("evidence_agent", "Investigation Evidence Agent", "bg-emerald-600/20 border-emerald-500 text-emerald-400", !!evidence || isInvestigating)}
+            </div>
+
+            <div className="h-6 border-l-2 border-dashed border-slate-600 z-0"></div>
+
+            {/* 6. Correlation Engine */}
+            {renderNode("correlation", "Correlation Engine", "bg-fuchsia-600/20 border-fuchsia-500 text-fuchsia-400", !!correlation || isInvestigating)}
+
+            {/* Branching Lines Out */}
+            <div className="w-full flex justify-center mt-5 relative z-0">
+              <div className="absolute top-0 w-[70%] h-px bg-slate-600 border-t-2 border-dashed border-slate-600"></div>
+              <div className="absolute top-0 left-[15%] w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600"></div>
+              <div className="absolute top-0 left-1/2 w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600 -translate-x-1/2"></div>
+              <div className="absolute top-0 right-[15%] w-px h-5 bg-slate-600 border-l-2 border-dashed border-slate-600"></div>
+            </div>
+
+            {/* 7. Output Row */}
+            <div className="w-full flex justify-between px-[10%] mt-5 z-10">
+              {renderNode("timeline", "Timeline", "bg-slate-900/50 border-slate-400 text-slate-300 !w-24 text-[11px] px-1", !!correlation || isInvestigating)}
+              {renderNode("relationships", "Relationships", "bg-slate-900/50 border-slate-400 text-slate-300 !w-28 text-[11px] px-1", !!correlation || isInvestigating)}
+              {renderNode("signals", "Signals", "bg-slate-900/50 border-slate-400 text-slate-300 !w-24 text-[11px] px-1", !!correlation || isInvestigating)}
             </div>
             
-            {error && (
-              <div className="p-4 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-sm">
-                {error}
-              </div>
-            )}
           </div>
+        </div>
 
-          <div className="space-y-6">
-            <h2 className="text-xl font-semibold text-white">Results</h2>
-            
-            {plan ? (
-              <div className="space-y-6">
-                <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden">
-                  <div className="divide-y divide-slate-700/50">
-                    <div className="p-4">
-                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Intent</h3>
-                      <p className="text-indigo-300 font-medium">{plan.intent}</p>
-                    </div>
-                    
-                    <div className="p-4 grid grid-cols-2 gap-4">
-                      <div>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">System</h3>
-                        <p className="text-slate-200">{plan.system_id}</p>
-                      </div>
-                      <div>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Environment</h3>
-                        <p className="text-slate-200">{plan.environment}</p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 grid grid-cols-2 gap-4">
-                      <div>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Service</h3>
-                        <p className="text-slate-200">{plan.service || 'N/A'}</p>
-                      </div>
-                      <div>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Time Range</h3>
-                        <p className="text-slate-200">
-                          {plan.time_range.duration ? plan.time_range.duration : 
-                           plan.time_range.start ? `${plan.time_range.start} to ${plan.time_range.end}` : 
-                           plan.time_range.type}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-slate-750">
-                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Investigation Goal</h3>
-                      <p className="text-white font-medium">{plan.investigation_goal}</p>
-                    </div>
-                  </div>
-                </div>
-                
-                {loadingEvidence ? (
-                  <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl p-8 flex flex-col items-center justify-center gap-4 animate-pulse">
-                    <svg className="animate-spin h-8 w-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <p className="text-slate-400 font-medium">Tools are executing queries...</p>
-                  </div>
-                ) : evidence && (
-                  <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden p-6 space-y-6">
-                    <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Evidence Retrieved</h3>
-                    
-                    {/* Queries Executed View */}
-                    {evidence.queries && Object.keys(evidence.queries).length > 0 && (
-                      <div>
-                        <div 
-                          className="flex justify-between items-center bg-slate-900 p-3 rounded-lg cursor-pointer hover:bg-slate-700 transition"
-                          onClick={() => setShowQueries(!showQueries)}
-                        >
-                          <span className="font-medium text-amber-400 flex items-center gap-2">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
-                            Raw Executed Queries
-                          </span>
-                        </div>
-                        {showQueries && (
-                          <div className="mt-3 max-h-60 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-                            {Object.entries(evidence.queries).map(([tool, query], i) => (
-                              <div key={tool} className="space-y-1">
-                                <span className="text-xs text-slate-400 uppercase tracking-wider font-bold ml-1">{tool}</span>
-                                <pre className="text-[10px] font-mono bg-slate-950 p-3 rounded text-slate-300 overflow-x-auto border border-slate-800 whitespace-pre-wrap">
-                                  {typeof query === 'string' ? query : JSON.stringify(query, null, 2)}
-                                </pre>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Metrics View */}
-                    {plan.required_data.includes('metrics') && (
-                      <div>
-                        <div 
-                          className="flex justify-between items-center bg-slate-900 p-3 rounded-lg cursor-pointer hover:bg-slate-700 transition"
-                          onClick={() => setShowMetrics(!showMetrics)}
-                        >
-                          <span className="font-medium text-slate-300">Metrics</span>
-                          <span className="bg-indigo-600 text-white text-xs px-2 py-1 rounded-full">
-                            {evidence.metrics?.length || 0} series
-                          </span>
-                        </div>
-                        {showMetrics && (
-                          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {(!evidence.metrics || evidence.metrics.length === 0) ? (
-                              <p className="text-sm text-slate-500 italic col-span-2">No metrics found.</p>
-                            ) : (
-                              evidence.metrics.map((metric, i) => (
-                                <div key={i} className="bg-slate-900 p-3 rounded border border-slate-800 flex flex-col justify-between">
-                                  <div className="flex justify-between items-start mb-2">
-                                    <h4 className="text-sm font-bold text-slate-200 capitalize">{metric.metric_name.replace(/_/g, ' ')}</h4>
-                                    {metric.status !== "success" && (
-                                      <span className="text-[10px] bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded uppercase">Error</span>
-                                    )}
-                                  </div>
-                                  
-                                  {metric.status === "unavailable" ? (
-                                    <p className="text-xs text-slate-500 italic">{metric.reason}</p>
-                                  ) : metric.summary ? (
-                                    <div className="space-y-1 text-xs">
-                                      {metric.metric_type === "gauge" ? (
-                                        <>
-                                          <div className="flex justify-between"><span className="text-slate-400">Average:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.average, metric.unit)}</span></div>
-                                          <div className="flex justify-between"><span className="text-slate-400">Maximum:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.maximum, metric.unit)}</span></div>
-                                          <div className="flex justify-between"><span className="text-slate-400">Minimum:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.minimum, metric.unit)}</span></div>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <div className="flex justify-between"><span className="text-slate-400">Initial:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.initial, metric.unit)}</span></div>
-                                          <div className="flex justify-between"><span className="text-slate-400">Final:</span> <span className="text-white font-mono">{formatMetricValue(metric.summary.final, metric.unit)}</span></div>
-                                          <div className="flex justify-between"><span className="text-slate-400 text-red-300 font-semibold">Increase:</span> <span className="text-red-300 font-mono font-semibold">+{formatMetricValue(metric.summary.increase, metric.unit)}</span></div>
-                                        </>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <p className="text-xs text-slate-500 italic">No summary available.</p>
-                                  )}
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Logs View */}
-                    {plan.required_data.includes('application_logs') && (
-                      <div>
-                        <div 
-                          className="flex justify-between items-center bg-slate-900 p-3 rounded-lg cursor-pointer hover:bg-slate-700 transition"
-                          onClick={() => setShowLogs(!showLogs)}
-                        >
-                          <span className="font-medium text-slate-300">Application Logs</span>
-                          <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded-full">
-                            {evidence.application_logs?.length || 0} records
-                          </span>
-                        </div>
-                        {showLogs && (
-                          <div className="mt-3 max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                            {(!evidence.application_logs || evidence.application_logs.length === 0) ? (
-                              <p className="text-sm text-slate-500 italic">No logs found or OpenSearch error.</p>
-                            ) : (
-                              evidence.application_logs.map((log, i) => (
-                                <div key={i} className="text-xs font-mono bg-slate-900 p-2 rounded text-slate-300 flex flex-col gap-1 border border-slate-800">
-                                  <div className="flex gap-2 items-center text-slate-500">
-                                    <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
-                                    {log.level && (
-                                      <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase ${log.level.toLowerCase() === 'error' ? 'bg-red-900/50 text-red-300' : 'bg-slate-700'}`}>
-                                        {log.level}
-                                      </span>
-                                    )}
-                                    <span className="text-indigo-400">{log.service_name || 'unknown'}</span>
-                                  </div>
-                                  <p className="text-slate-200">{log.message}</p>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Events View */}
-                    {plan.required_data.includes('kubernetes_events') && (
-                      <div>
-                        <div 
-                          className="flex justify-between items-center bg-slate-900 p-3 rounded-lg cursor-pointer hover:bg-slate-700 transition"
-                          onClick={() => setShowEvents(!showEvents)}
-                        >
-                          <span className="font-medium text-slate-300">Kubernetes Events</span>
-                          <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded-full">
-                            {evidence.kubernetes_events?.length || 0} records
-                          </span>
-                        </div>
-                        {showEvents && (
-                          <div className="mt-3 max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                            {(!evidence.kubernetes_events || evidence.kubernetes_events.length === 0) ? (
-                              <p className="text-sm text-slate-500 italic">No events found or OpenSearch error.</p>
-                            ) : (
-                              evidence.kubernetes_events.map((evt, i) => (
-                                <div key={i} className="text-xs font-mono bg-slate-900 p-2 rounded text-slate-300 flex flex-col gap-1 border border-slate-800">
-                                  <div className="flex gap-2 items-center text-slate-500">
-                                    <span>{new Date(evt.timestamp).toLocaleTimeString()}</span>
-                                    {evt.reason && (
-                                      <span className={`px-1.5 py-0.5 rounded text-[10px] ${evt.reason.includes('Failed') || evt.reason.includes('BackOff') ? 'bg-red-900/50 text-red-300' : 'bg-slate-700'}`}>
-                                        {evt.reason}
-                                      </span>
-                                    )}
-                                    {evt.action && <span className="text-emerald-400">{evt.action}</span>}
-                                  </div>
-                                  <p className="text-slate-200">{evt.message}</p>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="h-64 border-2 border-dashed border-slate-700 rounded-xl flex items-center justify-center text-slate-500">
-                <p>No results yet.</p>
-              </div>
-            )}
+        {/* RIGHT COL: Data Inspector */}
+        <div className="col-span-12 lg:col-span-4 bg-slate-900/80 backdrop-blur p-6 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden flex flex-col h-full">
+          <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
+            {renderDataInspector()}
           </div>
-        </main>
-      </div>
+        </div>
+        
+      </main>
+      
+      {/* Custom Scrollbar Styles for this page */}
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: rgba(15, 23, 42, 0.5); 
+          border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(71, 85, 105, 0.8); 
+          border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(100, 116, 139, 1); 
+        }
+      `}} />
     </div>
   )
 }

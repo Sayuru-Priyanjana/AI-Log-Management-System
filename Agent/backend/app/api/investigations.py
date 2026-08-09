@@ -3,6 +3,7 @@ from app.models.investigation import InvestigationRequest, InvestigationPlan
 from app.agents.orchestrator import OrchestratorAgent
 from app.llm.ollama import OllamaProvider
 from app.dispatcher import InvestigationDispatcher
+from app.correlation.engine import CorrelationEngine
 from app.opensearch.client import OpenSearchClient
 from app.prometheus.client import PrometheusClient
 import logging
@@ -25,6 +26,10 @@ def get_dispatcher(
     prom_client: PrometheusClient = Depends(get_prometheus_client)
 ) -> InvestigationDispatcher:
     return InvestigationDispatcher(os_client, prom_client)
+
+def get_correlation_engine() -> CorrelationEngine:
+    return CorrelationEngine()
+
 
 @router.post("/investigations/plan")
 async def create_investigation_plan(
@@ -67,4 +72,39 @@ async def gather_investigation_evidence(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.error(f"Investigation evidence failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/investigations/run")
+async def run_full_investigation(
+    request: InvestigationRequest,
+    orchestrator: OrchestratorAgent = Depends(get_orchestrator),
+    dispatcher: InvestigationDispatcher = Depends(get_dispatcher),
+    engine: CorrelationEngine = Depends(get_correlation_engine)
+):
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Investigation question cannot be empty.")
+        
+    try:
+        # 1. Plan
+        logger.info("Investigation run: planning phase started")
+        plan = await orchestrator.create_plan(request)
+        
+        # 2. Evidence
+        logger.info("Investigation run: evidence collection phase started")
+        evidence = await dispatcher.dispatch(plan)
+        
+        # 3. Correlate
+        logger.info("Investigation run: correlation phase started")
+        correlation = await engine.correlate(plan, evidence)
+        logger.info("Investigation run: complete")
+        
+        return {
+            "plan": plan.model_dump(),
+            "evidence": evidence.model_dump(),
+            "correlation": correlation.model_dump()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Investigation run failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
