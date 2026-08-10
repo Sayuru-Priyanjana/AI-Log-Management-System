@@ -1,27 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { runInvestigation } from '../api';
 import { ErrorBanner } from './common';
-import FlowMap, { STAGES } from './FlowMap';
-import {
-  AnalysisPanel, CandidatesPanel, EvidencePanel, PlanPanel, ReportPanel, SignalsPanel,
-  VerifiedPanel, WindowsPanel,
-} from './panels';
-
-const PANELS = {
-  plan: PlanPanel,
-  windows: WindowsPanel,
-  evidence: EvidencePanel,
-  signals: SignalsPanel,
-  candidates: CandidatesPanel,
-  analysis: AnalysisPanel,
-  verified: VerifiedPanel,
-  result: ReportPanel,
-};
+import ReactMarkdown from 'react-markdown';
 
 export default function InvestigationResults({ request }) {
-  const [stagesData, setStagesData] = useState({});
-  const [currentStageId, setCurrentStageId] = useState(null);
-  const [selectedStageId, setSelectedStageId] = useState(null);
+  const [events, setEvents] = useState([]);
   const [status, setStatus] = useState('connecting');
   const [errorMsg, setErrorMsg] = useState(null);
   const startedAt = useRef(Date.now());
@@ -51,18 +34,11 @@ export default function InvestigationResults({ request }) {
               return;
             }
             setStatus('streaming');
-            setStagesData((prev) => ({ ...prev, [event.stage]: event.data }));
-            setCurrentStageId(event.stage);
-            setSelectedStageId((prevSelected) =>
-              // Follow the stream unless the user has already clicked a
-              // different completed node to look at.
-              prevSelected === null || prevSelected === event.stage ? event.stage : prevSelected
-            );
+            setEvents((prev) => [...prev, event]);
           },
         });
         if (mounted) {
           setStatus((s) => (s === 'error' ? s : 'complete'));
-          setCurrentStageId(null);
         }
       } catch (err) {
         if (mounted && err.name !== 'AbortError') {
@@ -80,8 +56,6 @@ export default function InvestigationResults({ request }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request]);
 
-  const Panel = selectedStageId ? PANELS[selectedStageId] : null;
-  const finalAnalysis = stagesData.result?.analysis;
   const seconds = (elapsed / 1000).toFixed(1);
 
   return (
@@ -106,38 +80,79 @@ export default function InvestigationResults({ request }) {
         <ErrorBanner><strong>Something went wrong.</strong> {errorMsg}</ErrorBanner>
       )}
 
-      <div className="glass-panel li-flowmap-panel">
-        <FlowMap
-          stagesData={stagesData}
-          currentStageId={status === 'streaming' ? currentStageId : null}
-          selectedStageId={selectedStageId}
-          onSelect={setSelectedStageId}
-        />
-      </div>
-
-      <div className="glass-panel li-detail-panel">
-        {!selectedStageId ? (
-          <div className="li-waiting">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <p>Waiting for the agent to begin…</p>
-          </div>
-        ) : (
-          <div className="animate-fade-in">
-            <div className="li-detail-head">
-              <h2>{STAGES.find((s) => s.id === selectedStageId)?.label}</h2>
-              <span className="li-detail-hint">{STAGES.find((s) => s.id === selectedStageId)?.hint}</span>
-            </div>
-            {Panel && (
-              <Panel
-                data={stagesData[selectedStageId]}
-                chosenId={finalAnalysis?.chosen_candidate_id}
-                engineTopId={finalAnalysis?.engine_top_candidate_id}
-              />
-            )}
+      <div className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', maxWidth: '800px', margin: '0 auto' }}>
+        {events.length === 0 && status !== 'error' && (
+          <div className="li-waiting" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+             <p>Waiting for the agent to begin…</p>
           </div>
         )}
+        
+        {events.map((evt, idx) => (
+          <EventBlock key={idx} event={evt} />
+        ))}
+        
+        {status === 'streaming' && (
+           <div style={{ padding: '1rem', color: 'var(--text-muted)' }} className="animate-pulse-glow">
+             Agent is thinking...
+           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EventBlock({ event }) {
+  const { stage, data } = event;
+  
+  let content = null;
+  let title = stage.toUpperCase();
+  let color = 'var(--text-color)';
+  let bg = 'var(--bg-panel)';
+
+  if (stage === 'plan') {
+    title = 'Investigation Plan';
+    content = <div>Goal: {data.goal} (Intent: {data.intent})</div>;
+  } else if (stage === 'windows') {
+    title = 'Time Windows';
+    content = <div>Incident: {data.incident?.start}</div>;
+  } else if (stage === 'evidence') {
+    title = 'Initial Evidence Collected';
+    content = <div>Logs: {data.logs?.documents}, Events: {data.events?.count}</div>;
+  } else if (stage === 'thought') {
+    title = `Agent Thought (Step ${data.step})`;
+    color = 'var(--accent-color)';
+    bg = 'rgba(74, 144, 226, 0.1)';
+    content = <div style={{ fontStyle: 'italic' }}>"{data.text}"</div>;
+  } else if (stage === 'action') {
+    title = `Action: ${data.tool}`;
+    color = 'var(--warning)';
+    bg = 'rgba(245, 166, 35, 0.1)';
+    content = <pre style={{ margin: 0, background: 'transparent' }}>{JSON.stringify(data.input, null, 2)}</pre>;
+  } else if (stage === 'observation') {
+    title = 'Observation';
+    color = 'var(--success)';
+    bg = 'rgba(126, 211, 33, 0.1)';
+    content = <pre style={{ margin: 0, background: 'transparent', whiteSpace: 'pre-wrap' }}>{data.text}</pre>;
+  } else if (stage === 'analysis') {
+    title = 'Conclusion';
+    content = <div><ReactMarkdown>{data.cause}</ReactMarkdown></div>;
+  } else if (stage === 'verified' || stage === 'result' || stage === 'candidates' || stage === 'signals') {
+    return null; // hide these intermediate/legacy stages
+  }
+
+  return (
+    <div style={{
+      border: `1px solid ${color}`,
+      background: bg,
+      borderRadius: '8px',
+      padding: '1rem',
+      animation: 'fadeIn 0.3s ease-out'
+    }}>
+      <div style={{ color, fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {title}
+      </div>
+      <div style={{ fontSize: '0.95rem', color: 'var(--text-color)', lineHeight: 1.5 }}>
+        {content}
       </div>
     </div>
   );

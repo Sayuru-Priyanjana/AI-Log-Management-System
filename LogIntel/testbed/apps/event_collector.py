@@ -102,14 +102,15 @@ def pod_labels_cache() -> dict:
     """Pod labels carry the system identity. Cached per poll; pods are few here."""
     labels: dict[tuple[str, str], dict] = {}
     for namespace in WATCH_NAMESPACES:
-        try:
-            payload = k8s_get(f"/api/v1/namespaces/{namespace}/pods?limit=500")
-        except Exception as exc:
-            log("WARN", f"Could not list pods in {namespace}: {exc}")
-            continue
-        for item in payload.get("items", []):
-            meta = item.get("metadata", {})
-            labels[(namespace, meta.get("name", ""))] = meta.get("labels", {}) or {}
+        for resource in ["pods", "deployments", "replicasets"]:
+            try:
+                payload = k8s_get(f"/api/v1/namespaces/{namespace}/{resource}?limit=500")
+            except Exception as exc:
+                log("WARN", f"Could not list {resource} in {namespace}: {exc}")
+                continue
+            for item in payload.get("items", []):
+                meta = item.get("metadata", {})
+                labels[(namespace, meta.get("name", ""))] = meta.get("labels", {}) or {}
     return labels
 
 
@@ -137,6 +138,19 @@ def normalize(event: dict, labels: dict) -> dict | None:
         return None
 
     pod_labels = labels.get((namespace, involved.get("name", "")), {})
+    
+    # Fallback heuristic: Extract app name by dropping pod/replicaset hashes
+    # if the object is missing from the cache (e.g. deleted before the poll)
+    if not pod_labels.get("app") and involved.get("name"):
+        name_str = involved.get("name", "")
+        parts = name_str.split("-")
+        if len(parts) >= 3 and len(parts[-1]) == 5: # likely a pod
+            pod_labels["app"] = "-".join(parts[:-2])
+        elif len(parts) >= 2 and len(parts[-1]) > 5: # likely a replicaset
+            pod_labels["app"] = "-".join(parts[:-1])
+        else: # likely a deployment
+            pod_labels["app"] = name_str
+
     system_id = pod_labels.get("logintel/system-id", DEFAULT_SYSTEM_ID)
     system_name = pod_labels.get("logintel/system-name", DEFAULT_SYSTEM_NAME).replace("_", " ")
     environment = pod_labels.get("logintel/environment", DEFAULT_ENVIRONMENT)

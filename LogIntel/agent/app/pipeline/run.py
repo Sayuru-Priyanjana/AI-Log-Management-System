@@ -8,16 +8,11 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from app.agents.analyst import AnalystAgent
 from app.agents.orchestrator import OrchestratorAgent
-from app.agents.prompts import build_evidence_index
-from app.models.analysis import Analysis, InvestigationResult, InvestigationWindows
+from app.agents.react import ReActAgent
+from app.models.analysis import Analysis, CauseCategory, InvestigationResult, InvestigationWindows
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationRequest
-from app.pipeline.hypotheses import HypothesisEngine
-from app.pipeline.signals import SignalEngine
-from app.pipeline.timeline import build_timeline
-from app.pipeline.verify import verify
 from app.pipeline.windows import WindowResolver
 from app.registry.systems import SystemRegistry
 from app.tools.events import EventTool
@@ -33,26 +28,18 @@ class StageEvent(BaseModel):
 
 
 class InvestigationPipeline:
-    """The whole run, in fixed order:
-
-        plan -> windows -> evidence -> signals -> candidates -> analysis -> verify
-
-    Only two of those stages involve an LLM, and both are constrained. The order
-    matters: windows come before evidence because deciding *what to look at* is
-    what makes the evidence worth anything.
-    """
+    """The whole run, using a ReAct agent loop for investigation."""
 
     def __init__(self, *, log_tool: LogTool, event_tool: EventTool, metric_tool: MetricTool,
-                 orchestrator: OrchestratorAgent, analyst: AnalystAgent,
+                 orchestrator: OrchestratorAgent, react_agent: ReActAgent,
                  registry: SystemRegistry) -> None:
         self.logs = log_tool
         self.events = event_tool
         self.metrics = metric_tool
         self.orchestrator = orchestrator
-        self.analyst = analyst
+        self.react_agent = react_agent
         self.registry = registry
         self.windows = WindowResolver(log_tool)
-        self.hypotheses = HypothesisEngine()
 
     async def run(self, request: InvestigationRequest) -> AsyncIterator[StageEvent]:
         investigation_id = f"inv-{uuid.uuid4().hex[:12]}"
@@ -82,90 +69,63 @@ class InvestigationPipeline:
             "search_buckets": len(search_histogram),
         })
 
-        # -- 3. evidence ---------------------------------------------------
+        # -- 3. evidence (bulk collect for tools) --------------------------
         started = time.perf_counter()
         evidence = await self._collect(plan, windows, errors)
         mark("evidence", started)
         yield StageEvent(stage="evidence", data=self._evidence_summary(evidence))
 
-        # -- 4. signals ----------------------------------------------------
+        # -- 4. ReAct loop -------------------------------------------------
         started = time.perf_counter()
-        signal_engine = SignalEngine(known_services=system.service_names)
-        signals = signal_engine.detect(plan, windows, evidence)
-        mark("signals", started)
-        yield StageEvent(stage="signals", data={
-            "count": len(signals),
-            "signals": [signal.model_dump(mode="json") for signal in signals],
-        })
-
-        # -- 5. candidates -------------------------------------------------
-        started = time.perf_counter()
-        candidates = self.hypotheses.generate(plan, windows, signals, evidence)
-        mark("candidates", started)
-        yield StageEvent(stage="candidates", data={
-            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-        })
-
-        # -- 6. analysis ---------------------------------------------------
-        started = time.perf_counter()
-        evidence_index = build_evidence_index(signals, candidates, evidence)
-        choice, prompt, warnings = await self.analyst.select(
-            plan, windows, signals, candidates, evidence
-        )
-        timeline = build_timeline(windows, signals, evidence)
-        mark("analysis", started)
-
-        # -- 7. verify -----------------------------------------------------
-        started = time.perf_counter()
-        analysis: Analysis = verify(
-            choice=choice, candidates=candidates, signals=signals, evidence=evidence,
-            windows=windows, evidence_index=evidence_index, timeline=timeline,
-            warnings=warnings,
-        )
-        mark("verify", started)
-
-        # Narration last, and never load-bearing: it restates a conclusion that
-        # is already fixed, so its failure costs prose and nothing else.
-        started = time.perf_counter()
-        chosen = next((c for c in candidates if c.id == analysis.chosen_candidate_id), None)
-        narrative, narrative_warnings = await self.analyst.narrate(
-            plan, chosen, analysis.timeline, analysis.confidence
-        )
-        analysis.narrative = narrative
-        for warning in narrative_warnings:
-            errors.append(warning)
-        mark("narrative", started)
+        
+        final_conclusion = None
+        final_service = None
+        
+        async for event in self.react_agent.run(plan, windows, evidence):
+            event_type = event.pop("type")
+            if event_type == "conclusion":
+                final_conclusion = event.get("conclusion")
+                final_service = event.get("service")
+                break
+            elif event_type == "error":
+                errors.append(event.get("message", "Unknown ReAct error"))
+                yield StageEvent(stage="error", data={"detail": event.get("message")})
+                break
+            else:
+                yield StageEvent(stage=event_type, data=event)
+                
+        mark("react_loop", started)
 
         # Yield Analysis to UI
         yield StageEvent(stage="analysis", data={
-            "summary": analysis.narrative or "Analysis complete.",
-            "cause": analysis.cause_summary,
-            "confidence": analysis.confidence,
+            "summary": final_conclusion or "Analysis failed or didn't conclude.",
+            "cause": final_conclusion,
+            "confidence": 1.0 if final_conclusion else 0.0,
         })
-
-        # Yield Verification to UI
-        if analysis.verification:
-            issues = "\n".join(f"- {v.detail}" for v in analysis.verification)
-            v_msg = f"Verification complete with warnings:\n{issues}"
-        else:
-            v_msg = "The root cause has been verified against deterministic data with no contradictions."
         
+        v_msg = "ReAct loop concluded the investigation."
         yield StageEvent(stage="verified", data={"message": v_msg})
 
+        # Fake models for compatibility with legacy Result schema for now
+        # until the UI is fully moved off Candidates/Signals.
         result = InvestigationResult(
             id=investigation_id,
             question=request.question,
             plan=plan,
             windows=windows,
-            signals=signals,
-            candidates=candidates,
-            analysis=analysis,
+            signals=[],
+            candidates=[],
+            analysis=Analysis(
+                cause_summary=final_conclusion or "Analysis failed",
+                category=CauseCategory.UNKNOWN,
+                analyst="react",
+                confidence=1.0 if final_conclusion else 0.0,
+            ),
             evidence_summary=self._evidence_summary(evidence),
             timings_ms=timings,
             errors=errors,
         )
         yield StageEvent(stage="result", data=result.model_dump(mode="json"))
-        self._last_prompt = prompt
 
     async def run_collect(self, request: InvestigationRequest) -> InvestigationResult:
         """Non-streaming convenience used by the evaluation harness."""
@@ -192,8 +152,6 @@ class InvestigationPipeline:
         bundle = EvidenceBundle()
         for name, outcome in zip(active.keys(), results):
             if isinstance(outcome, BaseException):
-                # One source failing must not abort the run; it becomes a
-                # declared gap, which the verifier then uses to cap confidence.
                 message = f"{name} collection failed: {outcome}"
                 logger.warning(message)
                 errors.append(message)

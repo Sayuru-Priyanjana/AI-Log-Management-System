@@ -26,6 +26,11 @@ export default function InvestigationForm({ onSubmit, initial }) {
         if (!form.system_id && res.systems?.length) {
           const first = res.systems[0];
           setForm((f) => ({ ...f, system_id: first.id, environment: first.environments?.[0] || '' }));
+        } else if (form.system_id && !form.environment && res.systems?.length) {
+          const matched = res.systems.find(s => s.id === form.system_id);
+          if (matched) {
+            setForm((f) => ({ ...f, environment: matched.environments?.[0] || '' }));
+          }
         }
       })
       .catch((err) => mounted && setLoadError(err.message));

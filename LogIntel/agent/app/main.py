@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agents.analyst import AnalystAgent
+from app.agents.react import ReActAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.api.routes import router
 from app.config import settings
@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
             event_tool=EventTool(opensearch),
             metric_tool=MetricTool(prometheus),
             orchestrator=OrchestratorAgent(llm),
-            analyst=AnalystAgent(llm),
+            react_agent=ReActAgent(llm),
             registry=registry,
         ),
     )
