@@ -41,18 +41,32 @@ from app.models.plan import InvestigationRequest
 from app.pipeline.run import InvestigationPipeline
 from app.registry.systems import SystemRegistry
 from app.sources.opensearch import OpenSearchClient
-from app.sources.prometheus import PrometheusClient
+from app.sources.prometheus import PrometheusClient, PrometheusError
+from app.store.investigations import InvestigationStore
 from app.tools.events import EventTool
 from app.tools.logs import LogTool
 from app.tools.metrics import MetricTool
 
 QUESTION = "Something is wrong with checkout. What is the root cause?"
 
+# Some signals are strictly stronger statements than others, and the engine emits
+# only the stronger one rather than both. A container in CrashLoopBackOff has by
+# definition restarted, so reporting POD_RESTART alongside CRASHLOOP would be
+# redundant noise in the evidence handed to the model — but a scenario that lists
+# POD_RESTART as expected would then be marked as a miss for a detection that
+# actually happened, and more precisely than asked for.
+SUBSUMES: dict[str, set[str]] = {
+    "CRASHLOOP": {"POD_RESTART"},
+    "OOM_KILL": {"POD_RESTART"},
+    "DEPENDENCY_UNAVAILABLE": {"DEPENDENCY_DEGRADED"},
+}
+
 
 class IncidentController:
     def __init__(self, base_url: str) -> None:
         self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
         self.base_url = base_url
+        self.namespace = "shopdemo"
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -60,7 +74,11 @@ class IncidentController:
     async def catalogue(self) -> dict:
         response = await self._client.get("/incidents")
         response.raise_for_status()
-        return response.json()["scenarios"]
+        payload = response.json()
+        # Remembered so the health check can be scoped to the same namespace the
+        # scenarios act on, rather than assuming a name.
+        self.namespace = payload.get("namespace", "shopdemo")
+        return payload["scenarios"]
 
     async def start(self, scenario: str) -> dict:
         response = await self._client.post(f"/incidents/{scenario}/start")
@@ -92,17 +110,24 @@ class ScenarioScore:
     agreed_with_engine: bool = True
     duration_s: float = 0.0
     error: str | None = None
+    investigation_id: str = ""
+
+    def _was_detected(self, expected: str) -> bool:
+        if expected in self.detected_signals:
+            return True
+        return any(expected in SUBSUMES.get(detected, set())
+                   for detected in self.detected_signals)
 
     @property
     def recall(self) -> float:
         if not self.expected_signals:
             return 1.0
-        found = sum(1 for s in self.expected_signals if s in self.detected_signals)
+        found = sum(1 for s in self.expected_signals if self._was_detected(s))
         return found / len(self.expected_signals)
 
     @property
     def missing_signals(self) -> list[str]:
-        return [s for s in self.expected_signals if s not in self.detected_signals]
+        return [s for s in self.expected_signals if not self._was_detected(s)]
 
     @property
     def cause_correct(self) -> bool:
@@ -115,7 +140,8 @@ class ScenarioScore:
         return self.actual_service == self.expected_service
 
 
-async def build_pipeline() -> tuple[InvestigationPipeline, list]:
+async def build_pipeline() -> tuple[InvestigationPipeline, list, OpenSearchClient,
+                                    InvestigationStore, PrometheusClient]:
     opensearch = OpenSearchClient()
     prometheus = PrometheusClient()
     llm = OllamaClient()
@@ -131,7 +157,8 @@ async def build_pipeline() -> tuple[InvestigationPipeline, list]:
         analyst=AnalystAgent(llm),
         registry=registry,
     )
-    return pipeline, [opensearch, prometheus, llm]
+    return (pipeline, [opensearch, prometheus, llm], opensearch,
+            InvestigationStore(opensearch), prometheus)
 
 
 async def countdown(seconds: int, label: str) -> None:
@@ -145,8 +172,97 @@ async def countdown(seconds: int, label: str) -> None:
     print(f"\r    {label}: done{' ' * 20}")
 
 
+async def error_rate_per_minute(client: OpenSearchClient, system_id: str,
+                                minutes: int = 3) -> float:
+    """Errors per minute over the last few minutes, straight from the index."""
+    result = await client.search(settings.opensearch_log_index, {
+        "size": 0,
+        "track_total_hits": True,
+        "query": {"bool": {"filter": [
+            {"term": {"system.id": system_id}},
+            {"terms": {"log.level": ["ERROR", "FATAL", "CRITICAL"]}},
+            {"range": {"@timestamp": {"gte": f"now-{minutes}m"}}},
+        ]}},
+    })
+    return result["hits"]["total"]["value"] / minutes
+
+
+async def workload_is_healthy(prometheus: PrometheusClient, namespace: str) -> bool:
+    """True when every pod in the namespace is Ready.
+
+    A low error rate is not by itself evidence of health, and assuming it was
+    caused a real misdiagnosis: after a crashloop scenario, payment-api was down,
+    so it served almost no traffic and produced almost no errors. The rate check
+    passed, the next scenario was injected on top of a still-broken system, and
+    its window filled with the previous failure.
+    """
+    try:
+        result = await prometheus.query(
+            f'min(kube_pod_status_ready{{namespace="{namespace}", condition="true"}})'
+        )
+    except PrometheusError:
+        return True     # cannot tell; do not block the run on it
+    if not result:
+        return True
+    try:
+        return float(result[0]["value"][1]) >= 1.0
+    except (KeyError, IndexError, ValueError):
+        return True
+
+
+async def wait_until_quiet(client: OpenSearchClient, prometheus: PrometheusClient,
+                           system_id: str, *, namespace: str = "shopdemo",
+                           threshold: float, timeout: int, hold: int = 180) -> bool:
+    """Waits for the system to actually recover, rather than for a fixed delay.
+
+    A scenario that scaled a deployment to zero is not finished when the API call
+    returns — pods have to come back and the error rate has to fall. Sleeping a
+    fixed number of seconds either wastes time or, worse, starts the next
+    scenario while the previous one is still draining, which silently poisons the
+    baseline window every downstream signal is measured against.
+
+    Both conditions have to hold: errors back to baseline *and* every pod Ready.
+    Either one alone can be satisfied by a system that is still broken.
+
+    They must also hold *continuously* for `hold` seconds. This is not padding.
+    The pipeline places its baseline window immediately before the incident —
+    that is, before the moment the system went quiet — so a baseline drawn one
+    minute after a reset still lands inside the previous scenario. Injecting only
+    once the system has been calm for longer than the baseline window is the only
+    way for that comparison to mean anything. It is the single largest cost in a
+    full evaluation run, and skipping it silently invalidates the results.
+    """
+    deadline = time.time() + timeout
+    quiet_since: float | None = None
+    while time.time() < deadline:
+        rate = await error_rate_per_minute(client, system_id)
+        healthy = await workload_is_healthy(prometheus, namespace)
+        remaining = deadline - time.time()
+
+        if rate <= threshold and healthy:
+            quiet_since = quiet_since or time.time()
+            held = time.time() - quiet_since
+            if held >= hold:
+                print(f"\r    baseline quiet for {held:.0f}s "
+                      f"({rate:.1f} errors/min, all pods ready){' ' * 16}")
+                return True
+            status = f"quiet for {held:3.0f}s of {hold}s"
+        else:
+            quiet_since = None
+            status = "pods not ready" if not healthy else f"{rate:.1f} errors/min"
+
+        print(f"\r    settling: {status:<28} {remaining:4.0f}s left ", end="", flush=True)
+        await asyncio.sleep(5)
+    rate = await error_rate_per_minute(client, system_id)
+    healthy = await workload_is_healthy(prometheus, namespace)
+    print(f"\r    WARNING: after {timeout}s still {rate:.1f} errors/min, "
+          f"pods_ready={healthy}; the baseline may be contaminated{' ' * 10}")
+    return False
+
+
 async def score_one(pipeline: InvestigationPipeline, scenario_id: str, spec: dict,
-                    system_id: str, environment: str, duration: str) -> ScenarioScore:
+                    system_id: str, environment: str, duration: str,
+                    store: InvestigationStore | None = None) -> ScenarioScore:
     score = ScenarioScore(
         scenario=scenario_id,
         expected_cause=spec["expected_cause"],
@@ -163,6 +279,14 @@ async def score_one(pipeline: InvestigationPipeline, scenario_id: str, spec: dic
         score.error = f"{type(exc).__name__}: {exc}"
         score.duration_s = time.perf_counter() - started
         return score
+
+    # Persist, exactly as the API route does. Without this an eval run leaves no
+    # audit trail, so a scenario that scored badly cannot afterwards be opened up
+    # with `python -m eval.explain` to see which stage went wrong — which is the
+    # whole point of storing investigations.
+    if store is not None:
+        score.investigation_id = result.id
+        await store.save(result)
 
     score.duration_s = time.perf_counter() - started
     score.detected_signals = sorted({signal.type.value for signal in result.signals})
@@ -232,10 +356,26 @@ async def main() -> int:
     parser.add_argument("--scenario", help="run a single scenario by id")
     parser.add_argument("--system-id", default="shopdemo")
     parser.add_argument("--environment", default="staging")
-    parser.add_argument("--duration", default="1h",
-                        help="investigation window handed to the pipeline")
-    parser.add_argument("--quiet-seconds", type=int, default=90,
-                        help="settling time after reset, so the baseline window is clean")
+    # Short on purpose. Scenarios run back to back, so a long window would reach
+    # into the previous one and score this scenario against contaminated
+    # evidence. It is also the realistic case: you investigate a fresh incident
+    # with a recent window.
+    parser.add_argument("--duration", default="15m",
+                        help="investigation window, used as-is with --duration-fixed or "
+                             "--no-inject; otherwise derived from the time since the reset")
+    parser.add_argument("--duration-fixed", action="store_true",
+                        help="use --duration verbatim instead of deriving it from the reset")
+    parser.add_argument("--quiet-seconds", type=int, default=420,
+                        help="how long to wait, at most, for the system to settle after a reset")
+    parser.add_argument("--quiet-hold", type=int, default=180,
+                        help="how long the system must stay quiet before injecting. Must exceed "
+                             "the baseline window or the baseline lands in the previous scenario")
+    # The demo services each carry a 0.5% base error rate, and that compounds up
+    # the three tiers, so a perfectly healthy shopdemo still sits at roughly
+    # 4 errors/min. The threshold has to clear that floor or nothing is ever
+    # "quiet"; real incidents run an order of magnitude higher (20-100+/min).
+    parser.add_argument("--quiet-threshold", type=float, default=7.0,
+                        help="errors/min at or below which the baseline counts as quiet")
     parser.add_argument("--no-inject", action="store_true",
                         help="do not touch the cluster; score whatever is running right now")
     parser.add_argument("--report", default="eval-report.json")
@@ -256,34 +396,61 @@ async def main() -> int:
         print(f"Available: {', '.join(sorted(catalogue))}")
         return 2
 
-    pipeline, closeables = await build_pipeline()
+    pipeline, closeables, opensearch, store, prometheus = await build_pipeline()
     scores: list[ScenarioScore] = []
 
     if not args.no_inject:
-        total = sum(args.quiet_seconds + catalogue[s]["settle_seconds"] + 60 for s in selected)
-        print(f"Running {len(selected)} scenario(s). Rough estimate: {total / 60:.0f} minutes.\n")
+        total = sum(args.quiet_hold + 60 + catalogue[s]["settle_seconds"] + 60 for s in selected)
+        print(f"Running {len(selected)} scenario(s). Rough estimate: "
+              f"{total / 60:.0f}+ minutes (longer if a scenario is slow to drain).\n")
 
     try:
         for index, scenario_id in enumerate(selected, start=1):
             spec = catalogue[scenario_id]
             print(f"[{index}/{len(selected)}] {scenario_id}: {spec['title']}")
 
+            duration = args.duration
             if not args.no_inject:
                 await controller.reset_all()
-                await countdown(args.quiet_seconds, "settling to a clean baseline")
+                # Wait for the system to actually recover, not for a fixed delay.
+                # A scenario that scaled a deployment to zero keeps producing
+                # errors well after the reset call returns, and starting the next
+                # one early puts the previous failure inside this one's baseline.
+                quiet = await wait_until_quiet(
+                    opensearch, prometheus, args.system_id,
+                    namespace=controller.namespace,
+                    threshold=args.quiet_threshold, timeout=args.quiet_seconds,
+                    hold=args.quiet_hold,
+                )
+                if not quiet:
+                    print("    (proceeding anyway; treat this scenario's result with caution)")
+                quiet_at = time.time()
                 await controller.start(scenario_id)
                 await countdown(spec["settle_seconds"], "letting the incident develop")
 
+                # Ask about exactly the stretch since the system went *quiet* —
+                # not since the reset. Errors keep draining for a minute or two
+                # after a reset returns, and including that tail puts the
+                # previous scenario's failure inside this one's window, where it
+                # precedes the injected fault and makes the correct answer look
+                # like an effect that arrived before its cause.
+                if not args.duration_fixed:
+                    minutes = max(6, int((time.time() - quiet_at) / 60) + 1)
+                    duration = f"{minutes}m"
+                    print(f"    investigating the {duration} since the system went quiet")
+
             print("    investigating ...")
             score = await score_one(pipeline, scenario_id, spec,
-                                    args.system_id, args.environment, args.duration)
+                                    args.system_id, args.environment, duration,
+                                    store=store)
             scores.append(score)
 
             verdict = "ERROR" if score.error else (
                 f"recall {score.recall:.0%}, cause "
                 f"{'correct' if score.cause_correct else 'WRONG (' + score.actual_cause + ')'}"
             )
-            print(f"    {verdict}  [{score.duration_s:.0f}s]\n")
+            trace = f"  (python -m eval.explain {score.investigation_id})" if score.investigation_id else ""
+            print(f"    {verdict}  [{score.duration_s:.0f}s]{trace}\n")
 
             if not args.no_inject:
                 await controller.stop(scenario_id)

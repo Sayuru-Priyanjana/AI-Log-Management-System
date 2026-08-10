@@ -111,10 +111,28 @@ class LogTool:
 
         body = {
             "size": 0,
+            # OpenSearch stops counting at 10,000 by default, so without this the
+            # reported document count silently pins to 10000 and understates a
+            # busy window by any amount.
+            "track_total_hits": True,
             "query": {"bool": {"filter": self.base_filters(plan, window)}},
             "aggs": {
                 "levels": {"terms": {"field": "log.level", "size": 10}},
                 "unparsed": {"filter": {"term": {"parse.failed": True}}},
+                # Who calls whom, taken from the services' own dependency logs.
+                # This is what lets root-cause attribution follow the call graph
+                # instead of guessing from onset times.
+                "dependencies": {
+                    "filter": {"exists": {"field": "dependency.name"}},
+                    "aggs": {
+                        "caller": {
+                            "terms": {"field": "service.name", "size": 20},
+                            "aggs": {
+                                "calls": {"terms": {"field": "dependency.name", "size": 20}},
+                            },
+                        },
+                    },
+                },
                 "parsed": {
                     # Lines Fluent Bit could not parse are counted but excluded
                     # from pattern analysis; they are noise, not evidence.
@@ -137,6 +155,17 @@ class LogTool:
             },
         }
         return await self._client.search(self._index, body)
+
+    @staticmethod
+    def _dependency_edges(result: dict) -> dict[str, list[str]]:
+        edges: dict[str, list[str]] = {}
+        callers = (result.get("aggregations", {}).get("dependencies", {})
+                   .get("caller", {}).get("buckets", []))
+        for caller in callers:
+            names = [c["key"] for c in caller.get("calls", {}).get("buckets", [])]
+            if names:
+                edges[caller["key"]] = names
+        return edges
 
     @staticmethod
     def _collapse(result: dict, with_examples: bool) -> tuple[dict[str, LogPattern], dict[str, int], int, int]:
@@ -261,6 +290,7 @@ class LogTool:
             evidence.totals_by_level = totals
             evidence.total_documents = total
             evidence.unparsed_documents = unparsed
+            evidence.dependency_edges = self._dependency_edges(incident_result)
             evidence.histogram = await self.histogram(plan, incident, interval="60s")
             evidence.samples = await self.samples(
                 plan, incident, size=settings.max_log_patterns

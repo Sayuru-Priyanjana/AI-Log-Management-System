@@ -32,8 +32,17 @@ INFRASTRUCTURE_TYPES = (
 
 
 def _of(signals: list[Signal], *types: SignalType) -> list[Signal]:
+    """Signals of the given types that could plausibly belong to this incident.
+
+    Pre-existing conditions are excluded: they were already running before the
+    window opened, so they cannot be what started it. Leaving them in was worse
+    than useless — their onset is clamped to the window start, which made them
+    the earliest thing in the run and handed them the full causal-precedence
+    bonus. A load generator's readiness blip from three hours earlier was scoring
+    0.99 and outranking the actual outage.
+    """
     wanted = set(types)
-    return [s for s in signals if s.type in wanted]
+    return [s for s in signals if s.type in wanted and not s.pre_existing]
 
 
 def _earliest(signals: list[Signal]) -> datetime | None:
@@ -43,6 +52,24 @@ def _earliest(signals: list[Signal]) -> datetime | None:
 
 def _ids(signals: list[Signal]) -> list[str]:
     return [s.id for s in signals]
+
+
+def _deepest(signals: list[Signal], evidence: EvidenceBundle) -> Signal | None:
+    """The failing signal furthest down the observed call graph.
+
+    Failures propagate upward: when a service breaks, everything that calls it
+    reports errors too, so the whole chain lights up and the top of it is often
+    the loudest. Picking the first or the largest signal therefore names a
+    symptom. `depth_of` counts hops *beneath* a service, so the component
+    nothing else sits below is the minimum — and that is the candidate root.
+    """
+    if not signals:
+        return None
+    return min(
+        signals,
+        key=lambda s: (evidence.logs.depth_of(s.service),
+                       s.first_seen.timestamp() if s.first_seen else 0.0),
+    )
 
 
 class HypothesisEngine:
@@ -102,6 +129,7 @@ class HypothesisEngine:
                            "Treat the signal list itself as the finding."),
             ))
 
+        drafts = _merge_duplicates(drafts)
         earliest_onset = min((c.onset for c in drafts if c.onset), default=None)
         for candidate in drafts:
             bonus = min(0.08 * len(candidate.supporting_signals), 0.24)
@@ -141,21 +169,39 @@ class HypothesisEngine:
                 and s.first_seen and outage.first_seen
                 and s.first_seen >= outage.first_seen - timedelta(seconds=60)
             ]
+            # "It became unavailable" is true but shallow when something else
+            # already says *why* it went away. A crashloop, an OOM kill or a
+            # scheduling failure on the same service is the more specific
+            # account, and should not have to compete with a restatement of its
+            # own consequence.
+            explained_by = [
+                s for s in _of(signals, SignalType.CRASHLOOP, SignalType.OOM_KILL,
+                               SignalType.SCHEDULING_FAILURE, SignalType.IMAGE_PULL_FAILURE)
+                if s.service == outage.service
+            ]
+            rationale = (
+                f"{outage.description} "
+                + (f"{len(downstream)} downstream symptom(s) in other services began at or "
+                   f"after that point, which is the direction of causation you would expect."
+                   if downstream else
+                   "No downstream symptoms were observed, so the blast radius may be limited.")
+            )
+            if explained_by:
+                kinds = ", ".join(sorted({s.type.value for s in explained_by}))
+                rationale += (f" Note that {outage.service} is showing {kinds}, which explains "
+                              f"why it went away — that is the underlying failure, and this "
+                              f"describes its effect.")
+
             candidates.append(Candidate(
                 id="pending",
                 category=CauseCategory.DEPENDENCY_FAILURE,
                 hypothesis=f"{outage.service} became unavailable and its callers failed as a result.",
                 service=outage.service,
                 onset=outage.first_seen,
-                score=0.60,
+                score=0.60 if not explained_by else 0.30,
                 supporting_signals=_ids([outage] + downstream),
-                rationale=(
-                    f"{outage.description} "
-                    + (f"{len(downstream)} downstream symptom(s) in other services began at or "
-                       f"after that point, which is the direction of causation you would expect."
-                       if downstream else
-                       "No downstream symptoms were observed, so the blast radius may be limited.")
-                ),
+                contradicting_signals=_ids(explained_by),
+                rationale=rationale,
             ))
         return candidates
 
@@ -165,27 +211,77 @@ class HypothesisEngine:
         if not degraded and not latency:
             return []
 
-        # Latency that starts deepest in the call chain first is the classic
-        # shape of a slow dependency propagating upward.
         ordered = sorted([s for s in latency if s.first_seen], key=lambda s: s.first_seen)
         if not degraded and len(ordered) < 2:
             return []
 
-        root = degraded[0] if degraded else ordered[0]
+        # When latency degrades across a whole call chain, every service in it
+        # looks slow — the caller is slow *because* its dependency is. So the
+        # root is the deepest affected service in the observed call graph, not
+        # whichever one happened to cross the threshold first. Onset order is
+        # unreliable here: a caller can trip a p95 threshold before the
+        # dependency that is actually causing the delay.
+        candidates_for_root = degraded or latency
+        root = _deepest(candidates_for_root, evidence)
+        if root is None:
+            return []
+
         supporting = list({s.id for s in degraded + ordered})
+        chain_note = ""
+        if len(ordered) > 1:
+            by_depth = sorted(
+                {s.service for s in ordered if s.service},
+                key=lambda name: evidence.logs.depth_of(name),
+            )
+            chain_note = (f" Latency degraded across {len(ordered)} services "
+                          f"({', '.join(by_depth)}); {root.service} sits deepest in the "
+                          f"observed call graph, so the others are downstream of it.")
+
+        # If the root service is itself crashlooping, being OOM-killed or unable
+        # to schedule, that *explains* why calls to it are failing — "the
+        # dependency is degraded" is then a restatement of the symptom, and a
+        # weaker claim than the rule that names the actual failure. Without this
+        # a crashloop investigation ranked "payment-api slowed down" above
+        # "payment-api fails during startup and restarts in a loop".
+        explained_by = [
+            s for s in _of(signals, SignalType.CRASHLOOP, SignalType.OOM_KILL,
+                           SignalType.SCHEDULING_FAILURE, SignalType.IMAGE_PULL_FAILURE)
+            if s.service == root.service
+        ]
+
+        # DEPENDENCY_DEGRADED is a *failure ratio*, not a latency measurement.
+        # Describing a service that is returning errors as having "slowed down"
+        # is simply untrue, and it pushed the reader toward the wrong class of
+        # fix. Say which of the two is actually happening.
+        slow = bool(latency)
+        if slow:
+            hypothesis = f"{root.service} slowed down and the delay propagated to its callers."
+        else:
+            hypothesis = (f"{root.service} is returning errors to its callers, "
+                          f"which are failing as a result.")
+
+        base = 0.5 if slow else 0.35
+        rationale = f"{root.description}{chain_note}"
+        if explained_by:
+            base = 0.15
+            kinds = ", ".join(sorted({s.type.value for s in explained_by}))
+            rationale += (f" But {root.service} is itself showing {kinds}, which already "
+                          f"accounts for its callers failing — that is the more specific "
+                          f"explanation, and this one only restates its effect.")
+
         return [Candidate(
             id="pending",
             category=CauseCategory.DEPENDENCY_DEGRADATION,
-            hypothesis=f"{root.service} slowed down and the delay propagated to its callers.",
+            hypothesis=hypothesis,
             service=root.service,
             onset=root.first_seen,
-            score=0.45,
+            # A failure-ratio-only degradation overlaps heavily with an outright
+            # application fault in the dependency, and that rule describes it
+            # better; leave the stronger claim to it rather than competing.
+            score=base,
             supporting_signals=supporting,
-            rationale=(
-                f"{root.description} "
-                + (f"Latency degraded across {len(ordered)} services, earliest at "
-                   f"{ordered[0].service}." if len(ordered) > 1 else "")
-            ),
+            contradicting_signals=_ids(explained_by),
+            rationale=rationale,
         )]
 
     def _memory_exhaustion(self, signals, evidence, symptom_onset) -> list[Candidate]:
@@ -395,9 +491,24 @@ class HypothesisEngine:
         # Errors with an infrastructure explanation are not an application fault.
         # This candidate exists so that "the code is failing" stays on the table
         # when nothing else explains it — and drops away when something does.
-        anchor = errors[0]
-        new_patterns = [p for p in evidence.logs.patterns if p.is_new and p.level == "ERROR"]
-        detail = f" The dominant new error is: \"{new_patterns[0].example[:160]}\"" if new_patterns else ""
+        #
+        # The anchor is the deepest failing service, not the first signal in the
+        # list. When one service starts returning 500s, every service above it
+        # returns 500s too, and the entry point is usually the loudest — so
+        # taking the first error signal named the caller and blamed the wrong
+        # component while looking entirely plausible.
+        anchor = _deepest(errors, evidence) or errors[0]
+        upstream = [s for s in errors if s.service != anchor.service]
+        new_patterns = [p for p in evidence.logs.patterns
+                        if p.is_new and p.level == "ERROR"
+                        and (p.service == anchor.service or not p.service)]
+        detail = (f" The dominant new error there is: \"{new_patterns[0].example[:160]}\""
+                  if new_patterns else "")
+        chain_note = ""
+        if upstream:
+            chain_note = (f" {len(upstream)} service(s) above it in the call graph report errors "
+                          f"too ({', '.join(sorted({s.service for s in upstream if s.service}))}), "
+                          f"which is what happens downstream of a failing dependency.")
 
         return [Candidate(
             id="pending",
@@ -409,7 +520,7 @@ class HypothesisEngine:
             supporting_signals=_ids(errors),
             contradicting_signals=_ids(infrastructure),
             rationale=(
-                f"{anchor.description}{detail} "
+                f"{anchor.description}{detail}{chain_note} "
                 + ("No restart, resource or dependency signal accompanies it, so the failure "
                    "appears to originate in the service itself."
                    if not infrastructure else
@@ -419,12 +530,45 @@ class HypothesisEngine:
         )]
 
 
-def is_ambiguous(candidates: list[Candidate]) -> bool:
-    """True when the top two are too close to call.
+def _merge_duplicates(drafts: list[Candidate]) -> list[Candidate]:
+    """Collapses candidates that say the same thing about the same component.
 
-    Worth surfacing rather than hiding: a forced choice between two near-equal
-    explanations is exactly where a confident-sounding answer does the most damage.
+    Several signals can point at one failure — a dependency going down shows up
+    both as its scrape target dropping and as its callers' failure rate — and
+    each produced its own candidate. Two entries reading "payment-db became
+    unavailable" are not competing explanations; leaving them separate padded
+    the list and made every run look ambiguous.
+    """
+    merged: dict[tuple, Candidate] = {}
+    for draft in drafts:
+        key = (draft.category, draft.service)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = draft
+            continue
+        # Keep the stronger claim, but pool the evidence and the earliest onset.
+        winner, loser = ((existing, draft) if existing.score >= draft.score
+                         else (draft, existing))
+        winner.supporting_signals = list(
+            dict.fromkeys(winner.supporting_signals + loser.supporting_signals))
+        winner.contradicting_signals = list(
+            dict.fromkeys(winner.contradicting_signals + loser.contradicting_signals))
+        if loser.onset and (winner.onset is None or loser.onset < winner.onset):
+            winner.onset = loser.onset
+        merged[key] = winner
+    return list(merged.values())
+
+
+def is_ambiguous(candidates: list[Candidate]) -> bool:
+    """True when the top two are genuinely competing explanations.
+
+    Only counts when they point at different causes: two close scores that both
+    say "payment-db failed" do not leave a reader with a decision to make, and
+    flagging those was turning a real warning into background noise.
     """
     if len(candidates) < 2:
         return False
-    return (candidates[0].score - candidates[1].score) < settings.candidate_ambiguity_margin
+    top, second = candidates[0], candidates[1]
+    if (top.category, top.service) == (second.category, second.service):
+        return False
+    return (top.score - second.score) < settings.candidate_ambiguity_margin

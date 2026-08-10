@@ -216,6 +216,45 @@ that's why, and it's expected.
 
 ---
 
+## Diagnosing the pipeline itself
+
+When a result surprises you, the question is always *which stage* went wrong —
+retrieval, feature extraction, or the model. Three tools answer that.
+
+```bash
+cd agent && source venv/bin/activate
+
+python -m eval.probe state 30    # what is actually in the indices right now
+python -m eval.probe tools 30    # run every tool for a 30m window and print what it returns
+python -m eval.probe prom        # check each PromQL template returns series
+```
+
+`probe tools` is the most useful of the three: it prints the chosen windows, the
+log patterns, the discovered dependency graph, every metric series, and every
+signal that fired — the complete input to the reasoning stages. If the signal you
+expected isn't in that list, the problem is upstream of the model and no prompt
+change will fix it.
+
+```bash
+python -m eval.explain                  # full trace of the most recent investigation
+python -m eval.explain inv-073480decb58 # a specific one
+```
+
+Shows the windows, all signals with their magnitudes, how the rules ranked every
+candidate, which one the model picked, and every verification check. This is how
+you tell "the engine never detected it" from "the engine detected it and the
+model chose badly" — two problems with completely different fixes.
+
+```bash
+python -m eval.audit                    # look across all stored runs
+```
+
+Aggregates every persisted investigation and reports which verification codes
+keep recurring. A code appearing on most runs is a pipeline bug, not a run of bad
+luck — when this was first run it showed `incomplete_evidence` firing on 100% of
+runs and `effect_precedes_cause` on 82%, both of which turned out to be defects
+rather than genuine findings.
+
 ## Measuring whether a change actually helped
 
 Every investigation is persisted to OpenSearch (`logintel-investigations`), and
@@ -237,6 +276,30 @@ Check recall first. If the engine never detected the OOM kill, no amount of
 prompt tuning will make the final answer mention it — the fix is in
 `app/pipeline/signals.py`, not in a prompt. Only once recall is consistently
 high does cause accuracy start to say something meaningful about the model.
+
+### Why an evaluation run is slow, and why that matters
+
+Most of the wall-clock time is the harness waiting between scenarios, and it is
+not padding. Two things have to be true before the next incident is injected:
+
+- **The error rate is back to baseline** — but note that a healthy `shopdemo`
+  still sits at roughly 4 errors/min, because each service has a 0.5% base error
+  rate and it compounds across the three tiers.
+- **Every pod is Ready.** A low error rate alone is not evidence of health: a
+  crashlooping service serves almost no traffic and therefore produces almost no
+  errors, so the rate check passes while the system is still broken.
+
+Both must then hold *continuously* for `--quiet-hold` seconds (default 180).
+This is the part that cannot be shortened without invalidating the results. The
+pipeline places its baseline window immediately *before* the incident — which is
+to say, before the moment the system went quiet — so injecting one minute after a
+reset puts the previous scenario inside this scenario's baseline. Every
+comparison the signal engine makes is against that baseline.
+
+The failure mode is not subtle once you know to look for it, but it is invisible
+in the score: the run reports a confident wrong answer, and the answer is a
+perfectly reasonable reading of contaminated evidence. If a scenario fails,
+check its windows in `eval.explain` before assuming the agent is at fault.
 
 ---
 

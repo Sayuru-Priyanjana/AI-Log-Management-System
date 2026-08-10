@@ -1,0 +1,31 @@
+{
+  "generated_at": "2026-08-09T22:30:22.742420+00:00",
+  "model": "qwen2.5-coder",
+  "num_ctx": 16384,
+  "scores": [
+    {
+      "scenario": "traffic-surge",
+      "expected_cause": "load_increase",
+      "expected_signals": [
+        "TRAFFIC_SURGE",
+        "LATENCY_DEGRADATION"
+      ],
+      "detected_signals": [],
+      "actual_cause": "no_incident",
+      "actual_service": null,
+      "expected_service": "checkout-api",
+      "confidence": 0.6,
+      "analyst": "llm",
+      "agreed_with_engine": true,
+      "duration_s": 26.885886450996622,
+      "error": null,
+      "investigation_id": "inv-da2d38260f78",
+      "recall": 0.0,
+      "cause_correct": false,
+      "missing_signals": [
+        "TRAFFIC_SURGE",
+        "LATENCY_DEGRADATION"
+      ]
+    }
+  ]
+}

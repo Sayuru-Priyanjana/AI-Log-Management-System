@@ -90,6 +90,12 @@ class Signal(BaseModel):
     first_seen: datetime | None = None
     last_seen: datetime | None = None
 
+    # The condition was already running before the investigated window began, so
+    # `first_seen` has been clamped to the window start. It cannot be what
+    # triggered this incident, and must not earn causal precedence for appearing
+    # at the very beginning of the range.
+    pre_existing: bool = False
+
     magnitude: Magnitude | None = None
     evidence_ids: list[str] = Field(default_factory=list)
     detail: dict = Field(default_factory=dict)

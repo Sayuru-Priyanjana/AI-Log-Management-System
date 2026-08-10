@@ -87,7 +87,8 @@ normal level, and carves out:
 - an **incident window** starting shortly before the onset, and
 - a **baseline window** from a quiet stretch before it.
 
-Three details make it work:
+Several details make it work, and each was added because its absence produced a
+specific wrong answer against the live testbed:
 
 - **Median and MAD, not mean and standard deviation.** Error counts are spiky; a
   single burst inflates a standard deviation enough to hide the thing you are
@@ -95,12 +96,33 @@ Three details make it work:
 - **The baseline is estimated from the quiet 60% of the range.** When an incident
   fills half the window it drags the median up with it, and a threshold derived
   from that median sits above the very spike it should catch.
-- **Onsets must be sustained.** One stray error in a silent window is not an
-  incident.
+- **The spread is floored at `sqrt(median)`.** These are event counts, whose
+  natural variation is roughly the square root of the mean even when nothing is
+  wrong. MAD alone badly understates that: a service sitting at 3 errors/min has
+  a MAD near 1, putting the threshold at 7 — which routine Poisson noise crosses
+  for four minutes at a stretch. Without this floor the pipeline declared a
+  96-minute incident on a perfectly healthy system.
+- **Onsets must be sustained**, and must **separate two regimes**: the stretch
+  after a candidate onset has to be `onset_min_elevation` times busier than the
+  stretch before it. A crossing that fails this is skipped and the scan
+  *continues* — rejecting a noisy blip must not mean abandoning the search, or a
+  real failure later in the range is never even considered.
+- **When the range ends elevated, the search runs backwards** to find where the
+  episode still in progress began. Scanning forward returns the oldest departure
+  anywhere in range, which after an earlier incident has resolved is the wrong
+  one — and it drags the window across both, so every signal ends up measured
+  against a baseline containing the previous failure. The backward walk tolerates
+  dips (incidents fluctuate) with a continuation bar that scales to the episode's
+  own magnitude, because a fixed bar chains straight back through ordinary noise.
+- **The incident window is capped at twice the requested range.** The search
+  deliberately looks back several times further than asked, but the answer has to
+  stay close to the question: a 15-minute question should not return a 60-minute
+  window anchored on something that resolved an hour ago.
 
-It also distinguishes three outcomes that are genuinely different and must not be
+It also distinguishes outcomes that are genuinely different and must not be
 conflated: an onset was found; errors were *never quiet* in the whole search
-range (so the incident predates everything visible); or nothing departed at all.
+range (so the incident predates everything visible); the departure began further
+back than the period asked about; or nothing departed at all.
 
 Without a baseline, "is this abnormal?" is unanswerable — which is why the
 verifier caps confidence whenever one could not be established.
@@ -112,10 +134,17 @@ Aggregation-first. Nothing bulk-fetches raw documents.
 | Tool | Returns |
 |---|---|
 | `LogTool.histogram` | per-minute counts by level |
-| `LogTool.collect` | message **patterns** with counts, onsets and baseline counts |
+| `LogTool.collect` | message **patterns** with counts, onsets and baseline counts, plus the **call graph** |
 | `LogTool.samples` | a few raw error lines from the *start* of the incident |
 | `EventTool` | events preserving `reason`, `type`, `count`, `first_timestamp` |
 | `MetricTool` | 16 PromQL templates, summarised for both windows |
+
+**The call graph is discovered, not configured.** Services log the dependency
+they called (`dependency.name`), so one aggregation yields who calls whom —
+`checkout-api → payment-api → payment-db`. That is what lets root-cause
+attribution follow the direction of the arrows instead of guessing from onset
+times, and onset times genuinely are a bad guide here: when a dependency slows
+down, a *caller* frequently trips its latency threshold first.
 
 Three decisions worth stating:
 
@@ -157,6 +186,13 @@ Two other properties matter downstream:
   field means anything outside the mapping table becomes invisible, and in
   practice the unmapped reasons (`Unhealthy`, `FailedMount`) are the interesting
   ones.
+- **Pre-existing conditions are marked as such.** A condition already running
+  when the window opened has its onset clamped to the window start, and carries
+  `pre_existing=True`. Both halves matter: without the clamp a probe failure from
+  three hours earlier outranks everything by being oldest, and without the flag
+  it outranks everything by then sitting exactly at the front of the range. It
+  cannot have triggered the incident either way, so the hypothesis engine
+  excludes it from causal reasoning entirely.
 
 ### [5] Hypothesis Engine — `app/pipeline/hypotheses.py`
 
@@ -166,7 +202,19 @@ contradicting signals. Ranking is causal:
 - a candidate whose onset precedes the first symptom gains score;
 - one that starts after the symptoms loses it, because an explanation that
   begins after the thing it explains is not an explanation;
-- the earliest-onset candidate gains a further bonus.
+- the earliest-onset candidate gains a further bonus;
+- candidates that say the same thing about the same component are merged, so two
+  signals pointing at one failure do not look like two competing explanations.
+
+**Attribution follows the call graph, not onset order.** Errors and latency both
+propagate *upward*: when a component fails, everything that calls it fails too,
+and the entry point is usually the loudest and often the first to cross a
+threshold. Rules that would otherwise pick the first or largest signal instead
+pick the **deepest** service in the discovered call graph. Two live failures made
+the case for this: a `db-latency` injection where `checkout-api` tripped its
+latency threshold before the database causing the delay, and a `payment-5xx`
+injection where the engine confidently blamed `checkout-api` for 500s that
+originated one tier below it.
 
 This is where "the database went down, and the two services above it reporting
 errors are symptoms" gets decided — in Python, reproducibly.

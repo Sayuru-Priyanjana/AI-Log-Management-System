@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from app.models.evidence import EvidenceBundle, EventEvidence, LogEvidence, MetricEvidence
 from app.models.signals import SignalType
 from app.pipeline.signals import ServiceResolver, SignalEngine
-from tests.conftest import event, pattern, series
+from tests.conftest import at, event, pattern, series
 
 SERVICES = ["checkout-api", "payment-api", "payment-db", "loadgen"]
 
@@ -89,6 +91,107 @@ def test_backoff_is_recognised_as_a_crashloop(plan, windows):
         events=[event("BackOff", pod="payment-api-abc-12345", count=7)]
     ))
     assert any(s.type is SignalType.CRASHLOOP for s in signals)
+
+
+def test_a_pre_existing_condition_does_not_win_causal_precedence(plan, windows):
+    """Regression: a readiness blip that started hours before the window was
+    reported with its true onset, which made it the earliest signal in the run
+    and therefore the top root-cause candidate — for an unrelated pre-existing
+    state. Its onset is clamped to the window so it ranks alongside everything
+    else, with the real first-seen time preserved in the detail."""
+    # windows.incident starts at t+600; this event first fired at t+0.
+    signals = engine().detect(plan, windows, bundle(
+        events=[event("Unhealthy", pod="loadgen-abc-12345", count=7, first=0)]
+    ))
+    readiness = [s for s in signals if s.type is SignalType.READINESS_FAILURE]
+    assert readiness
+    assert readiness[0].first_seen == windows.incident.start
+    assert readiness[0].detail["pre_existing"] is True
+    assert "already present before the window" in readiness[0].description
+    # and it is de-emphasised rather than treated as a fresh critical failure
+    assert readiness[0].severity.value == "medium"
+
+
+def test_a_condition_starting_inside_the_window_keeps_its_true_onset(plan, windows):
+    signals = engine().detect(plan, windows, bundle(
+        events=[event("Unhealthy", pod="payment-api-abc-12345", count=3, first=700)]
+    ))
+    readiness = [s for s in signals if s.type is SignalType.READINESS_FAILURE]
+    assert readiness
+    assert readiness[0].first_seen == at(700)
+    assert readiness[0].detail["pre_existing"] is False
+
+
+def test_a_burst_in_part_of_the_window_is_not_averaged_away(plan, windows):
+    """Regression from a live payment-5xx run: a 60% failure rate was injected
+    partway through the window, and comparing window *averages* diluted it under
+    the 10% threshold, so HTTP_5XX_BURST never fired.
+
+    The window starts before the onset by design, so averaging is structurally
+    wrong here. The underlying series are already rate[2m] values, so a peak is
+    a two-minute sustained condition, not a stray sample.
+    """
+    metrics = [
+        # quiet for most of the window, then 60% of requests failing
+        series("http_error_rate", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.8, 1.8],
+               labels={"service": "payment-api"}, baseline=[0.0] * 8, unit="req/s"),
+        series("http_request_rate", [3.0] * 8, labels={"service": "payment-api"},
+               baseline=[3.0] * 8, unit="req/s"),
+    ]
+    signals = engine().detect(plan, windows, bundle(metrics=metrics))
+    burst = [s for s in signals if s.type is SignalType.HTTP_5XX_BURST]
+    assert burst, "a 60% failure rate must be detected even if it starts mid-window"
+    assert burst[0].magnitude.incident == pytest.approx(0.6, abs=0.01)
+
+
+def test_a_healthy_service_still_produces_no_5xx_burst(plan, windows):
+    metrics = [
+        series("http_error_rate", [0.01, 0.0, 0.02, 0.01], labels={"service": "payment-api"},
+               baseline=[0.01] * 4, unit="req/s"),
+        series("http_request_rate", [3.0] * 4, labels={"service": "payment-api"},
+               baseline=[3.0] * 4, unit="req/s"),
+    ]
+    signals = engine().detect(plan, windows, bundle(metrics=metrics))
+    assert not any(s.type is SignalType.HTTP_5XX_BURST for s in signals)
+
+
+def test_a_host_wide_latency_stall_does_not_fire_on_every_service(plan, windows):
+    """Regression: the p95 series is bimodal on a shared host — typically low,
+    with brief stalls that hit every service at the same instant. Comparing the
+    worst tail made LATENCY_DEGRADATION fire for all three services while
+    nothing was wrong; comparing the typical tail does not."""
+    metrics = []
+    for service in ("checkout-api", "payment-api", "payment-db"):
+        # mostly fast, two simultaneous stalls
+        values = [0.05] * 18 + [2.4, 2.4]
+        baseline = [0.05] * 18 + [2.4, 2.4]
+        metrics.append(series("http_latency_p95", values, labels={"service": service},
+                              baseline=baseline, unit="seconds"))
+    signals = engine().detect(plan, windows, bundle(metrics=metrics))
+    assert not any(s.type is SignalType.LATENCY_DEGRADATION for s in signals)
+
+
+def test_a_genuine_latency_regression_still_fires(plan, windows):
+    metrics = [series("http_latency_p95", [1.5, 1.6, 1.55, 1.7, 1.6],
+                      labels={"service": "payment-db"},
+                      baseline=[0.02, 0.03, 0.02, 0.02, 0.03], unit="seconds")]
+    signals = engine().detect(plan, windows, bundle(metrics=metrics))
+    latency = [s for s in signals if s.type is SignalType.LATENCY_DEGRADATION]
+    assert latency and latency[0].service == "payment-db"
+
+
+def test_a_rollout_event_is_attributed_to_its_deployment(plan, windows):
+    """Deployment and ReplicaSet events carry no pod, and the collector cannot
+    resolve their labels, so they arrive with service=None. The object name is
+    the service name and was being discarded."""
+    rollout = event("ScalingReplicaSet", pod=None, count=1, severity="info")
+    rollout.pod = None
+    rollout.service = None
+    rollout.involved_kind = "ReplicaSet"
+    rollout.involved_name = "payment-api-9c996546"
+    signals = engine().detect(plan, windows, bundle(events=[rollout]))
+    changes = [s for s in signals if s.type is SignalType.DEPLOYMENT_CHANGE]
+    assert changes and changes[0].service == "payment-api"
 
 
 def test_event_onset_uses_first_timestamp_not_last(plan, windows):

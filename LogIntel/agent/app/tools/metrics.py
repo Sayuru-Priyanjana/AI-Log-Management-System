@@ -19,6 +19,11 @@ class MetricSpec:
     unit: str
     expr: str          # {ns} is substituted with a namespace selector
     identity: tuple[str, ...] = ("pod", "container")
+    # True for queries that select a specific condition (e.g. reason="OOMKilled").
+    # Prometheus emits no series at all when the condition has never held, which
+    # means "it did not happen" — not "the data is missing". Counting that as an
+    # evidence gap would cap confidence on every healthy run.
+    absence_means_false: bool = False
 
 
 # Every expression is a fixed template. Nothing here is ever assembled from model
@@ -52,7 +57,8 @@ SPECS: tuple[MetricSpec, ...] = (
                'max by (pod) (kube_pod_status_phase{{{ns}, phase="Pending"}})', ("pod",)),
     MetricSpec("pod_oom_terminated", "bool",
                'max by (pod, container) '
-               '(kube_pod_container_status_last_terminated_reason{{{ns}, reason="OOMKilled"}})'),
+               '(kube_pod_container_status_last_terminated_reason{{{ns}, reason="OOMKilled"}})',
+               absence_means_false=True),
     MetricSpec("deployment_generation", "count",
                'max by (deployment) (kube_deployment_metadata_generation{{{ns}}})', ("deployment",)),
 
@@ -82,11 +88,15 @@ def summarize(values: list[float]) -> MetricStats:
         return MetricStats()
     ordered = sorted(values)
     index = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
+    middle = len(ordered) // 2
+    median = (ordered[middle] if len(ordered) % 2
+              else (ordered[middle - 1] + ordered[middle]) / 2)
     return MetricStats(
         count=len(values),
         minimum=ordered[0],
         maximum=ordered[-1],
         average=sum(values) / len(values),
+        median=median,
         p95=ordered[index],
         first=values[0],
         last=values[-1],
@@ -191,7 +201,7 @@ class MetricTool:
             evidence.queries[spec.metric] = expression
             if error:
                 evidence.unavailable[spec.metric] = error
-            elif not series:
+            elif not series and not spec.absence_means_false:
                 evidence.unavailable[spec.metric] = "no series returned"
             else:
                 evidence.series.extend(series)

@@ -74,6 +74,26 @@ class LogEvidence(BaseModel):
     total_documents: int = 0
     baseline_documents: int = 0
     unparsed_documents: int = 0
+    # caller -> the services it calls, observed from the logs themselves
+    dependency_edges: dict[str, list[str]] = Field(default_factory=dict)
+
+    def depth_of(self, service: str | None, _seen: frozenset[str] | None = None) -> int:
+        """How many hops of dependencies sit beneath a service.
+
+        A leaf (a datastore that calls nothing) is 0; the service at the top of
+        the chain is highest. When several components are failing at once, the
+        deepest one is the candidate root — the ones above it are downstream of
+        whatever is wrong there.
+        """
+        if not service or service not in self.dependency_edges:
+            return 0
+        seen = _seen or frozenset()
+        if service in seen:
+            return 0        # cyclic graphs are possible; do not recurse forever
+        below = self.dependency_edges.get(service, [])
+        if not below:
+            return 0
+        return 1 + max(self.depth_of(child, seen | {service}) for child in below)
 
     def error_rate_per_minute(self, window: TimeWindow) -> float:
         errors = sum(v for k, v in self.totals_by_level.items() if k in ("ERROR", "FATAL", "CRITICAL"))
@@ -144,6 +164,11 @@ class MetricStats(BaseModel):
     minimum: float | None = None
     maximum: float | None = None
     average: float | None = None
+    # The typical value over the window. For a series that is itself a
+    # percentile, this is the statistic to compare: the mean and the max are
+    # both dominated by brief spikes, and on a shared host those spikes hit
+    # every service at once and say nothing about any one of them.
+    median: float | None = None
     p95: float | None = None
     first: float | None = None
     last: float | None = None

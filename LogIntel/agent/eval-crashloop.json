@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-08-09T22:18:26.881866+00:00",
+  "model": "qwen2.5-coder",
+  "num_ctx": 16384,
+  "scores": [
+    {
+      "scenario": "crashloop",
+      "expected_cause": "startup_failure",
+      "expected_signals": [
+        "CRASHLOOP",
+        "POD_RESTART",
+        "DEPENDENCY_UNAVAILABLE"
+      ],
+      "detected_signals": [
+        "CRASHLOOP",
+        "DEPENDENCY_DEGRADED",
+        "DEPENDENCY_UNAVAILABLE",
+        "DEPLOYMENT_CHANGE",
+        "ERROR_RATE_SPIKE",
+        "HTTP_5XX_BURST",
+        "READINESS_FAILURE"
+      ],
+      "actual_cause": "startup_failure",
+      "actual_service": "payment-api",
+      "expected_service": "payment-api",
+      "confidence": 0.35,
+      "analyst": "llm",
+      "agreed_with_engine": true,
+      "duration_s": 37.180066018001526,
+      "error": null,
+      "investigation_id": "inv-fc3c7c610c8e",
+      "recall": 1.0,
+      "cause_correct": true,
+      "missing_signals": []
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 from datetime import timedelta
 
@@ -35,8 +36,10 @@ def detect_onset(
     *,
     mad_multiplier: float | None = None,
     min_absolute: int | None = None,
+    min_elevation: float | None = None,
     sustain_buckets: int = 3,
     sustain_required: int = 2,
+    quiet_gap: int = 4,
 ) -> OnsetResult:
     """Finds where the error rate departs from its own normal level.
 
@@ -44,12 +47,26 @@ def detect_onset(
     spiky by nature, and a single burst inflates a standard deviation enough to
     hide the very thing being looked for.
 
-    A candidate onset must also be *sustained* — at least `sustain_required` of
-    the next `sustain_buckets` buckets stay elevated. Without that, one stray
-    error in an otherwise quiet window becomes an "incident".
+    A crossing has to clear three bars to be accepted:
+
+    1. exceed the threshold, which is floored at sqrt(median) so ordinary count
+       noise does not qualify;
+    2. be *sustained* — at least `sustain_required` of the next `sustain_buckets`
+       stay elevated, so one stray error is not an incident;
+    3. actually separate two regimes — the stretch after it must be
+       `min_elevation` times busier than the stretch before it.
+
+    A crossing that fails the last test is skipped and the scan continues, because
+    a noisy blip early in the range must not hide a real failure later in it.
+
+    When the range ends elevated the search runs *backwards* instead, to find
+    where the episode still in progress began. Scanning forward would return the
+    oldest departure anywhere in range — which, after an earlier incident has
+    come and gone, is the wrong one.
     """
     mad_multiplier = settings.onset_mad_multiplier if mad_multiplier is None else mad_multiplier
     min_absolute = settings.onset_min_absolute if min_absolute is None else min_absolute
+    min_elevation = settings.onset_min_elevation if min_elevation is None else min_elevation
 
     counts = [float(bucket.errors) for bucket in buckets]
     if not counts:
@@ -66,11 +83,18 @@ def detect_onset(
     median = statistics.median(quiet)
     mad = statistics.median([abs(value - median) for value in quiet])
 
+    # These are event counts, so their natural spread is roughly sqrt(mean) even
+    # when nothing is wrong. MAD alone badly understates that: a service sitting
+    # at 3 errors/min has a MAD near 1, which puts the threshold at 7 — a level
+    # ordinary Poisson noise crosses for several minutes at a time. Taking
+    # sqrt(median) as a floor keeps routine variance below the line.
+    spread = max(mad, math.sqrt(max(median, 1.0)))
+
     # Three floors, whichever is highest:
-    #  - median + k*MAD catches a departure from a noisy-but-steady baseline
-    #  - 2x median catches growth where MAD happens to be tiny
+    #  - median + k*spread catches a departure from a noisy-but-steady baseline
+    #  - 2x median catches growth where the spread happens to be tiny
     #  - min_absolute stops "1 error where there were 0" counting as an incident
-    threshold = max(median + mad_multiplier * mad, 2.0 * median, float(min_absolute))
+    threshold = max(median + mad_multiplier * spread, 2.0 * median, float(min_absolute))
 
     # Never quiet at any point in the range. There is no change point to find
     # here because the change happened before anything we can see — which is a
@@ -80,6 +104,45 @@ def detect_onset(
                            threshold=threshold, median=median, mad=mad,
                            reason="never_quiet_in_range")
 
+    # If the range *ends* elevated, the interesting episode is the one still
+    # happening. Walk back to where it began rather than scanning forward and
+    # locking on to some older, already-resolved incident — "what is wrong now"
+    # should not return the start of something that finished half an hour ago,
+    # nor lump two separate incidents into one window.
+    tail = counts[-min(3, len(counts)):]
+    if tail and statistics.mean(tail) >= threshold:
+        start = len(counts) - 1
+        gap = 0
+        peak = max(tail)
+        for index in range(len(counts) - 1, -1, -1):
+            # The bar to stay "inside the episode" scales with how big the
+            # episode is. A fixed bar fails badly here: this baseline's noise
+            # peaks reach 11, so anything near the detection threshold chains
+            # straight back through ordinary variance and swallows the whole
+            # range. A fifth of the episode's own peak separates the two cleanly.
+            peak = max(peak, counts[index])
+            inside = max(threshold, peak * 0.2)
+            if counts[index] >= inside:
+                start, gap = index, 0
+            else:
+                gap += 1
+                if gap >= quiet_gap:
+                    break
+
+        # Same regime test the forward scan applies: the episode has to be
+        # materially busier than what came before it.
+        elevation = _elevation(counts, start)
+        if elevation is None or elevation >= min_elevation:
+            return OnsetResult(
+                index=start,
+                detected=True,
+                before_window=(start == 0),
+                threshold=threshold, median=median, mad=mad,
+                reason=("elevated_at_first_bucket" if start == 0
+                        else "start of the episode still in progress"),
+            )
+
+    rejected: list[str] = []
     for index, value in enumerate(counts):
         if value < threshold:
             continue
@@ -87,18 +150,48 @@ def detect_onset(
         sustained = sum(1 for v in follow if v >= threshold)
         # Near the end of the range there is no room left to sustain; accept it
         # rather than miss an incident that just started.
-        if len(follow) < sustain_required or sustained >= sustain_required:
-            return OnsetResult(
-                index=index,
-                detected=True,
-                before_window=(index == 0),
-                threshold=threshold, median=median, mad=mad,
-                reason="elevated_at_first_bucket" if index == 0 else "sustained_departure",
-            )
+        if not (len(follow) < sustain_required or sustained >= sustain_required):
+            continue
 
+        elevation = _elevation(counts, index)
+        if elevation is not None and elevation < min_elevation:
+            # A blip, not a change of regime. Keep scanning — an early noisy
+            # crossing must not mask a genuine failure later in the range.
+            rejected.append(f"bucket {index} ({elevation:.1f}x)")
+            continue
+
+        return OnsetResult(
+            index=index,
+            detected=True,
+            before_window=(index == 0),
+            threshold=threshold, median=median, mad=mad,
+            reason="elevated_at_first_bucket" if index == 0 else "sustained_departure",
+        )
+
+    reason = "no_sustained_departure"
+    if rejected:
+        reason = (f"no sustained departure; {len(rejected)} crossing(s) were only brief "
+                  f"blips ({', '.join(rejected[:3])})")
     return OnsetResult(index=None, detected=False, before_window=False,
-                       threshold=threshold, median=median, mad=mad,
-                       reason="no_sustained_departure")
+                       threshold=threshold, median=median, mad=mad, reason=reason)
+
+
+def _elevation(counts: list[float], index: int, min_side: int = 5) -> float | None:
+    """How many times busier the post-onset stretch is than the pre-onset one.
+
+    Returns None when either side is too short to compare — a judgement made on
+    two buckets is not worth acting on, and refusing to judge is safer than
+    rejecting a real incident that only just started.
+    """
+    before, after = counts[:index], counts[index:]
+    if len(before) < min_side or len(after) < min_side:
+        return None
+    before_rate = statistics.mean(before)
+    after_rate = statistics.mean(after)
+    if before_rate <= 0:
+        # Nothing at all beforehand: any sustained activity is a genuine change.
+        return float("inf") if after_rate > 0 else None
+    return after_rate / before_rate
 
 
 class WindowResolver:
@@ -158,7 +251,19 @@ class WindowResolver:
             )
             return windows, buckets
 
-        incident_start = max(onset - pre_roll, search.start)
+        # The search deliberately looks back several times further than asked, to
+        # catch an onset just outside the window and to find somewhere quiet for
+        # a baseline. The *answer*, though, stays inside the question: the window
+        # analysed never starts more than the pre-roll before the period asked
+        # about. Allowing more than that meant a 7-minute question could analyse
+        # 14 minutes and pull in a separate, earlier failure — whose symptoms
+        # then appeared to precede the real cause, and the verifier duly
+        # (and correctly, given what it was shown) flagged the answer as
+        # effect-before-cause. The onset itself is still reported truthfully, and
+        # flagged as beginning outside the range.
+        earliest_allowed = requested.start - pre_roll
+        clamped = onset - pre_roll < earliest_allowed
+        incident_start = max(onset - pre_roll, earliest_allowed, search.start)
         incident = TimeWindow(start=incident_start, end=requested.end, label="incident")
 
         baseline_end = incident_start
@@ -170,12 +275,18 @@ class WindowResolver:
             else None
         )
 
+        method = (f"error rate crossed {onset_result.threshold:.1f}/min "
+                  f"(median {onset_result.median:.1f}, MAD {onset_result.mad:.1f}) "
+                  f"and stayed there")
+        if clamped:
+            method += (f"; the departure began at {onset:%H:%M:%S}Z, before the period asked "
+                       f"about, so the window analysed starts at the edge of that period and "
+                       f"the earlier part of the incident was not examined")
+
         windows = InvestigationWindows(
             requested=requested, incident=incident, baseline=baseline,
-            onset=onset, onset_detected=True, onset_before_window=False,
-            method=(f"error rate crossed {onset_result.threshold:.1f}/min "
-                    f"(median {onset_result.median:.1f}, MAD {onset_result.mad:.1f}) "
-                    f"and stayed there"),
+            onset=onset, onset_detected=True, onset_before_window=clamped,
+            method=method,
         )
         logger.info(
             "Windows resolved: onset=%s incident=%s baseline=%s",

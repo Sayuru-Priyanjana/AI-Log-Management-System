@@ -80,6 +80,31 @@ def _pair_by_identity(numerators: list[MetricSeries],
     return pairs
 
 
+def _peak_ratio(numerator: MetricSeries, denominator: MetricSeries) -> tuple[float, datetime | None]:
+    """The highest pointwise ratio in the window, and when it occurred.
+
+    Averaging the two series and dividing understates a burst that occupies only
+    part of the window — and it usually does, because the window deliberately
+    starts before the onset. A 60%-of-requests failure rate measured across a
+    window that is half pre-incident averages out to under the threshold and
+    vanishes.
+
+    Taking the peak is safe here specifically because these series are already
+    `rate[2m]` values: every point is an average over two minutes, so a "peak"
+    is a sustained condition rather than a single stray sample.
+    """
+    denominators = {point.timestamp: point.value for point in denominator.points}
+    best, when = 0.0, None
+    for point in numerator.points:
+        total = denominators.get(point.timestamp)
+        if not total:
+            continue
+        ratio = point.value / total
+        if ratio > best:
+            best, when = ratio, point.timestamp
+    return best, when
+
+
 class SignalEngine:
     def __init__(self, known_services: list[str] | None = None) -> None:
         self.resolver = ServiceResolver(known_services or [])
@@ -102,7 +127,7 @@ class SignalEngine:
         signals += self._from_dependencies(evidence)
         signals += self._from_resources(evidence)
         signals += self._from_lifecycle(evidence)
-        signals += self._from_events(evidence)
+        signals += self._from_events(evidence, windows)
 
         # Causal ordering. Signals without a known onset sort last: they cannot
         # be shown to precede anything, so they must not outrank something that can.
@@ -202,7 +227,7 @@ class SignalEngine:
         ):
             if not total.incident.average:
                 continue
-            ratio = (errors.incident.average or 0.0) / total.incident.average
+            ratio, peaked_at = _peak_ratio(errors, total)
             if ratio < settings.http_5xx_ratio_threshold:
                 continue
             service = errors.labels.get("service")
@@ -215,36 +240,42 @@ class SignalEngine:
                 severity=Severity.HIGH,
                 service=service,
                 first_seen=_first_crossing(errors, lambda v: v > 0),
-                magnitude=Magnitude(baseline=baseline_ratio, incident=ratio, unit="of requests",
+                magnitude=Magnitude(baseline=baseline_ratio, incident=ratio,
+                                    unit="of requests at peak",
                                     ratio=(ratio / baseline_ratio) if baseline_ratio else None),
-                description=(f"{ratio:.0%} of {service} requests returned 5xx "
-                             f"({errors.incident.average:.2f}/s of {total.incident.average:.2f}/s)."),
+                description=(f"{ratio:.0%} of {service} requests returned 5xx at the worst point"
+                             + (f" ({peaked_at:%H:%M:%S}Z)." if peaked_at else ".")),
                 evidence_ids=[errors.id, total.id],
             ))
 
         # -- latency -------------------------------------------------------
+        # Compared on the median of the p95 series — the *typical* tail — rather
+        # than its peak. A shared host stalls occasionally and drives every
+        # service's peak p95 to the same value at the same moment; that is a
+        # property of the host, not evidence about any service. The median moves
+        # only when latency is genuinely, persistently worse.
         for series in metrics.of("http_latency_p95"):
-            incident_p95 = series.incident.p95 or series.incident.average
-            if incident_p95 is None or incident_p95 < settings.latency_min_seconds:
+            incident_latency = series.incident.median or series.incident.average
+            if incident_latency is None or incident_latency < settings.latency_min_seconds:
                 continue
-            baseline_p95 = series.baseline.p95 if series.baseline else None
-            ratio = (incident_p95 / baseline_p95) if baseline_p95 else None
+            baseline_latency = (series.baseline.median or series.baseline.average) if series.baseline else None
+            ratio = (incident_latency / baseline_latency) if baseline_latency else None
             if ratio is not None and ratio < settings.latency_degradation_multiplier:
                 continue
-            if ratio is None and incident_p95 < settings.latency_min_seconds * 4:
+            if ratio is None and incident_latency < settings.latency_min_seconds * 4:
                 continue
             service = series.labels.get("service")
+            threshold = ((baseline_latency or 0) * settings.latency_degradation_multiplier
+                         if baseline_latency else settings.latency_min_seconds)
             signals.append(Signal(
                 id=self._signal_id(SignalType.LATENCY_DEGRADATION, service),
                 type=SignalType.LATENCY_DEGRADATION,
                 severity=Severity.MEDIUM,
                 service=service,
-                first_seen=_first_crossing(
-                    series, lambda v: v >= (baseline_p95 or 0) * settings.latency_degradation_multiplier
-                    if baseline_p95 else v >= settings.latency_min_seconds),
-                magnitude=Magnitude(baseline=baseline_p95, incident=incident_p95,
-                                    unit="s p95", ratio=ratio),
-                description=(f"{service} p95 latency is {incident_p95:.2f}s"
+                first_seen=_first_crossing(series, lambda v, t=threshold: v >= t),
+                magnitude=Magnitude(baseline=baseline_latency, incident=incident_latency,
+                                    unit="s p95 (typical)", ratio=ratio),
+                description=(f"{service} p95 latency is typically {incident_latency:.2f}s"
                              + (f", {ratio:.1f}x the baseline." if ratio else ".")),
                 evidence_ids=[series.id],
             ))
@@ -294,7 +325,10 @@ class SignalEngine:
         ):
             if not total.incident.average:
                 continue
-            ratio = (failures.incident.average or 0.0) / total.incident.average
+            # Peak rather than window average, for the same reason as the 5xx
+            # ratio: the window starts before the onset by design, so averaging
+            # dilutes a real outage towards nothing.
+            ratio, _ = _peak_ratio(failures, total)
             if ratio < 0.1:
                 continue
             caller = failures.labels.get("service")
@@ -513,7 +547,8 @@ class SignalEngine:
         return signals
 
     # --------------------------------------------------------------- events
-    def _from_events(self, evidence: EvidenceBundle) -> list[Signal]:
+    def _from_events(self, evidence: EvidenceBundle,
+                     windows: InvestigationWindows) -> list[Signal]:
         """Event-derived signals, keyed on `reason`.
 
         Reason is the stable, meaningful field. Deriving these from a normalised
@@ -521,6 +556,7 @@ class SignalEngine:
         and in practice the unmapped reasons are the interesting ones.
         """
         signals: list[Signal] = []
+        window_start = windows.incident.start
         rules: tuple[tuple[tuple[str, ...], SignalType, Severity, str], ...] = (
             (("OOMKilling", "OOMKilled", "SystemOOM"), SignalType.OOM_KILL,
              Severity.CRITICAL, "container was OOM-killed"),
@@ -545,22 +581,48 @@ class SignalEngine:
                 if signal_type is SignalType.IMAGE_PULL_FAILURE and "image" not in event.message.lower():
                     continue
                 baseline_count = evidence.events.baseline_reasons.get(event.reason, 0)
+
+                # first_timestamp, not the document timestamp: the condition
+                # started when it first fired, not when it last repeated.
+                # But a condition that was already running long before the window
+                # is a pre-existing state, not this incident's trigger — reporting
+                # its true start as the onset would make it outrank everything on
+                # causal precedence purely for being old.
+                true_onset = event.onset
+                pre_existing = bool(true_onset and true_onset < window_start)
+                effective_onset = window_start if pre_existing else true_onset
+
+                note = ""
+                if pre_existing and true_onset:
+                    note = (f" This condition was already present before the window "
+                            f"(first seen {true_onset:%Y-%m-%d %H:%M:%S}Z), so it predates "
+                            f"the incident rather than starting it.")
+
                 signals.append(Signal(
                     id=self._signal_id(signal_type, f"{event.pod or event.involved_name}-{event.reason}"),
                     type=signal_type,
-                    severity=severity,
-                    service=event.service or self.resolver.from_pod(event.pod),
+                    severity=Severity.MEDIUM if pre_existing and severity is Severity.HIGH else severity,
+                    # Events on Deployments and ReplicaSets carry no pod, and the
+                    # collector cannot resolve their labels from the pod cache, so
+                    # they arrive with no service. Their object name is the service
+                    # name (plus a ReplicaSet hash the resolver already strips),
+                    # which is otherwise thrown away — leaving a rollout event
+                    # attributed to nothing at all.
+                    service=(event.service
+                             or self.resolver.from_pod(event.pod)
+                             or self.resolver.from_pod(event.involved_name)),
                     pod=event.pod,
                     namespace=event.namespace,
-                    # first_timestamp, not the document timestamp: the condition
-                    # started when it first fired, not when it last repeated.
-                    first_seen=event.onset,
+                    first_seen=effective_onset,
                     last_seen=event.last_timestamp,
+                    pre_existing=pre_existing,
                     magnitude=Magnitude(baseline=baseline_count, incident=event.count,
                                         unit="occurrences"),
                     description=(f"Kubernetes reported {event.reason} x{event.count} "
-                                 f"({blurb}): {event.message[:200]}"),
+                                 f"({blurb}): {event.message[:200]}{note}"),
                     evidence_ids=[event.id],
-                    detail={"reason": event.reason, "type": event.type},
+                    detail={"reason": event.reason, "type": event.type,
+                            "pre_existing": pre_existing,
+                            "first_seen_actual": true_onset.isoformat() if true_onset else None},
                 ))
         return signals

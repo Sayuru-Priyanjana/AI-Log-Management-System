@@ -216,7 +216,10 @@ async def effective_config() -> dict:
             "onset_bucket_seconds": settings.onset_bucket_seconds,
             "onset_mad_multiplier": settings.onset_mad_multiplier,
             "onset_min_absolute": settings.onset_min_absolute,
+            "onset_min_elevation": settings.onset_min_elevation,
+            "onset_lookback_multiplier": settings.onset_lookback_multiplier,
             "min_baseline_minutes": settings.min_baseline_minutes,
+            "incident_pre_roll_seconds": settings.incident_pre_roll_seconds,
         },
         "thresholds": {
             "error_rate_spike_multiplier": settings.error_rate_spike_multiplier,

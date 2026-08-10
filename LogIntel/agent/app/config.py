@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     onset_min_absolute: int = 3
     onset_lookback_multiplier: int = 4
     onset_max_lookback_hours: int = 12
+    # A candidate split is only accepted if the incident side is at least this
+    # many times the baseline side. Without it, ordinary variance in a service
+    # that always emits a few errors per minute gets promoted to "an incident",
+    # and every downstream signal is then measured against a baseline window
+    # that was chosen by noise.
+    onset_min_elevation: float = 2.5
 
     # Windows
     min_baseline_minutes: int = 10
