@@ -156,6 +156,7 @@ async def build_pipeline() -> tuple[InvestigationPipeline, list, OpenSearchClien
         orchestrator=OrchestratorAgent(llm),
         react_agent=ReActAgent(llm),
         registry=registry,
+        prometheus=prometheus,
     )
     return (pipeline, [opensearch, prometheus, llm], opensearch,
             InvestigationStore(opensearch), prometheus)

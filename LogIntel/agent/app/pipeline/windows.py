@@ -176,6 +176,14 @@ def detect_onset(
                        threshold=threshold, median=median, mad=mad, reason=reason)
 
 
+def _nearest_bucket(buckets: list[LogBucket], moment: datetime) -> int:
+    """The histogram bucket closest to a time found by another detector."""
+    if not buckets:
+        return 0
+    return min(range(len(buckets)),
+               key=lambda i: abs((ensure_utc(buckets[i].timestamp) - moment).total_seconds()))
+
+
 def _elevation(counts: list[float], index: int, min_side: int = 5) -> float | None:
     """How many times busier the post-onset stretch is than the pre-onset one.
 
@@ -194,9 +202,91 @@ def _elevation(counts: list[float], index: int, min_side: int = 5) -> float | No
     return after_rate / before_rate
 
 
+def detect_step_change(points: list[tuple[datetime, float]], *,
+                       multiplier: float = 2.0, min_side: int = 4,
+                       floor: float = 0.0) -> tuple[datetime | None, float, float]:
+    """Finds where a continuous metric steps up and stays up.
+
+    Returns (onset, before_level, after_level). Levels are medians, so a couple
+    of spikes cannot manufacture a step change and a couple of dips cannot hide
+    one.
+
+    This exists because onset detection used to look only at error counts, and a
+    whole class of incident produces no errors at all. A dependency that answers
+    every request but takes 1.5s to do it is invisible to an error histogram, so
+    the window got anchored to some unrelated error blip, the baseline was drawn
+    from the wrong period, and the slowdown never surfaced.
+    """
+    if len(points) < min_side * 2:
+        return None, 0.0, 0.0
+
+    values = [value for _, value in points]
+    best: tuple[datetime | None, float, float, float] = (None, 0.0, 0.0, float("-inf"))
+
+    for index in range(min_side, len(values) - min_side + 1):
+        before = statistics.median(values[:index])
+        after = statistics.median(values[index:])
+        if after < floor:
+            continue
+        # A ratio against a near-zero baseline is meaningless, so require an
+        # absolute gap as well as a proportional one.
+        ratio = float("inf") if before <= 0 else after / before
+        if ratio < multiplier or (after - before) < floor:
+            continue
+
+        # Located by the difference of MEANS, reported by medians. The mean
+        # difference peaks exactly at a clean step, which the median ratio does
+        # not: it saturates, so several candidate splits tie and the first one
+        # wins arbitrarily — placing the onset well before the actual change.
+        # Medians still gate and describe it, so isolated spikes cannot qualify.
+        separation = (statistics.fmean(values[index:]) - statistics.fmean(values[:index]))
+        if separation > best[3]:
+            best = (points[index][0], before, after, separation)
+
+    return best[0], best[1], best[2]
+
+
 class WindowResolver:
-    def __init__(self, log_tool: LogTool) -> None:
+    def __init__(self, log_tool: LogTool, prometheus=None) -> None:
         self._logs = log_tool
+        self._prometheus = prometheus
+
+    async def _latency_onset(self, plan: InvestigationPlan,
+                             search: TimeWindow) -> tuple[datetime | None, str]:
+        """When request latency last stepped up, across any service in scope."""
+        if self._prometheus is None:
+            return None, ""
+
+        namespaces = plan.namespaces or []
+        selector = (f'namespace="{namespaces[0]}"' if len(namespaces) == 1
+                    else 'namespace=~"' + "|".join(namespaces) + '"' if namespaces
+                    else 'namespace!=""')
+        expression = (
+            "histogram_quantile(0.95, sum by (service, le) "
+            f"(rate(http_request_duration_seconds_bucket{{{selector}}}[2m])))"
+        )
+        client = self._prometheus
+        try:
+            series = await client.query_range(
+                expression, search, client.step_for(search, target_points=90)
+            )
+        except Exception as exc:      # metrics are an enhancement here, not a requirement
+            logger.debug("Latency onset detection unavailable: %s", exc)
+            return None, ""
+
+        latest: tuple[datetime | None, str] = (None, "")
+        for item in series:
+            points = client.to_points(item)
+            onset, before, after = detect_step_change(
+                points,
+                multiplier=settings.latency_degradation_multiplier,
+                floor=settings.latency_min_seconds,
+            )
+            if onset and (latest[0] is None or onset > latest[0]):
+                service = item.get("metric", {}).get("service", "a service")
+                latest = (onset, f"p95 latency for {service} stepped from "
+                                 f"{before:.2f}s to {after:.2f}s and stayed there")
+        return latest
 
     async def resolve(self, plan: InvestigationPlan) -> tuple[InvestigationWindows, list[LogBucket]]:
         requested = plan.requested_window
@@ -213,6 +303,27 @@ class WindowResolver:
         interval = f"{settings.onset_bucket_seconds}s"
         buckets = await self._logs.histogram(plan, search, interval=interval)
         onset_result = detect_onset(buckets)
+
+        # Errors are one symptom among several. Latency is checked too, and the
+        # *later* of the two wins: a question about the system now should be
+        # answered about the regime the system is in now, not about an older
+        # episode that happens to be the first thing in range.
+        latency_onset, latency_note = await self._latency_onset(plan, search)
+        error_onset = (ensure_utc(buckets[onset_result.index].timestamp)
+                       if onset_result.detected and onset_result.index is not None else None)
+        onset_source = "error rate"
+
+        if latency_onset and (error_onset is None or latency_onset > error_onset):
+            onset_source = "latency"
+            onset_result = OnsetResult(
+                index=_nearest_bucket(buckets, latency_onset),
+                detected=True,
+                before_window=False,
+                threshold=onset_result.threshold,
+                median=onset_result.median,
+                mad=onset_result.mad,
+                reason=latency_note,
+            )
 
         pre_roll = timedelta(seconds=settings.incident_pre_roll_seconds)
         min_baseline = timedelta(minutes=settings.min_baseline_minutes)
@@ -275,9 +386,12 @@ class WindowResolver:
             else None
         )
 
-        method = (f"error rate crossed {onset_result.threshold:.1f}/min "
-                  f"(median {onset_result.median:.1f}, MAD {onset_result.mad:.1f}) "
-                  f"and stayed there")
+        if onset_source == "latency":
+            method = onset_result.reason
+        else:
+            method = (f"error rate crossed {onset_result.threshold:.1f}/min "
+                      f"(median {onset_result.median:.1f}, MAD {onset_result.mad:.1f}) "
+                      f"and stayed there")
         if clamped:
             method += (f"; the departure began at {onset:%H:%M:%S}Z, before the period asked "
                        f"about, so the window analysed starts at the edge of that period and "

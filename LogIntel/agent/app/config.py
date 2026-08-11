@@ -73,6 +73,20 @@ class Settings(BaseSettings):
     # Candidate selection
     candidate_ambiguity_margin: float = 0.15
 
+    # --- ReAct loop -------------------------------------------------------
+    # Each step is a full LLM round trip, so this is the main driver of how long
+    # an investigation takes. Too low and the loop cannot follow a chain across
+    # services; too high and a confused model wanders instead of concluding.
+    react_max_steps: int = 8
+
+    # Confidence ceilings applied by the verifier. These are caps, not scores:
+    # the answer never rises above them, whatever the model claimed.
+    no_baseline_confidence_cap: float = 0.55
+    # Small models report 1.0 freely. A conclusion drawn by an automated pipeline
+    # from a bounded window is never certain, and a number that never expresses
+    # doubt tells the reader nothing.
+    max_reportable_confidence: float = 0.9
+
     # --- Misc -------------------------------------------------------------
     incident_controller_url: str = "http://localhost:30099"
     log_level: str = "INFO"

@@ -111,7 +111,7 @@ async def probe_tools(minutes: int = 30) -> None:
         )
 
         rule("WINDOW RESOLUTION")
-        resolver = WindowResolver(LogTool(client))
+        resolver = WindowResolver(LogTool(client), prometheus=prom)
         windows, buckets = await resolver.resolve(plan)
         print(f"  requested : {windows.requested}")
         print(f"  incident  : {windows.incident}")

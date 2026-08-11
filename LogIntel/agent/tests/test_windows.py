@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
+
 from app.pipeline.windows import detect_onset
 from tests.conftest import buckets
 
@@ -41,6 +45,59 @@ def test_gradual_ramp_is_caught_before_the_peak():
     result = detect_onset(buckets([1, 1, 1, 1, 1, 12, 20, 33, 40, 45]))
     assert result.detected is True
     assert result.index == 5
+
+
+def test_a_latency_step_is_found_where_an_error_histogram_sees_nothing():
+    """The failure this exists to prevent, observed on the live testbed.
+
+    payment-db was given a 1.5s delay. It answered every request successfully, so
+    the error histogram was flat and onset detection anchored to an unrelated
+    error blip 80 minutes earlier. The window came out 62 minutes long for a
+    3-minute-old incident, the baseline landed inside it, and the slowdown was
+    diluted to invisibility. The agent reported "root cause not identified".
+    """
+    from datetime import timedelta
+
+    from app.pipeline.windows import detect_step_change
+
+    start = datetime(2026, 8, 11, 22, 0, tzinfo=timezone.utc)
+    points = ([(start + timedelta(minutes=i), 0.015) for i in range(20)]
+              + [(start + timedelta(minutes=20 + i), 1.52) for i in range(10)])
+
+    onset, before, after = detect_step_change(points, multiplier=2.0, floor=0.25)
+
+    assert onset == start + timedelta(minutes=20)
+    assert before == pytest.approx(0.015, abs=0.005)
+    assert after == pytest.approx(1.52, abs=0.01)
+
+
+def test_latency_noise_is_not_mistaken_for_a_step():
+    from datetime import timedelta
+
+    from app.pipeline.windows import detect_step_change
+
+    start = datetime(2026, 8, 11, 22, 0, tzinfo=timezone.utc)
+    # occasional spikes on a flat floor — the shape a shared host produces
+    values = [0.02, 0.02, 2.4, 0.02, 0.03, 0.02, 2.4, 0.02, 0.02, 0.03,
+              0.02, 0.02, 0.02, 2.4, 0.02, 0.02, 0.03, 0.02, 0.02, 0.02]
+    points = [(start + timedelta(minutes=i), v) for i, v in enumerate(values)]
+
+    onset, _, _ = detect_step_change(points, multiplier=2.0, floor=0.25)
+    assert onset is None, "median-based comparison should ignore isolated spikes"
+
+
+def test_a_step_below_the_floor_is_ignored():
+    from datetime import timedelta
+
+    from app.pipeline.windows import detect_step_change
+
+    start = datetime(2026, 8, 11, 22, 0, tzinfo=timezone.utc)
+    # 5ms to 15ms is a 3x rise, but nobody cares and it is not an incident
+    points = ([(start + timedelta(minutes=i), 0.005) for i in range(10)]
+              + [(start + timedelta(minutes=10 + i), 0.015) for i in range(10)])
+
+    onset, _, _ = detect_step_change(points, multiplier=2.0, floor=0.25)
+    assert onset is None
 
 
 def test_empty_input_is_handled():

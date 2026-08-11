@@ -11,8 +11,13 @@ from pydantic import BaseModel
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.react import ReActAgent
 from app.models.analysis import Analysis, CauseCategory, InvestigationResult, InvestigationWindows
+from app.models.answer import MODE_BY_INTENT, AnswerMode, DataTable, StructuredAnswer
 from app.models.evidence import EvidenceBundle
-from app.models.plan import InvestigationRequest
+from app.models.plan import InvestigationPlan, InvestigationRequest
+from app.pipeline.answer_check import verify_answer
+from app.pipeline.hypotheses import HypothesisEngine
+from app.pipeline.signals import SignalEngine
+from app.pipeline.timeline import build_timeline
 from app.pipeline.windows import WindowResolver
 from app.registry.systems import SystemRegistry
 from app.tools.events import EventTool
@@ -28,18 +33,28 @@ class StageEvent(BaseModel):
 
 
 class InvestigationPipeline:
-    """The whole run, using a ReAct agent loop for investigation."""
+    """Deterministic evidence, a ReAct loop to reason over it, then verification.
+
+        plan -> windows -> evidence -> signals -> candidates -> reasoning -> answer
+
+    The first five stages are pure Python and produce the same result every time.
+    The loop decides what to look at and how to explain it, but every figure it
+    quotes was measured before it ran, and every claim it makes is checked after.
+    """
 
     def __init__(self, *, log_tool: LogTool, event_tool: EventTool, metric_tool: MetricTool,
                  orchestrator: OrchestratorAgent, react_agent: ReActAgent,
-                 registry: SystemRegistry) -> None:
+                 registry: SystemRegistry, prometheus=None) -> None:
         self.logs = log_tool
         self.events = event_tool
         self.metrics = metric_tool
         self.orchestrator = orchestrator
         self.react_agent = react_agent
         self.registry = registry
-        self.windows = WindowResolver(log_tool)
+        # The resolver gets Prometheus so it can spot latency-only incidents,
+        # which leave no trace in an error histogram.
+        self.windows = WindowResolver(log_tool, prometheus=prometheus)
+        self.hypotheses = HypothesisEngine()
 
     async def run(self, request: InvestigationRequest) -> AsyncIterator[StageEvent]:
         investigation_id = f"inv-{uuid.uuid4().hex[:12]}"
@@ -49,7 +64,6 @@ class InvestigationPipeline:
         def mark(stage: str, started: float) -> None:
             timings[stage] = round((time.perf_counter() - started) * 1000, 1)
 
-        # -- 0. registry ---------------------------------------------------
         started = time.perf_counter()
         system = await self.registry.require(request.system_id)
         mark("registry", started)
@@ -57,8 +71,10 @@ class InvestigationPipeline:
         # -- 1. plan -------------------------------------------------------
         started = time.perf_counter()
         plan = await self.orchestrator.plan(request, system)
+        mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
         mark("plan", started)
-        yield StageEvent(stage="plan", data=plan.model_dump(mode="json"))
+        yield StageEvent(stage="plan", data={**plan.model_dump(mode="json"),
+                                             "answer_mode": mode.value})
 
         # -- 2. windows ----------------------------------------------------
         started = time.perf_counter()
@@ -69,58 +85,118 @@ class InvestigationPipeline:
             "search_buckets": len(search_histogram),
         })
 
-        # -- 3. evidence (bulk collect for tools) --------------------------
+        # -- 3. evidence ---------------------------------------------------
         started = time.perf_counter()
         evidence = await self._collect(plan, windows, errors)
         mark("evidence", started)
         yield StageEvent(stage="evidence", data=self._evidence_summary(evidence))
 
-        # -- 4. ReAct loop -------------------------------------------------
+        # -- 4. signals ----------------------------------------------------
+        # Measured before the model runs, so nothing it says can change them.
         started = time.perf_counter()
-        
-        final_conclusion = None
-        final_service = None
-        
-        async for event in self.react_agent.run(plan, windows, evidence):
-            event_type = event.pop("type")
-            if event_type == "conclusion":
-                final_conclusion = event.get("conclusion")
-                final_service = event.get("service")
-                break
-            elif event_type == "error":
-                errors.append(event.get("message", "Unknown ReAct error"))
-                yield StageEvent(stage="error", data={"detail": event.get("message")})
-                break
-            else:
-                yield StageEvent(stage=event_type, data=event)
-                
-        mark("react_loop", started)
-
-        # Yield Analysis to UI
-        yield StageEvent(stage="analysis", data={
-            "summary": final_conclusion or "Analysis failed or didn't conclude.",
-            "cause": final_conclusion,
-            "confidence": 1.0 if final_conclusion else 0.0,
+        signals = SignalEngine(known_services=system.service_names).detect(
+            plan, windows, evidence)
+        mark("signals", started)
+        yield StageEvent(stage="signals", data={
+            "count": len(signals),
+            "signals": [s.model_dump(mode="json") for s in signals],
         })
-        
-        v_msg = "ReAct loop concluded the investigation."
-        yield StageEvent(stage="verified", data={"message": v_msg})
 
-        # Fake models for compatibility with legacy Result schema for now
-        # until the UI is fully moved off Candidates/Signals.
+        # -- 5. candidates -------------------------------------------------
+        started = time.perf_counter()
+        candidates = self.hypotheses.generate(plan, windows, signals, evidence)
+        mark("candidates", started)
+        yield StageEvent(stage="candidates", data={
+            "candidates": [c.model_dump(mode="json") for c in candidates],
+        })
+
+        # -- 6. reasoning loop ---------------------------------------------
+        started = time.perf_counter()
+        raw_answer: dict = {}
+        exposed_ids: set[str] = set()
+        table: DataTable | None = None
+        steps_used = 0
+        degraded: str | None = None
+
+        # Held so it can be closed explicitly: breaking out of `async for` leaves
+        # the generator suspended mid-await, and the event loop later complains
+        # about a task destroyed while pending.
+        loop = self.react_agent.run(plan, windows, evidence, signals, candidates)
+        try:
+            async for event in loop:
+                kind = event.get("type")
+
+                if kind == "answer":
+                    raw_answer = event.get("answer") or {}
+                    exposed_ids = set(event.get("exposed_ids") or [])
+                    steps_used = event.get("steps_used", 0)
+                    break
+
+                if kind == "error":
+                    message = event.get("message", "the reasoning loop failed")
+                    errors.append(message)
+                    degraded = f"the reasoning loop did not complete: {message}"
+                    exposed_ids = set(event.get("exposed_ids") or [])
+                    yield StageEvent(stage="reasoning", data=event)
+                    break
+
+                if kind == "exhausted":
+                    errors.append(event.get("message", "step limit reached"))
+                    degraded = ("the reasoning loop hit its step limit without "
+                                "reaching a conclusion")
+                    exposed_ids = set(event.get("exposed_ids") or [])
+                    steps_used = event.get("steps_used", 0)
+                    yield StageEvent(stage="reasoning", data=event)
+                    break
+
+                # An observation carrying a table is the payload of an extraction
+                # or aggregation answer; keep the most recent one.
+                if kind == "observation" and event.get("table"):
+                    table = DataTable(**event["table"])
+
+                yield StageEvent(stage="reasoning", data=event)
+        finally:
+            await loop.aclose()
+
+        mark("reasoning", started)
+
+        # -- 7. verify -----------------------------------------------------
+        started = time.perf_counter()
+        if not raw_answer and degraded:
+            raw_answer = self._fallback_answer(mode, signals, candidates)
+        answer: StructuredAnswer = verify_answer(
+            raw=raw_answer, mode=mode, signals=signals, candidates=candidates,
+            evidence=evidence, windows=windows, exposed_ids=exposed_ids,
+            table=table, steps_used=steps_used, degraded=degraded,
+        )
+        mark("verify", started)
+        yield StageEvent(stage="answer", data=answer.model_dump(mode="json"))
+
         result = InvestigationResult(
             id=investigation_id,
             question=request.question,
             plan=plan,
             windows=windows,
-            signals=[],
-            candidates=[],
+            signals=signals,
+            candidates=candidates,
             analysis=Analysis(
-                cause_summary=final_conclusion or "Analysis failed",
-                category=CauseCategory.UNKNOWN,
-                analyst="react",
-                confidence=1.0 if final_conclusion else 0.0,
+                incident_detected=bool(signals),
+                severity=self._severity(signals),
+                category=CauseCategory(answer.cause_category)
+                if answer.cause_category else CauseCategory.UNKNOWN,
+                chosen_candidate_id=candidates[0].id if candidates else None,
+                cause_summary=answer.headline,
+                narrative=answer.detail,
+                timeline=build_timeline(windows, signals, evidence),
+                confidence=answer.confidence,
+                evidence_ids=[c.id for c in answer.citations],
+                next_steps=answer.next_steps,
+                evidence_gaps=answer.limitations,
+                analyst="react" if not degraded else "react (degraded)",
+                engine_top_candidate_id=candidates[0].id if candidates else None,
+                agrees_with_engine=self._agrees(answer, candidates),
             ),
+            answer=answer,
             evidence_summary=self._evidence_summary(evidence),
             timings_ms=timings,
             errors=errors,
@@ -128,7 +204,6 @@ class InvestigationPipeline:
         yield StageEvent(stage="result", data=result.model_dump(mode="json"))
 
     async def run_collect(self, request: InvestigationRequest) -> InvestigationResult:
-        """Non-streaming convenience used by the evaluation harness."""
         final: dict | None = None
         async for event in self.run(request):
             if event.stage == "result":
@@ -138,7 +213,57 @@ class InvestigationPipeline:
         return InvestigationResult(**final)
 
     # ------------------------------------------------------------------ util
-    async def _collect(self, plan, windows: InvestigationWindows,
+    @staticmethod
+    def _fallback_answer(mode: AnswerMode, signals, candidates) -> dict:
+        """What to say when the loop failed.
+
+        The deterministic stages already ran, so there is a real answer available
+        even with no model at all. Reporting it — clearly marked as the rules'
+        answer rather than the agent's — beats returning nothing.
+        """
+        if candidates:
+            top = candidates[0]
+            return {
+                "headline": top.hypothesis,
+                "detail": (f"{top.rationale} This came from the rule engine; the "
+                           f"reasoning loop did not finish, so there is no "
+                           f"model-written explanation."),
+                "root_cause_service": top.service,
+                "reasoning": [{"claim": top.hypothesis, "because": top.rationale,
+                               "evidence_ids": top.supporting_signals,
+                               "kind": "inference"}],
+                "confidence": top.score,
+                "limitations": ["The reasoning loop did not complete; this is the "
+                                "deterministic ranking only."],
+            }
+        if signals:
+            return {
+                "headline": f"{len(signals)} signal(s) were detected but no explanation "
+                            f"could be assembled.",
+                "detail": "The measurements are reported below.",
+                "reasoning": [{"claim": s.description, "evidence_ids": [s.id],
+                               "kind": "observation"} for s in signals[:5]],
+                "confidence": 0.2,
+            }
+        return {
+            "headline": "Nothing measurable departed from baseline in this window.",
+            "detail": "No signal crossed its threshold.",
+            "confidence": 0.3,
+        }
+
+    @staticmethod
+    def _severity(signals) -> str:
+        if not signals:
+            return "none"
+        return max(signals, key=lambda s: s.severity.rank).severity.value
+
+    @staticmethod
+    def _agrees(answer: StructuredAnswer, candidates) -> bool:
+        if not candidates or not answer.root_cause_service:
+            return True
+        return candidates[0].service == answer.root_cause_service
+
+    async def _collect(self, plan: InvestigationPlan, windows: InvestigationWindows,
                        errors: list[str]) -> EvidenceBundle:
         incident, baseline = windows.incident, windows.baseline
         tasks = {
@@ -176,6 +301,7 @@ class InvestigationPipeline:
                 ),
                 "unparsed": evidence.logs.unparsed_documents,
                 "by_level": evidence.logs.totals_by_level,
+                "dependency_edges": evidence.logs.dependency_edges,
             },
             "events": {
                 "count": len(evidence.events.events),

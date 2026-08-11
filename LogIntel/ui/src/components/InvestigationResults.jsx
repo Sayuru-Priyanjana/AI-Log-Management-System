@@ -1,10 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { runInvestigation } from '../api';
+import AnswerPanel from './AnswerPanel';
 import { ErrorBanner } from './common';
-import ReactMarkdown from 'react-markdown';
+import ReasoningTrace from './ReasoningTrace';
+
+// The stages that run before the model does. Shown as a compact strip rather
+// than a full-width diagram: they are fast, they always succeed or fail
+// together, and the interesting part of the run is what comes after them.
+const PREP_STAGES = [
+  { id: 'plan', label: 'Plan' },
+  { id: 'windows', label: 'Window' },
+  { id: 'evidence', label: 'Evidence' },
+  { id: 'signals', label: 'Signals' },
+  { id: 'candidates', label: 'Candidates' },
+];
 
 export default function InvestigationResults({ request }) {
-  const [events, setEvents] = useState([]);
+  const [stages, setStages] = useState({});
+  const [trace, setTrace] = useState([]);
+  const [answer, setAnswer] = useState(null);
+  const [result, setResult] = useState(null);
   const [status, setStatus] = useState('connecting');
   const [errorMsg, setErrorMsg] = useState(null);
   const startedAt = useRef(Date.now());
@@ -14,10 +29,14 @@ export default function InvestigationResults({ request }) {
     const controller = new AbortController();
     let mounted = true;
     startedAt.current = Date.now();
+    setStages({}); setTrace([]); setAnswer(null); setResult(null); setErrorMsg(null);
 
     const tick = setInterval(() => {
-      if (mounted && status !== 'complete' && status !== 'error') {
-        setElapsed(Date.now() - startedAt.current);
+      if (mounted) {
+        setStatus((s) => {
+          if (s !== 'complete' && s !== 'error') setElapsed(Date.now() - startedAt.current);
+          return s;
+        });
       }
     }, 250);
 
@@ -28,18 +47,27 @@ export default function InvestigationResults({ request }) {
           signal: controller.signal,
           onEvent: (event) => {
             if (!mounted) return;
-            if (event.stage === 'error') {
+            const { stage, data } = event;
+
+            if (stage === 'error') {
               setStatus('error');
-              setErrorMsg(event.data?.detail || 'The investigation failed.');
+              setErrorMsg(data?.detail || 'The investigation failed.');
               return;
             }
             setStatus('streaming');
-            setEvents((prev) => [...prev, event]);
+
+            if (stage === 'reasoning') {
+              setTrace((prev) => [...prev, data]);
+            } else if (stage === 'answer') {
+              setAnswer(data);
+            } else if (stage === 'result') {
+              setResult(data);
+            } else {
+              setStages((prev) => ({ ...prev, [stage]: data }));
+            }
           },
         });
-        if (mounted) {
-          setStatus((s) => (s === 'error' ? s : 'complete'));
-        }
+        if (mounted) setStatus((s) => (s === 'error' ? s : 'complete'));
       } catch (err) {
         if (mounted && err.name !== 'AbortError') {
           setStatus('error');
@@ -57,14 +85,15 @@ export default function InvestigationResults({ request }) {
   }, [request]);
 
   const seconds = (elapsed / 1000).toFixed(1);
+  const plan = stages.plan;
 
   return (
     <div className="li-results">
       <div className="glass-panel li-results-header">
-        <div>
+        <div style={{ minWidth: 0 }}>
           <h3>
-            Investigating <span className="text-gradient">{request.system_id}</span>
-            {request.service_hint ? <span className="li-muted"> · {request.service_hint}</span> : null}
+            <span className="text-gradient">{request.system_id}</span>
+            {plan?.service ? <span className="li-muted"> · {plan.service}</span> : null}
           </h3>
           <p className="li-muted">{request.question}</p>
         </div>
@@ -76,84 +105,104 @@ export default function InvestigationResults({ request }) {
         </div>
       </div>
 
-      {errorMsg && (
-        <ErrorBanner><strong>Something went wrong.</strong> {errorMsg}</ErrorBanner>
+      {errorMsg && <ErrorBanner><strong>Something went wrong.</strong> {errorMsg}</ErrorBanner>}
+
+      <PrepStrip stages={stages} />
+
+      {/* The answer sits above the trace once it exists: the conclusion is what
+          most readers want, and the working is there for when they doubt it. */}
+      {answer && <div className="glass-panel li-answer-panel"><AnswerPanel answer={answer} /></div>}
+
+      <ReasoningTrace steps={trace} live={status === 'streaming' && !answer} />
+
+      {!answer && status === 'streaming' && trace.length === 0 && (
+        <div className="glass-panel li-waiting">
+          <p>Gathering evidence…</p>
+        </div>
       )}
 
-      <div className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', maxWidth: '800px', margin: '0 auto' }}>
-        {events.length === 0 && status !== 'error' && (
-          <div className="li-waiting" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
-             <p>Waiting for the agent to begin…</p>
-          </div>
-        )}
-        
-        {events.map((evt, idx) => (
-          <EventBlock key={idx} event={evt} />
-        ))}
-        
-        {status === 'streaming' && (
-           <div style={{ padding: '1rem', color: 'var(--text-muted)' }} className="animate-pulse-glow">
-             Agent is thinking...
-           </div>
-        )}
-      </div>
+      {result && <RunFooter result={result} />}
     </div>
   );
 }
 
-function EventBlock({ event }) {
-  const { stage, data } = event;
-  
-  let content = null;
-  let title = stage.toUpperCase();
-  let color = 'var(--text-color)';
-  let bg = 'var(--bg-panel)';
-
-  if (stage === 'plan') {
-    title = 'Investigation Plan';
-    content = <div>Goal: {data.goal} (Intent: {data.intent})</div>;
-  } else if (stage === 'windows') {
-    title = 'Time Windows';
-    content = <div>Incident: {data.incident?.start}</div>;
-  } else if (stage === 'evidence') {
-    title = 'Initial Evidence Collected';
-    content = <div>Logs: {data.logs?.documents}, Events: {data.events?.count}</div>;
-  } else if (stage === 'thought') {
-    title = `Agent Thought (Step ${data.step})`;
-    color = 'var(--accent-color)';
-    bg = 'rgba(74, 144, 226, 0.1)';
-    content = <div style={{ fontStyle: 'italic' }}>"{data.text}"</div>;
-  } else if (stage === 'action') {
-    title = `Action: ${data.tool}`;
-    color = 'var(--warning)';
-    bg = 'rgba(245, 166, 35, 0.1)';
-    content = <pre style={{ margin: 0, background: 'transparent' }}>{JSON.stringify(data.input, null, 2)}</pre>;
-  } else if (stage === 'observation') {
-    title = 'Observation';
-    color = 'var(--success)';
-    bg = 'rgba(126, 211, 33, 0.1)';
-    content = <pre style={{ margin: 0, background: 'transparent', whiteSpace: 'pre-wrap' }}>{data.text}</pre>;
-  } else if (stage === 'analysis') {
-    title = 'Conclusion';
-    content = <div><ReactMarkdown>{data.cause}</ReactMarkdown></div>;
-  } else if (stage === 'verified' || stage === 'result' || stage === 'candidates' || stage === 'signals') {
-    return null; // hide these intermediate/legacy stages
-  }
+function PrepStrip({ stages }) {
+  const signals = stages.signals?.signals || [];
+  const candidates = stages.candidates?.candidates || [];
 
   return (
-    <div style={{
-      border: `1px solid ${color}`,
-      background: bg,
-      borderRadius: '8px',
-      padding: '1rem',
-      animation: 'fadeIn 0.3s ease-out'
-    }}>
-      <div style={{ color, fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        {title}
-      </div>
-      <div style={{ fontSize: '0.95rem', color: 'var(--text-color)', lineHeight: 1.5 }}>
-        {content}
-      </div>
+    <div className="glass-panel li-prep">
+      {PREP_STAGES.map((stage) => {
+        const done = Boolean(stages[stage.id]);
+        return (
+          <div key={stage.id} className={`li-prep-node ${done ? 'li-prep-node--done' : ''}`}
+            title={summarise(stage.id, stages[stage.id])}>
+            <span className="li-prep-dot" />
+            <span>{stage.label}</span>
+            {done && <span className="li-prep-value">{shortValue(stage.id, stages[stage.id])}</span>}
+          </div>
+        );
+      })}
+      {signals.length > 0 && (
+        <div className="li-prep-signals">
+          {signals.slice(0, 6).map((s) => (
+            <span key={s.id} className={`li-chip li-chip--${s.severity}`}
+              title={`${s.description}${s.magnitude ? ` — ${s.magnitude.incident} ${s.magnitude.unit}` : ''}`}>
+              {s.type}
+            </span>
+          ))}
+          {signals.length > 6 && <span className="li-muted">+{signals.length - 6} more</span>}
+        </div>
+      )}
+      {signals.length === 0 && stages.signals && (
+        <span className="li-muted" style={{ paddingLeft: 8 }}>
+          nothing crossed a threshold
+        </span>
+      )}
+      {candidates.length > 0 && (
+        <span className="li-muted" style={{ paddingLeft: 8 }}>
+          rules rank: <strong>{candidates[0].category}</strong>
+          {candidates[0].service ? ` (${candidates[0].service})` : ''}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function shortValue(id, data) {
+  if (!data) return '';
+  if (id === 'evidence') return `${data.logs?.documents ?? 0} logs`;
+  if (id === 'signals') return `${data.count ?? 0}`;
+  if (id === 'candidates') return `${(data.candidates || []).length}`;
+  if (id === 'windows') return data.onset_detected ? 'onset found' : 'no onset';
+  if (id === 'plan') return data.answer_mode?.replace('_', ' ') || '';
+  return '';
+}
+
+function summarise(id, data) {
+  if (!data) return 'pending';
+  if (id === 'windows') return `${data.method || ''}`;
+  if (id === 'evidence') return (data.gaps || []).join('; ') || 'no evidence gaps';
+  if (id === 'plan') return data.notes?.join('; ') || `intent: ${data.intent}`;
+  return '';
+}
+
+function RunFooter({ result }) {
+  const timings = result.timings_ms || {};
+  const total = Object.values(timings).reduce((a, b) => a + b, 0) / 1000;
+  return (
+    <div className="li-run-footer li-muted">
+      <span>{result.id}</span>
+      <span>·</span>
+      <span>{total.toFixed(1)}s</span>
+      <span>·</span>
+      <span>analyst: {result.analysis?.analyst}</span>
+      {result.errors?.length > 0 && (
+        <>
+          <span>·</span>
+          <span className="text-warning">{result.errors.length} warning(s)</span>
+        </>
+      )}
     </div>
   );
 }
@@ -161,10 +210,8 @@ function EventBlock({ event }) {
 function StatusDot({ color, label, pulse }) {
   return (
     <>
-      <div
-        className={pulse ? 'animate-pulse-glow' : ''}
-        style={{ width: 9, height: 9, borderRadius: '50%', background: color, flexShrink: 0 }}
-      />
+      <div className={pulse ? 'animate-pulse-glow' : ''}
+        style={{ width: 9, height: 9, borderRadius: '50%', background: color, flexShrink: 0 }} />
       <span style={{ color, fontWeight: 550 }}>{label}</span>
     </>
   );

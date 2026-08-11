@@ -12,6 +12,12 @@ class Intent(str, Enum):
     HEALTH_CHECK = "health_check"
     PERFORMANCE_REVIEW = "performance_review"
     HISTORICAL_QUERY = "historical_query"
+    # "show me the 5xx errors from payment-api" is a retrieval request, not an
+    # investigation. Answering it with a root-cause report is a wrong answer
+    # however well argued, so it gets its own intent and its own answer shape.
+    DATA_EXTRACTION = "data_extraction"
+    # "how many restarts today", "what is the error rate" — a number, not a story.
+    AGGREGATION = "aggregation"
 
 
 # Which evidence each intent needs. Derived from the intent by lookup rather than
@@ -21,6 +27,8 @@ INTENT_TOOLS: dict[Intent, list[str]] = {
     Intent.HEALTH_CHECK: ["logs", "events", "metrics"],
     Intent.PERFORMANCE_REVIEW: ["logs", "metrics"],
     Intent.HISTORICAL_QUERY: ["logs", "events"],
+    Intent.DATA_EXTRACTION: ["logs", "events"],
+    Intent.AGGREGATION: ["logs", "events", "metrics"],
 }
 
 # Durations the orchestrator is allowed to choose. Free-form durations invite
@@ -32,6 +40,8 @@ DEFAULT_DURATION_BY_INTENT: dict[Intent, str] = {
     Intent.HEALTH_CHECK: "30m",
     Intent.PERFORMANCE_REVIEW: "3h",
     Intent.HISTORICAL_QUERY: "24h",
+    Intent.DATA_EXTRACTION: "1h",
+    Intent.AGGREGATION: "1h",
 }
 
 

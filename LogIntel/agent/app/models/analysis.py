@@ -5,6 +5,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from .answer import StructuredAnswer
 from .domain import TimeWindow, utcnow
 from .plan import InvestigationPlan
 from .signals import Signal
@@ -117,6 +118,10 @@ class InvestigationResult(BaseModel):
     signals: list[Signal] = Field(default_factory=list)
     candidates: list[Candidate] = Field(default_factory=list)
     analysis: Analysis = Field(default_factory=Analysis)
+    # The verified, structured answer — reasoning, assumptions, citations and the
+    # basis for the confidence. `analysis` carries the same conclusion in the
+    # flatter shape the stored history and evaluation harness read.
+    answer: StructuredAnswer | None = None
 
     evidence_summary: dict = Field(default_factory=dict)
     timings_ms: dict[str, float] = Field(default_factory=dict)

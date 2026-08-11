@@ -7,6 +7,12 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 : "${OPENSEARCH_HOST:=192.168.56.1}"
 : "${OPENSEARCH_PORT:=9200}"
 
+echo "Waiting for Kubernetes API..."
+for _ in $(seq 1 30); do
+  if kubectl get nodes >/dev/null 2>&1; then break; fi
+  sleep 2
+done
+
 green() { printf '\033[32m  [ok]\033[0m %s\n' "$*"; }
 red()   { printf '\033[31m  [--]\033[0m %s\n' "$*"; }
 

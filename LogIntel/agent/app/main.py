@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
             orchestrator=OrchestratorAgent(llm),
             react_agent=ReActAgent(llm),
             registry=registry,
+            prometheus=prometheus,
         ),
     )
 

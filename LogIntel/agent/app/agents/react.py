@@ -3,166 +3,337 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from app.agents.tool_bindings import ToolBindings
+from app.agents.tool_bindings import ToolBindings, ToolResult
+from app.config import settings
 from app.llm.base import LLMClient, LLMUnavailable, PromptTruncated
+from app.models.analysis import Candidate, InvestigationWindows
+from app.models.answer import MODE_BY_INTENT, AnswerMode
 from app.models.evidence import EvidenceBundle
-from app.models.analysis import InvestigationWindows
 from app.models.plan import InvestigationPlan
+from app.models.signals import Signal
 
 logger = logging.getLogger(__name__)
 
-REACT_SYSTEM_PROMPT = """You are a senior site reliability engineer investigating a system incident.
+_EMPTY_MARKERS = ("nothing matched", "no signals crossed", "no metric series",
+                  "no log patterns matched", "no warning-level", "no metrics found",
+                  "no log data to count", "no time-ordered events")
 
-You are equipped with tools to gather evidence. You must use a cycle of Thought, Action, and Observation to diagnose the root cause.
-If the evidence gives you the answer, output is_finished: true and provide a highly detailed final conclusion.
 
-When writing your final conclusion:
-- Be highly detailed and structured. Use markdown formatting if helpful.
-- Include a "Root Cause" section clearly stating what broke.
-- Include an "Evidence" section explicitly citing specific log patterns, metric spikes, or Kubernetes events that prove your conclusion.
-- Explain the chain of events (e.g., Service A failed because it depends on Service B, which timed out).
+def _found_nothing(observation: str) -> bool:
+    lowered = observation.lower()
+    return any(marker in lowered for marker in _EMPTY_MARKERS)
+
+SYSTEM_PROMPT = """You are a site reliability engineer answering a question about a running system.
+
+You work in a loop: think, call a tool, read the observation, repeat. Stop as soon
+as you can answer — extra steps cost time and add nothing.
 
 Available tools:
 {tools}
 
-Rules:
-- You MUST respond ONLY in valid JSON matching this schema:
-  {{
-    "thought": "your reasoning about the current state and what to do next",
-    "action": "tool_name_or_null",
-    "action_input": {{"param": "value"}},
-    "is_finished": boolean,
-    "conclusion": "highly detailed Markdown string containing 'Root Cause', 'Evidence', and 'Chain of Events' sections if is_finished is true, else null",
-    "root_cause_service": "service name if is_finished is true, else null"
-  }}
-- Do not add prose outside the JSON.
-- Never invent evidence.
+## Rules
+
+- Reply with JSON only. No prose outside it.
+- Cite evidence by the IDs shown in observations (sig:, pat:, evt:, met:, cand:).
+  Copy them character for character. An ID you were not shown will be rejected,
+  and inventing one is worse than admitting uncertainty. If an observation
+  reported that nothing was found, cite nothing — an empty list is the honest
+  answer and costs you nothing. Never emit a placeholder such as "sig:...".
+- Never state a number you were not given. The tools have already measured
+  everything against a baseline; your arithmetic is not needed and is not trusted.
+- Absence of evidence is not evidence of absence. If a tool returns nothing,
+  call get_investigation_scope before concluding that nothing happened.
+- Failures propagate upward through the call graph. If a dependency is broken,
+  the services calling it are symptoms. Name the deepest failing component.
+- Prefer the explanation that started first. An effect cannot precede its cause.
+
+## Response schema
+
+{{
+  "thought": "what you now know and what you need next",
+  "action": "tool name, or null when finished",
+  "action_input": {{"param": "value"}},
+  "is_finished": false,
+  "answer": null
+}}
+
+When finished, set "is_finished": true, "action": null, and fill "answer":
+
+{answer_schema}
 """
 
-class ReActAgent:
-    def __init__(self, llm: LLMClient, max_steps: int = 10) -> None:
-        self._llm = llm
-        self.max_steps = max_steps
+MODE_GUIDANCE: dict[AnswerMode, str] = {
+    AnswerMode.ROOT_CAUSE: (
+        "The user wants to know WHY something broke. Establish the causal chain and "
+        "name the single component at its root. Start with get_signals, then "
+        "get_dependencies to tell cause from symptom, then get_timeline to confirm "
+        "the ordering. `headline` must name the failing component and what it did."
+    ),
+    AnswerMode.DATA_EXTRACTION: (
+        "The user wants to SEE specific records, not an analysis of them. Use "
+        "search_logs or get_service_events to retrieve what was asked for, and return "
+        "it in `table`. `headline` states what was found and how much of it. Do not "
+        "write a root-cause analysis — it was not asked for."
+    ),
+    AnswerMode.AGGREGATION: (
+        "The user wants a NUMBER or a breakdown. Use count_logs, or read the figures "
+        "from get_signals and get_service_metrics. Put the breakdown in `table` and "
+        "the number in `headline`. Never compute a total yourself — call the tool."
+    ),
+    AnswerMode.HEALTH_CHECK: (
+        "The user wants to know whether the system is healthy right now. Call "
+        "get_signals, and get_investigation_scope so you can say what was checked. "
+        "If nothing crossed a threshold, say so plainly — that is a real answer, "
+        "not a failure to find something."
+    ),
+    AnswerMode.EXPLANATION: (
+        "The user wants something explained. Ground the explanation in what was "
+        "actually observed in this system, and cite it."
+    ),
+}
 
-    async def run(self, plan: InvestigationPlan, windows: InvestigationWindows,
-                  evidence: EvidenceBundle) -> AsyncIterator[dict]:
-        """Runs the ReAct loop, yielding steps as it goes."""
-        
-        bindings = ToolBindings(plan, windows, evidence)
-        tools_schema = bindings.schema()
-        
-        system = REACT_SYSTEM_PROMPT.format(tools=tools_schema)
-        
-        available_services = set()
-        if evidence.logs and evidence.logs.patterns:
-            available_services.update(p.service for p in evidence.logs.patterns if p.service)
-        if evidence.metrics and evidence.metrics.series:
-            available_services.update(s.service for s in evidence.metrics.series if s.service)
-            
-        services_str = ", ".join(sorted(available_services)) if available_services else "none observed"
+ANSWER_SCHEMA_HINT = """{
+  "headline": "one sentence that directly answers the question",
+  "detail": "a short paragraph of supporting explanation",
+  "root_cause_service": "service name, or null when not a root-cause question",
+  "reasoning": [
+    {"claim": "what you concluded",
+     "because": "why it follows",
+     "evidence_ids": ["COPY IDs EXACTLY FROM OBSERVATIONS, e.g. sig:OOM_KILL:payment-api-abc12.
+                       If an observation gave you no IDs, use an empty list [].
+                       Never write a placeholder, an ellipsis, or an ID you did not see."],
+     "kind": "observation | inference | elimination"}
+  ],
+  "assumptions": [
+    {"statement": "what you assumed",
+     "basis": "why it is reasonable",
+     "impact_if_wrong": "what the conclusion loses if it is not true"}
+  ],
+  "confidence": 0.0,
+  "limitations": ["what this answer does not establish"],
+  "next_steps": ["a concrete thing to check next"]
+}"""
 
-        context_messages = [
-            f"Goal: {plan.goal}",
-            f"System: {plan.system_id}",
-            f"Focus Service: {plan.service or 'all'}",
-            f"Available Services in Evidence: {services_str}",
-            f"Incident Window: {windows.incident.start} to {windows.incident.end}",
-            "--- Investigation Log ---"
-        ]
-        
-        for step in range(self.max_steps):
-            prompt = "\n".join(context_messages) + "\n\nJSON Output:"
-            
-            try:
-                response = await self._llm.generate(
-                    system=system,
-                    prompt=prompt,
-                    schema={
+RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "thought": {"type": "string"},
+        "action": {"type": ["string", "null"]},
+        "action_input": {"type": ["object", "null"]},
+        "is_finished": {"type": "boolean"},
+        "answer": {
+            "type": ["object", "null"],
+            "properties": {
+                "headline": {"type": "string"},
+                "detail": {"type": "string"},
+                "root_cause_service": {"type": ["string", "null"]},
+                "reasoning": {
+                    "type": "array",
+                    "items": {
                         "type": "object",
                         "properties": {
-                            "thought": {"type": "string"},
-                            "action": {"type": ["string", "null"]},
-                            "action_input": {"type": ["object", "null"]},
-                            "is_finished": {"type": "boolean"},
-                            "conclusion": {
-                                "type": ["string", "null"],
-                                "description": "Highly detailed Markdown string containing Root Cause, Evidence, and Chain of Events sections."
-                            },
-                            "root_cause_service": {"type": ["string", "null"]}
+                            "claim": {"type": "string"},
+                            "because": {"type": "string"},
+                            "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                            "kind": {"type": "string"},
                         },
-                        "required": ["thought", "is_finished"]
-                    }
-                )
-            except (LLMUnavailable, PromptTruncated) as exc:
-                logger.error("LLM Error during ReAct loop: %s", exc)
-                yield {"type": "error", "message": str(exc)}
-                return
+                        "required": ["claim"],
+                    },
+                },
+                "assumptions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "statement": {"type": "string"},
+                            "basis": {"type": "string"},
+                            "impact_if_wrong": {"type": "string"},
+                        },
+                        "required": ["statement"],
+                    },
+                },
+                "confidence": {"type": "number"},
+                "limitations": {"type": "array", "items": {"type": "string"}},
+                "next_steps": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["headline"],
+        },
+    },
+    "required": ["thought", "is_finished"],
+}
 
-            text = response.text.strip()
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.DOTALL)
-            
+
+class ReActAgent:
+    """The reasoning loop.
+
+    Its job is to decide what to look at next and to assemble an answer from what
+    the tools return. It deliberately does not measure anything itself: the tools
+    hand it figures that have already been compared against a baseline, and any
+    number it produces on its own is treated as unsupported.
+    """
+
+    def __init__(self, llm: LLMClient, max_steps: int | None = None) -> None:
+        self._llm = llm
+        self.max_steps = max_steps or settings.react_max_steps
+
+    async def run(self, plan: InvestigationPlan, windows: InvestigationWindows,
+                  evidence: EvidenceBundle, signals: list[Signal],
+                  candidates: list[Candidate]) -> AsyncIterator[dict]:
+        bindings = ToolBindings(plan, windows, evidence, signals, candidates)
+        mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
+
+        system = SYSTEM_PROMPT.format(
+            tools=bindings.schema(), answer_schema=ANSWER_SCHEMA_HINT
+        )
+
+        transcript = [
+            f"Question: {plan.goal}",
+            f"System: {plan.system_id} / {plan.environment}",
+            f"Focus service: {plan.service or 'whole system'}",
+            f"Known services: {', '.join(self._known_services(evidence)) or 'none observed'}",
+            f"Window analysed: {windows.incident}",
+            "",
+            f"TASK TYPE: {mode.value}. {MODE_GUIDANCE[mode]}",
+            "",
+            "--- investigation log ---",
+        ]
+
+        seen_calls: set[str] = set()
+        empty_calls: dict[str, int] = {}
+        repeated = 0
+
+        for step in range(1, self.max_steps + 1):
+            remaining = self.max_steps - step
+            budget = (f"\n[Step {step} of {self.max_steps}. "
+                      + ("Finish now — this is your last step; answer from what you "
+                         "already have." if remaining == 0 else
+                         f"{remaining} step(s) left.") + "]")
+            prompt = "\n".join(transcript) + budget + "\n\nJSON:"
+
             try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as exc:
-                logger.error("Invalid JSON from LLM: %s", text)
-                yield {"type": "error", "message": f"LLM returned invalid JSON: {exc}"}
+                response = await self._llm.generate(
+                    system=system, prompt=prompt, schema=RESPONSE_SCHEMA
+                )
+            except PromptTruncated as exc:
+                # The transcript outgrew the context window, so the model is now
+                # reasoning from a fragment of its own investigation. Anything it
+                # says next is unmoored; stop rather than accept it.
+                logger.error("ReAct prompt truncated at step %d: %s", step, exc)
+                yield {"type": "error", "code": "prompt_truncated", "message": str(exc)}
+                return
+            except LLMUnavailable as exc:
+                logger.warning("ReAct LLM unavailable at step %d: %s", step, exc)
+                yield {"type": "error", "code": "llm_unavailable", "message": str(exc)}
                 return
 
-            thought = parsed.get("thought", "")
+            parsed = self._parse(response.text)
+            if parsed is None:
+                # One malformed reply is recoverable: tell the model what went
+                # wrong and let it try again rather than abandoning the run.
+                yield {"type": "note", "step": step,
+                       "message": "The model returned unparseable JSON; asking it to retry."}
+                transcript.append(
+                    "System: your last reply was not valid JSON. Reply with the JSON "
+                    "object only, no prose, no code fences."
+                )
+                continue
+
+            thought = (parsed.get("thought") or "").strip()
             action = parsed.get("action")
             action_input = parsed.get("action_input") or {}
-            is_finished = parsed.get("is_finished", False)
-            conclusion = parsed.get("conclusion")
-            
-            # Forgiving fallback: if the model specifies no action, it must be finished,
-            # even if it forgot to set the is_finished flag to true.
-            if not action and not is_finished:
-                is_finished = True
-                
-            # If it finishes but forgets to provide a conclusion string, use its thought as the conclusion.
-            if is_finished and not conclusion:
-                conclusion = thought
-            
-            yield {
-                "type": "thought",
-                "text": thought,
-                "step": step + 1
-            }
-            context_messages.append(f"Thought: {thought}")
-            
-            if is_finished:
-                yield {
-                    "type": "conclusion",
-                    "conclusion": conclusion,
-                    "service": parsed.get("root_cause_service")
-                }
+            is_finished = bool(parsed.get("is_finished"))
+            answer = parsed.get("answer")
+
+            if thought:
+                yield {"type": "thought", "step": step, "text": thought}
+                transcript.append(f"Thought: {thought}")
+
+            # A reply with no action and no answer is a stall. Treat it as being
+            # finished only if something usable came with it.
+            if not action and not is_finished and not answer:
+                transcript.append(
+                    "System: you gave neither an action nor an answer. Either call a "
+                    "tool or set is_finished with a filled-in answer."
+                )
+                continue
+
+            if is_finished or (not action and answer):
+                yield {"type": "answer", "step": step, "mode": mode.value,
+                       "answer": answer or {}, "exposed_ids": sorted(bindings.exposed_ids),
+                       "steps_used": step, "tool_calls": len(bindings.call_log)}
                 return
-                
-            if action:
-                yield {
-                    "type": "action",
-                    "tool": action,
-                    "input": action_input
-                }
-                context_messages.append(f"Action: {action} {json.dumps(action_input)}")
-                
-                observation = bindings.execute(action, action_input)
-                
-                yield {
-                    "type": "observation",
-                    "text": observation
-                }
-                context_messages.append(f"Observation: {observation}")
+
+            signature = f"{action}:{json.dumps(action_input, sort_keys=True)}"
+            if signature in seen_calls:
+                repeated += 1
+                # Repeating a call cannot produce new information — the tools are
+                # pure functions of an evidence set that does not change mid-run.
+                observation = ToolResult(
+                    f"You already called {action} with these arguments and got the same "
+                    f"answer. It will not change. Use a different tool or different "
+                    f"arguments, or finish with what you have."
+                )
+                if repeated >= 2:
+                    transcript.append(
+                        "System: you are repeating tool calls. Produce your answer now "
+                        "from the evidence already gathered."
+                    )
             else:
-                yield {
-                    "type": "error",
-                    "message": "Model did not specify an action or finish."
-                }
-                return
-                
-        yield {
-            "type": "error",
-            "message": f"Max steps ({self.max_steps}) reached without a conclusion."
-        }
+                seen_calls.add(signature)
+                yield {"type": "action", "step": step, "tool": action, "input": action_input}
+                observation = bindings.execute(action, action_input)
+
+                # Varying one argument and re-running a tool that keeps finding
+                # nothing is the same dead end reached by a different route. One
+                # live run spent four steps re-searching the same term at every
+                # log level in turn; the exact-duplicate check never fired.
+                if _found_nothing(observation.text):
+                    empty_calls[action] = empty_calls.get(action, 0) + 1
+                    if empty_calls[action] >= 3:
+                        transcript.append(
+                            f"System: {action} has now returned nothing {empty_calls[action]} "
+                            f"times with different arguments. Stop varying the arguments — "
+                            f"either use a different tool or report that nothing was found."
+                        )
+
+            yield {"type": "observation", "step": step, "text": observation.text,
+                   "evidence_ids": observation.evidence_ids,
+                   "table": observation.table}
+            transcript.append(f"Action: {action} {json.dumps(action_input)}")
+            transcript.append(f"Observation: {observation.text}")
+
+        # Out of steps. What was gathered is still worth reporting, so hand back
+        # the transcript rather than nothing.
+        yield {"type": "exhausted", "steps_used": self.max_steps,
+               "exposed_ids": sorted(bindings.exposed_ids),
+               "tool_calls": len(bindings.call_log),
+               "message": (f"Reached the {self.max_steps}-step limit without a "
+                           f"conclusion. The evidence gathered is reported below.")}
+
+    # ------------------------------------------------------------------ helpers
+    @staticmethod
+    def _known_services(evidence: EvidenceBundle) -> list[str]:
+        names = {p.service for p in evidence.logs.patterns if p.service}
+        names |= {s.service for s in evidence.metrics.series if s.service}
+        names |= set(evidence.logs.dependency_edges)
+        names |= {c for callees in evidence.logs.dependency_edges.values() for c in callees}
+        return sorted(n for n in names if n)
+
+    @staticmethod
+    def _parse(text: str) -> dict | None:
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.DOTALL)
+        if not cleaned.startswith("{"):
+            match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+            if not match:
+                return None
+            cleaned = match.group(0)
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
