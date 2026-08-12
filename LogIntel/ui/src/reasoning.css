@@ -171,3 +171,33 @@
   .li-confidence-factors { width: min(320px, 88vw); }
   .li-trace-list { padding: 0 12px 14px; }
 }
+
+/* -- executable next steps -------------------------------------------------- */
+.li-steps { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.li-step {
+  border: 1px solid var(--glass-border); border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.02); padding: 13px 15px;
+  transition: border-color 0.2s var(--ease);
+}
+.li-step:hover { border-color: rgba(255, 255, 255, 0.14); }
+.li-step-main { display: flex; gap: 14px; align-items: flex-start; }
+.li-step-text { flex: 1; min-width: 0; }
+.li-step-label { color: var(--text-primary); font-size: 0.95rem; line-height: 1.5; }
+.li-step-reason { color: var(--text-tertiary); font-size: 0.8rem; margin-top: 3px; }
+.li-step-tool {
+  display: inline-block; margin-top: 7px; font-size: 0.78rem;
+  font-family: 'JetBrains Mono', monospace; color: var(--accent-color);
+  background: rgba(56, 189, 248, 0.08); padding: 3px 9px; border-radius: var(--r-sm);
+  word-break: break-all;
+}
+.li-step-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.li-step-button { padding: 7px 16px; font-size: 0.82rem; white-space: nowrap; }
+.li-step-manual { font-size: 0.75rem; font-style: italic; }
+.li-step-result { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--glass-border); }
+.li-step-result--error { color: var(--error); font-size: 0.86rem; }
+
+@media (max-width: 640px) {
+  .li-step-main { flex-direction: column; gap: 10px; }
+  .li-step-actions { width: 100%; }
+  .li-step-button { flex: 1; }
+}

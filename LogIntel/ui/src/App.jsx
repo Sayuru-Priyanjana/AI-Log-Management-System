@@ -24,6 +24,14 @@ function App() {
     setTab('investigate');
   };
 
+  // A "next step" the agent should take on itself: re-run against the same
+  // system and environment, with the step as the new question. Keyed by
+  // timestamp so asking the same follow-up twice actually re-runs it.
+  const handleFollowUp = (question) => {
+    if (!request) return;
+    setRequest({ ...request, question, _at: Date.now() });
+  };
+
   return (
     <>
       <div className="bg-mesh" />
@@ -68,7 +76,7 @@ function App() {
                     New Investigation
                   </button>
                 </div>
-                <InvestigationResults request={request} />
+                <InvestigationResults request={request} onFollowUp={handleFollowUp} />
               </div>
             )
           )}

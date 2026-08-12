@@ -16,12 +16,13 @@ import logging
 from app.config import settings
 from app.models.analysis import Candidate, InvestigationWindows
 from app.models.answer import (
-    Assumption,
     AnswerMode,
+    Assumption,
     Citation,
     CitationStatus,
     ConfidenceFactor,
     DataTable,
+    NextStep,
     ReasoningStep,
     StructuredAnswer,
 )
@@ -54,6 +55,67 @@ def build_evidence_index(signals: list[Signal], candidates: list[Candidate],
 
 def _clamp(value: float) -> float:
     return round(max(0.0, min(1.0, value)), 3)
+
+
+def _build_next_steps(raw_steps, evidence: EvidenceBundle,
+                      answer: StructuredAnswer) -> list[NextStep]:
+    """Turns suggested next steps into things that can actually be run.
+
+    A step is executable in one of two ways: re-running a single tool against the
+    evidence already gathered (instant, no model call), or handing the step back
+    to the agent as a fresh question. Anything else stays a plain instruction.
+
+    A tool proposed by the model is validated against the real registry first —
+    name and parameters both. A button that fails when pressed is worse than no
+    button, and a small model proposes plausible-looking calls that do not exist.
+    """
+    from app.agents.tool_bindings import ToolBindings      # avoids a cycle at import
+
+    specs = {spec.name: spec for spec in ToolBindings.SPECS}
+    steps: list[NextStep] = []
+
+    for item in raw_steps or []:
+        if isinstance(item, str):
+            label, tool, tool_input = item.strip(), None, {}
+        elif isinstance(item, dict):
+            label = str(item.get("label") or item.get("step") or "").strip()
+            tool = item.get("tool")
+            tool_input = item.get("tool_input") or {}
+        else:
+            continue
+        if not label:
+            continue
+
+        spec = specs.get(tool) if isinstance(tool, str) else None
+        if spec:
+            allowed = {k: v for k, v in tool_input.items() if k in spec.parameters}
+            steps.append(NextStep(label=label, kind="tool", tool=spec.name,
+                                  tool_input=allowed,
+                                  reason="Runs against the evidence already collected."))
+        else:
+            # Not runnable as a tool, so offer it to the agent as a question.
+            # The step text is already phrased as an instruction, which is close
+            # enough to a question for the planner to work with.
+            steps.append(NextStep(label=label, kind="investigation", question=label,
+                                  reason="Runs a fresh investigation on this question."))
+
+    # A service named in the answer but never looked at is the most useful
+    # follow-up there is, and the model rarely proposes it. Derive it.
+    examined = {p.service for p in evidence.logs.patterns if p.service}
+    mentioned = {answer.root_cause_service} if answer.root_cause_service else set()
+    for caller, callees in evidence.logs.dependency_edges.items():
+        mentioned.update({caller, *callees})
+    for service in sorted(mentioned - examined):
+        if service and not any(service in s.label for s in steps):
+            steps.append(NextStep(
+                label=f"Look at the logs for {service}, which was not examined",
+                kind="tool", tool="search_logs",
+                tool_input={"service_name": service, "level": "ERROR"},
+                reason="This service appears in the call graph but produced no log "
+                       "patterns in the window analysed.",
+            ))
+
+    return steps[:6]
 
 
 # Schema placeholders the model sometimes copies verbatim instead of substituting
@@ -116,7 +178,7 @@ def verify_answer(
             answer.assumptions.append(Assumption(statement=item.strip()))
 
     answer.limitations = [str(x).strip() for x in (raw.get("limitations") or []) if x]
-    answer.next_steps = [str(x).strip() for x in (raw.get("next_steps") or []) if x]
+    answer.next_steps = _build_next_steps(raw.get("next_steps"), evidence, answer)
 
     # -- citations ---------------------------------------------------------
     # Three outcomes, kept distinct: it resolves, it was never shown to the

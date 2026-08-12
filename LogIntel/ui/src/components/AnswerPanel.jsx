@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import NextSteps from './NextSteps';
 
 const MODE_LABEL = {
   root_cause: 'Root cause',
@@ -22,7 +23,7 @@ function confidenceTone(value) {
  * and which reasoning steps rest on nothing. A reader who can see the weak parts
  * can decide how far to trust the strong ones.
  */
-export default function AnswerPanel({ answer }) {
+export default function AnswerPanel({ answer, investigationId, onInvestigate }) {
   if (!answer) return null;
 
   const tone = confidenceTone(answer.confidence);
@@ -113,13 +114,8 @@ export default function AnswerPanel({ answer }) {
         </Section>
       )}
 
-      {answer.next_steps?.length > 0 && (
-        <Section title="Suggested next steps">
-          <ul className="li-checklist">
-            {answer.next_steps.map((s, i) => <li key={i}>{s}</li>)}
-          </ul>
-        </Section>
-      )}
+      <NextSteps steps={answer.next_steps} investigationId={investigationId}
+        onInvestigate={onInvestigate} />
     </div>
   );
 }

@@ -15,7 +15,7 @@ const PREP_STAGES = [
   { id: 'candidates', label: 'Candidates' },
 ];
 
-export default function InvestigationResults({ request }) {
+export default function InvestigationResults({ request, onFollowUp }) {
   const [stages, setStages] = useState({});
   const [trace, setTrace] = useState([]);
   const [answer, setAnswer] = useState(null);
@@ -111,7 +111,14 @@ export default function InvestigationResults({ request }) {
 
       {/* The answer sits above the trace once it exists: the conclusion is what
           most readers want, and the working is there for when they doubt it. */}
-      {answer && <div className="glass-panel li-answer-panel"><AnswerPanel answer={answer} /></div>}
+      {answer && (
+        <div className="glass-panel li-answer-panel">
+          {/* The id only exists once the run is stored, so tool buttons appear
+              when they can actually work rather than failing when pressed. */}
+          <AnswerPanel answer={answer} investigationId={result?.id}
+            onInvestigate={onFollowUp} />
+        </div>
+      )}
 
       <ReasoningTrace steps={trace} live={status === 'streaming' && !answer} />
 

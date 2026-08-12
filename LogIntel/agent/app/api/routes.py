@@ -5,10 +5,13 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
+from app.agents.tool_bindings import ToolBindings
 from app.config import settings
-from app.models.analysis import InvestigationResult
-from app.models.plan import InvestigationRequest
+from app.models.analysis import InvestigationResult, InvestigationWindows
+from app.models.plan import InvestigationPlan, InvestigationRequest
+from app.pipeline.signals import SignalEngine
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -205,6 +208,60 @@ async def get_investigation(investigation_id: str, request: Request) -> dict:
     if stored is None:
         raise HTTPException(status_code=404, detail=f"no investigation '{investigation_id}'")
     return stored
+
+
+class RunToolRequest(BaseModel):
+    tool: str
+    tool_input: dict = Field(default_factory=dict)
+
+
+@router.post("/investigations/{investigation_id}/run-tool")
+async def run_tool(investigation_id: str, payload: RunToolRequest,
+                   request: Request) -> dict:
+    """Runs one tool against a finished investigation's evidence.
+
+    This is what makes a suggested next step actionable. It rebuilds the evidence
+    from the plan and windows the investigation stored, so the answer comes back
+    in a second or two with no model call and no re-reasoning — the reader is
+    looking at the same window the conclusion was drawn from, which is the whole
+    point of following up on it.
+    """
+    container = deps(request)
+    stored = await container.store.get(investigation_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"no investigation '{investigation_id}'")
+
+    if payload.tool not in {spec.name for spec in ToolBindings.SPECS}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown tool '{payload.tool}'. Available: "
+                   f"{', '.join(sorted(s.name for s in ToolBindings.SPECS))}",
+        )
+
+    try:
+        plan = InvestigationPlan(**stored["plan"])
+        windows = InvestigationWindows(**stored["windows"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422,
+                            detail=f"stored investigation is not replayable: {exc}") from exc
+
+    pipeline = container.pipeline
+    evidence = await pipeline._collect(plan, windows, [])       # noqa: SLF001
+    signals = SignalEngine(known_services=[]).detect(plan, windows, evidence)
+    candidates = pipeline.hypotheses.generate(plan, windows, signals, evidence)
+
+    bindings = ToolBindings(plan, windows, evidence, signals, candidates)
+    result = bindings.execute(payload.tool, payload.tool_input)
+
+    return {
+        "investigation_id": investigation_id,
+        "tool": payload.tool,
+        "tool_input": payload.tool_input,
+        "observation": result.text,
+        "evidence_ids": result.evidence_ids,
+        "table": result.table,
+        "window": windows.incident.model_dump(mode="json"),
+    }
 
 
 @router.get("/config")

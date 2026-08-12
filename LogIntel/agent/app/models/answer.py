@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AnswerMode(str, Enum):
@@ -76,6 +76,33 @@ class ConfidenceFactor(BaseModel):
     weight: float = 0.0
 
 
+class NextStep(BaseModel):
+    """Something to do next, and — where possible — the means to do it.
+
+    A suggestion the reader has to go and perform by hand is a dead end at the
+    exact moment the investigation was getting somewhere. Each step therefore
+    carries an executable form when one can be derived:
+
+    - `tool`   — re-run a single tool against the evidence already gathered.
+                 Cheap and instant: no model call, nothing re-reasoned.
+    - `question` — hand the step back to the agent as a fresh investigation.
+
+    The tool call is validated against the real registry before it is offered, so
+    a button never appears for something that cannot run.
+    """
+
+    label: str
+    kind: str = "manual"                    # tool | investigation | manual
+    tool: str | None = None
+    tool_input: dict = Field(default_factory=dict)
+    question: str | None = None
+    reason: str = ""                        # why this is worth doing
+
+    @property
+    def is_executable(self) -> bool:
+        return self.kind in ("tool", "investigation")
+
+
 class DataTable(BaseModel):
     """Tabular result for extraction and aggregation answers."""
 
@@ -106,10 +133,21 @@ class StructuredAnswer(BaseModel):
     confidence_factors: list[ConfidenceFactor] = Field(default_factory=list)
 
     limitations: list[str] = Field(default_factory=list)
-    next_steps: list[str] = Field(default_factory=list)
+    next_steps: list[NextStep] = Field(default_factory=list)
 
     # Populated for extraction and aggregation answers.
     table: DataTable | None = None
+
+    @field_validator("next_steps", mode="before")
+    @classmethod
+    def _accept_plain_strings(cls, value):
+        """Investigations stored before next steps became executable hold plain
+        strings. Coerce rather than fail: the history is the audit trail, and it
+        must stay readable across a schema change."""
+        if not isinstance(value, list):
+            return value
+        return [{"label": item, "kind": "manual"} if isinstance(item, str) else item
+                for item in value]
 
     @property
     def unresolved_citations(self) -> list[Citation]:

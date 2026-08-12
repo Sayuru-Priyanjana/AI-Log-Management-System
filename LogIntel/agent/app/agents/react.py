@@ -114,7 +114,13 @@ ANSWER_SCHEMA_HINT = """{
   ],
   "confidence": 0.0,
   "limitations": ["what this answer does not establish"],
-  "next_steps": ["a concrete thing to check next"]
+  "next_steps": [
+    {"label": "what to do next, in plain words",
+     "tool": "OPTIONAL: a tool from the list above that would do it, so the reader
+              can run it with one click. Omit it if no tool fits — the step is
+              then offered as a fresh investigation instead.",
+     "tool_input": {"service_name": "..."}}
+  ]
 }"""
 
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -157,7 +163,18 @@ RESPONSE_SCHEMA: dict[str, Any] = {
                 },
                 "confidence": {"type": "number"},
                 "limitations": {"type": "array", "items": {"type": "string"}},
-                "next_steps": {"type": "array", "items": {"type": "string"}},
+                "next_steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "tool": {"type": ["string", "null"]},
+                            "tool_input": {"type": ["object", "null"]},
+                        },
+                        "required": ["label"],
+                    },
+                },
             },
             "required": ["headline"],
         },

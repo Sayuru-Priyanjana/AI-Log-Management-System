@@ -77,4 +77,18 @@ export async function runInvestigation(payload, { onEvent, signal }) {
   }
 }
 
+/**
+ * Runs a single tool against a finished investigation's evidence.
+ *
+ * This is what a "next step" button calls. It rebuilds the evidence from the
+ * plan and windows the investigation stored, so the result comes back in a
+ * second or two with no model call — and against the same window the conclusion
+ * was drawn from, which is the point of following up on it at all.
+ */
+export const runInvestigationTool = (investigationId, tool, toolInput) =>
+  postJSON(`/api/investigations/${investigationId}/run-tool`, {
+    tool,
+    tool_input: toolInput || {},
+  });
+
 export { BASE_URL };

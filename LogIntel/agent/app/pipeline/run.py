@@ -190,7 +190,9 @@ class InvestigationPipeline:
                 timeline=build_timeline(windows, signals, evidence),
                 confidence=answer.confidence,
                 evidence_ids=[c.id for c in answer.citations],
-                next_steps=answer.next_steps,
+                # The flat view for stored history and scoring; the executable
+                # form lives on `answer.next_steps`.
+                next_steps=[step.label for step in answer.next_steps],
                 evidence_gaps=answer.limitations,
                 analyst="react" if not degraded else "react (degraded)",
                 engine_top_candidate_id=candidates[0].id if candidates else None,

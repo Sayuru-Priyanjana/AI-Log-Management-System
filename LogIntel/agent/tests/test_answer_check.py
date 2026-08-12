@@ -154,6 +154,73 @@ def test_a_bonus_cannot_lift_an_answer_above_its_own_cap(windows):
     assert any(f.direction == "raises" for f in answer.confidence_factors)
 
 
+def test_a_valid_tool_suggestion_becomes_a_runnable_step(windows):
+    answer = check({
+        "headline": "payment-db is slow", "confidence": 0.7,
+        "next_steps": [{"label": "Check payment-db error logs",
+                        "tool": "search_logs",
+                        "tool_input": {"service_name": "payment-db", "level": "ERROR"}}],
+    }, signals=[], windows=windows)
+
+    step = answer.next_steps[0]
+    assert step.kind == "tool"
+    assert step.tool == "search_logs"
+    assert step.tool_input == {"service_name": "payment-db", "level": "ERROR"}
+    assert step.is_executable
+
+
+def test_an_invented_tool_falls_back_to_a_follow_up_investigation(windows):
+    """A button that fails when pressed is worse than no button. A tool the model
+    made up is not offered as one — the step becomes a fresh question instead."""
+    answer = check({
+        "headline": "x", "confidence": 0.7,
+        "next_steps": [{"label": "Inspect the database connection pool",
+                        "tool": "get_connection_pool_stats", "tool_input": {}}],
+    }, signals=[], windows=windows)
+
+    step = answer.next_steps[0]
+    assert step.kind == "investigation"
+    assert step.tool is None
+    assert step.question == "Inspect the database connection pool"
+
+
+def test_unknown_tool_parameters_are_dropped_not_passed_through(windows):
+    answer = check({
+        "headline": "x", "confidence": 0.7,
+        "next_steps": [{"label": "search", "tool": "search_logs",
+                        "tool_input": {"service_name": "payment-db",
+                                       "sql_injection": "; DROP TABLE"}}],
+    }, signals=[], windows=windows)
+
+    assert answer.next_steps[0].tool_input == {"service_name": "payment-db"}
+
+
+def test_a_service_in_the_call_graph_that_was_never_examined_is_offered(windows):
+    """The most useful follow-up there is, and the model rarely proposes it."""
+    from app.models.evidence import EvidenceBundle, LogEvidence
+
+    evidence = EvidenceBundle(logs=LogEvidence(
+        patterns=[pattern("boom", service="payment-api", count=10)],
+        dependency_edges={"payment-api": ["payment-db"]},
+    ))
+    answer = check({"headline": "x", "confidence": 0.7, "next_steps": []},
+                   signals=[], windows=windows, evidence=evidence)
+
+    derived = [s for s in answer.next_steps if "payment-db" in s.label]
+    assert derived, "payment-db is in the call graph but produced no log patterns"
+    assert derived[0].kind == "tool"
+    assert derived[0].tool_input["service_name"] == "payment-db"
+
+
+def test_plain_string_next_steps_from_older_runs_still_load(windows):
+    from app.models.answer import StructuredAnswer
+
+    revived = StructuredAnswer(**{"headline": "x", "next_steps": ["do the thing"]})
+    assert revived.next_steps[0].label == "do the thing"
+    assert revived.next_steps[0].kind == "manual"
+    assert not revived.next_steps[0].is_executable
+
+
 def test_a_disagreeing_answer_is_still_classified(windows):
     """Regression: the category was read only from the top-ranked candidate, so
     whenever the model disagreed the run was filed as 'unknown' — discarding the
