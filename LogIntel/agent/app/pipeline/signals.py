@@ -10,6 +10,7 @@ from app.models.analysis import InvestigationWindows
 from app.models.evidence import EvidenceBundle, MetricSeries
 from app.models.plan import InvestigationPlan
 from app.models.signals import Magnitude, Severity, Signal, SignalType
+from app.util.timefmt import clock, stamp
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ class SignalEngine:
                                     unit="of requests at peak",
                                     ratio=(ratio / baseline_ratio) if baseline_ratio else None),
                 description=(f"{ratio:.0%} of {service} requests returned 5xx at the worst point"
-                             + (f" ({peaked_at:%H:%M:%S}Z)." if peaked_at else ".")),
+                             + (f" ({clock(peaked_at)})." if peaked_at else ".")),
                 evidence_ids=[errors.id, total.id],
             ))
 
@@ -595,7 +596,7 @@ class SignalEngine:
                 note = ""
                 if pre_existing and true_onset:
                     note = (f" This condition was already present before the window "
-                            f"(first seen {true_onset:%Y-%m-%d %H:%M:%S}Z), so it predates "
+                            f"(first seen {stamp(true_onset)}), so it predates "
                             f"the incident rather than starting it.")
 
                 signals.append(Signal(

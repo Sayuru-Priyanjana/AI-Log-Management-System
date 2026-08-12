@@ -11,6 +11,7 @@ from app.models.domain import TimeWindow, ensure_utc
 from app.models.evidence import LogBucket
 from app.models.plan import InvestigationPlan
 from app.tools.logs import LogTool
+from app.util.timefmt import clock
 
 logger = logging.getLogger(__name__)
 
@@ -550,12 +551,12 @@ class WindowResolver:
                       f"(median {onset_result.median:.1f}, MAD {onset_result.mad:.1f}) "
                       f"and stayed there")
         if clamped:
-            method += (f"; the departure began at {onset:%H:%M:%S}Z, before the period asked "
+            method += (f"; the departure began at {clock(onset)}, before the period asked "
                        f"about, so the window analysed starts at the edge of that period and "
                        f"the earlier part of the incident was not examined")
             if baseline:
                 method += (f" — the comparison window still ends at or before the onset "
-                           f"({baseline.end:%H:%M:%S}Z) so the ratios are not measured "
+                           f"({clock(baseline.end)}) so the ratios are not measured "
                            f"against the incident itself")
         if baseline and baseline.end < baseline_end:
             method += (f"; the stretch immediately before the onset was itself busy, so the "

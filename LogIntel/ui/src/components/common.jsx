@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { usePreferences } from '../preferences';
 
 // Small building blocks shared by every panel, so "readable" means the same
 // thing everywhere: a severity chip is always the same four colors, a
@@ -100,10 +101,12 @@ export function ErrorBanner({ children }) {
 }
 
 export function Timestamp({ value }) {
+  // The agent's zone, not the browser's: the agent writes times into its own
+  // prose, and a page formatting in a different one would hand the reader two
+  // clocks to reconcile.
+  const { formatStamp } = usePreferences();
   if (!value) return <span className="li-empty">unknown time</span>;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return <span className="li-mono">{String(value)}</span>;
-  return <span className="li-mono">{date.toISOString().replace('T', ' ').slice(0, 19)}Z</span>;
+  return <span className="li-mono">{formatStamp(value, String(value))}</span>;
 }
 
 /** The transparency escape hatch: every panel gets one of these so nothing is

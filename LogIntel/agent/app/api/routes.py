@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 
 from app.agents.tool_bindings import ToolBindings
 from app.config import settings
+from app.llm.factory import (
+    describe_endpoint, describe_model, describe_provider,
+)
 from app.models.analysis import InvestigationResult, InvestigationWindows
 from app.models.plan import InvestigationPlan, InvestigationRequest
 from app.pipeline.signals import SignalEngine
@@ -59,22 +62,34 @@ async def health(request: Request) -> dict:
     except Exception as exc:
         report["components"]["prometheus"] = {"status": "unreachable", "error": str(exc)}
 
+    # Reported under one key whichever backend is configured, so the UI does not
+    # have to know which provider is in use to show whether the model is reachable.
     try:
+        provider = describe_provider(container.llm)
         available = await container.llm.available()
-        report["components"]["ollama"] = {
+        component = {
             "status": "ok" if available else "degraded",
-            "url": container.llm.base_url,
-            "model": container.llm.model,
-            "num_ctx": container.llm.num_ctx,
-            "models_present": await container.llm.list_models(),
+            "provider": provider,
+            "url": describe_endpoint(container.llm),
+            "model": describe_model(container.llm),
         }
-        if not available:
-            report["components"]["ollama"]["hint"] = (
-                f"model '{container.llm.model}' is not pulled, or Ollama is not listening on "
-                f"{container.llm.base_url} (set OLLAMA_HOST=0.0.0.0 on the Windows host)"
+        if provider == "ollama":
+            component["num_ctx"] = container.llm.num_ctx
+            component["models_present"] = await container.llm.list_models()
+            if not available:
+                component["hint"] = (
+                    f"model '{container.llm.model}' is not pulled, or Ollama is not listening "
+                    f"on {container.llm.base_url}. Ollama is an external service: start it with "
+                    f"OLLAMA_HOST=0.0.0.0 so this agent can reach it."
+                )
+        elif not available:
+            component["hint"] = (
+                f"the {provider} endpoint did not authenticate — check LLM_API_KEY, "
+                f"LLM_BASE_URL and that LLM_MODEL exists on that account"
             )
+        report["components"]["model"] = component
     except Exception as exc:
-        report["components"]["ollama"] = {"status": "unreachable", "error": str(exc)}
+        report["components"]["model"] = {"status": "unreachable", "error": str(exc)}
 
     try:
         reachable = await container.incidents.reachable()
@@ -288,9 +303,10 @@ async def effective_config() -> dict:
             "traffic_surge_multiplier": settings.traffic_surge_multiplier,
         },
         "llm": {
-            "model": settings.ollama_model,
+            "provider": settings.llm_provider,
+            "model": settings.llm_model or settings.ollama_model,
+            "temperature": settings.llm_temperature,
             "num_ctx": settings.ollama_num_ctx,
-            "temperature": settings.ollama_temperature,
         },
         "budgets": {
             "max_log_patterns": settings.max_log_patterns,

@@ -17,9 +17,14 @@ _TRUNCATION_MARGIN = 48
 
 
 class OllamaClient(LLMClient):
+    provider = "ollama"
+
     def __init__(self, base_url: str | None = None, model: str | None = None) -> None:
-        self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self.model = model or settings.ollama_model
+        # OLLAMA_* stays the specific knob; LLM_MODEL/LLM_BASE_URL override it so
+        # one pair of variables can point at whichever backend is selected.
+        self.base_url = (base_url or settings.llm_base_url
+                         or settings.ollama_base_url).rstrip("/")
+        self.model = model or settings.llm_model or settings.ollama_model
         self.num_ctx = settings.ollama_num_ctx
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=settings.ollama_timeout)
         self._schema_supported = True

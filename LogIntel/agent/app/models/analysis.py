@@ -9,6 +9,7 @@ from .answer import StructuredAnswer, TimelineEntry
 from .domain import TimeWindow, utcnow
 from .plan import InvestigationPlan
 from .signals import Signal
+from app.util.timefmt import clock
 
 
 class CauseCategory(str, Enum):
@@ -49,7 +50,7 @@ class Candidate(BaseModel):
         if self.service:
             head += f" | service={self.service}"
         if self.onset:
-            head += f" | onset={self.onset:%H:%M:%S}Z"
+            head += f" | onset={clock(self.onset)}"
         lines = [head, f"    why: {self.rationale}"]
         if self.supporting_signals:
             lines.append(f"    supported by: {', '.join(self.supporting_signals)}")

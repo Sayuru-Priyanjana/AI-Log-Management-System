@@ -173,7 +173,10 @@ that hides information, it's just formatted.
 
 ---
 
-## Using the Incidents tab
+## Using the incidents page
+
+At **/incidents** — not linked from anywhere, because it breaks a running system
+on purpose and that is worth typing a URL for.
 
 This is a control panel for the same injector the automated eval harness uses —
 starting a scenario here really scales down a real pod, or really patches a
@@ -187,7 +190,7 @@ real deployment's resource limits. Nothing is simulated.
    CrashLoopBackOff needs a few restart cycles; an error-rate spike is visible
    almost immediately).
 3. Once it says **"active — ready to investigate"**, click **Investigate now**.
-   This switches to the Investigate tab with the system, service and question
+   That returns to the investigation page with the system, service and question
    pre-filled, ready to submit.
 4. When you're done, **Stop** the individual scenario, or **Reset all** to
    clear everything and return the system to its baseline state. Do this

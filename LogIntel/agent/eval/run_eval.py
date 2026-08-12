@@ -35,7 +35,7 @@ import httpx
 from app.agents.react import ReActAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.config import settings
-from app.llm.ollama import OllamaClient
+from app.llm.factory import build_llm
 from app.models.analysis import InvestigationResult
 from app.models.plan import InvestigationRequest
 from app.pipeline.run import InvestigationPipeline
@@ -144,7 +144,7 @@ async def build_pipeline() -> tuple[InvestigationPipeline, list, OpenSearchClien
                                     InvestigationStore, PrometheusClient]:
     opensearch = OpenSearchClient()
     prometheus = PrometheusClient()
-    llm = OllamaClient()
+    llm = build_llm()
     registry = SystemRegistry(opensearch)
     log_tool = LogTool(opensearch)
 

@@ -4,17 +4,17 @@ import { getHealth } from '../api';
 const LABELS = {
   opensearch: 'OpenSearch',
   prometheus: 'Prometheus',
-  ollama: 'Ollama',
-  incident_controller: 'Incidents VM',
+  model: 'Model',
+  incident_controller: 'Testbed',
   registry: 'Registry',
 };
 
-const ORDER = ['opensearch', 'prometheus', 'ollama', 'incident_controller', 'registry'];
+const ORDER = ['opensearch', 'prometheus', 'model', 'incident_controller', 'registry'];
 
 function colorFor(status) {
-  if (status === 'ok') return '#34d399';
-  if (status === 'degraded' || status === 'partial' || status === 'empty') return '#fbbf24';
-  return '#f87171';
+  if (status === 'ok') return 'var(--success)';
+  if (status === 'degraded' || status === 'partial' || status === 'empty') return 'var(--warning)';
+  return 'var(--error)';
 }
 
 /**
@@ -44,7 +44,7 @@ export default function HealthBar() {
   if (error) {
     return (
       <div className="li-healthbar li-healthbar--down">
-        <span className="li-healthbar-dot" style={{ color: '#f87171' }} />
+        <span className="li-healthbar-dot" style={{ color: 'var(--error)' }} />
         Cannot reach the agent at localhost:8000 — is it running?
       </div>
     );

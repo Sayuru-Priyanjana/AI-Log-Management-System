@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { runInvestigation } from '../api';
+import { usePreferences } from '../preferences';
 import AnswerPanel from './AnswerPanel';
 import { ErrorBanner } from './common';
 import EvidenceTimeline from './EvidenceTimeline';
@@ -151,6 +152,7 @@ export default function InvestigationResults({ request, onFollowUp }) {
  * confidence factor.
  */
 function WindowBanner({ windows }) {
+  const { formatClock, formatDay, zoneLabel } = usePreferences();
   if (!windows) return null;
 
   const quality = windows.baseline_quality || (windows.baseline ? 'clean' : 'none');
@@ -161,9 +163,9 @@ function WindowBanner({ windows }) {
       <div className="li-window-part">
         <span className="li-window-label">Analysed</span>
         <span className="li-window-value">
-          {clock(windows.incident?.start)} – {clock(windows.incident?.end)}
+          {formatClock(windows.incident?.start)} – {formatClock(windows.incident?.end)}
         </span>
-        <span className="li-window-sub">{span(windows.incident)} · {day(windows.incident?.start)}</span>
+        <span className="li-window-sub">{span(windows.incident)} · {formatDay(windows.incident?.start)} · {zoneLabel}</span>
       </div>
 
       <div className="li-window-part">
@@ -171,7 +173,7 @@ function WindowBanner({ windows }) {
         {windows.baseline ? (
           <>
             <span className="li-window-value">
-              {clock(windows.baseline.start)} – {clock(windows.baseline.end)}
+              {formatClock(windows.baseline.start)} – {formatClock(windows.baseline.end)}
             </span>
             <span className="li-window-sub">
               {span(windows.baseline)}
@@ -193,20 +195,12 @@ function WindowBanner({ windows }) {
           {windows.onset_detected ? 'Onset' : 'No onset detected'}
         </span>
         {windows.onset && (
-          <span className="li-window-value">{clock(windows.onset)}</span>
+          <span className="li-window-value">{formatClock(windows.onset)}</span>
         )}
         <span className="li-window-sub">{windows.method}</span>
       </div>
     </div>
   );
-}
-
-function clock(iso) {
-  return iso ? String(iso).slice(11, 19) : '—';
-}
-
-function day(iso) {
-  return iso ? String(iso).slice(0, 10) : '';
 }
 
 function span(window) {

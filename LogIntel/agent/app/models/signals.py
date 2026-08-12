@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
+from app.util.timefmt import clock
 
 
 class SignalType(str, Enum):
@@ -107,7 +108,7 @@ class Signal(BaseModel):
         if self.pod:
             parts.append(f"pod={self.pod}")
         if self.first_seen:
-            parts.append(f"onset={self.first_seen:%H:%M:%S}Z")
+            parts.append(f"onset={clock(self.first_seen)}")
         if self.magnitude:
             parts.append(self.magnitude.describe())
         return " | ".join(parts) + f"\n    {self.description}"

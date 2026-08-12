@@ -6,6 +6,7 @@ from app.models.analysis import InvestigationWindows
 from app.models.answer import TimelineEntry
 from app.models.evidence import EvidenceBundle
 from app.models.signals import Signal, SignalType
+from app.util.timefmt import clock
 
 # The timeline is built here, not by the model. It is a statement of fact about
 # ordering, and ordering is exactly the kind of thing a small model gets subtly
@@ -176,7 +177,7 @@ def build_timeline(windows: InvestigationWindows, signals: list[Signal],
         magnitude = f" — {signal.magnitude.describe()}" if signal.magnitude else ""
         entries.append((
             signal.first_seen,
-            f"{signal.first_seen:%H:%M:%S}Z  {signal.type.value} on {scope}{magnitude}",
+            f"{clock(signal.first_seen)}  {signal.type.value} on {scope}{magnitude}",
         ))
 
     # The first appearance of a brand-new error is often the earliest concrete
@@ -185,7 +186,7 @@ def build_timeline(windows: InvestigationWindows, signals: list[Signal],
         if pattern.is_new and pattern.level in ("ERROR", "FATAL", "CRITICAL") and pattern.first_seen:
             entries.append((
                 pattern.first_seen,
-                f"{pattern.first_seen:%H:%M:%S}Z  first occurrence of a new error in "
+                f"{clock(pattern.first_seen)}  first occurrence of a new error in "
                 f"{pattern.service}: \"{pattern.example[:120]}\"",
             ))
 
@@ -194,7 +195,7 @@ def build_timeline(windows: InvestigationWindows, signals: list[Signal],
             continue
         entries.append((
             event.onset,
-            f"{event.onset:%H:%M:%S}Z  Kubernetes {event.reason} on "
+            f"{clock(event.onset)}  Kubernetes {event.reason} on "
             f"{event.pod or event.involved_name} (x{event.count})",
         ))
 
@@ -210,7 +211,7 @@ def build_timeline(windows: InvestigationWindows, signals: list[Signal],
         deduped.append(text)
 
     if windows.onset and windows.onset_detected and not windows.onset_before_window:
-        deduped.insert(0, f"{windows.onset:%H:%M:%S}Z  error rate departed from its baseline "
+        deduped.insert(0, f"{clock(windows.onset)}  error rate departed from its baseline "
                           f"({windows.method})")
 
     return deduped[:limit]

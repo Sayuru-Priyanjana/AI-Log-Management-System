@@ -25,6 +25,7 @@ from app.models.analysis import Candidate, InvestigationWindows
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
 from app.models.signals import Signal
+from app.util.timefmt import clock
 
 ERROR_LEVELS = ("ERROR", "FATAL", "CRITICAL")
 
@@ -116,7 +117,7 @@ class ToolBindings:
         rows = []
         for signal in matching:
             magnitude = f" | {signal.magnitude.describe()}" if signal.magnitude else ""
-            onset = f"{signal.first_seen:%H:%M:%S}Z" if signal.first_seen else "unknown"
+            onset = clock(signal.first_seen)
             flag = " [PRE-EXISTING: began before the window, cannot be the trigger]" \
                 if signal.pre_existing else ""
             lines.append(
@@ -215,7 +216,7 @@ class ToolBindings:
         lines = [f"Log patterns for {service_name} ({len(patterns)} distinct templates):"]
         ids = []
         for pattern in patterns:
-            first = f"{pattern.first_seen:%H:%M:%S}Z" if pattern.first_seen else "?"
+            first = clock(pattern.first_seen, "?")
             new = " [NEW: absent from the baseline window]" if pattern.is_new else ""
             growth = (f" [{pattern.growth:.1f}x baseline]"
                       if pattern.growth and pattern.growth > 1.5 else "")
@@ -247,7 +248,7 @@ class ToolBindings:
         lines = [f"Kubernetes events for {service_name}:"]
         ids = []
         for event in matching:
-            onset = f"{event.onset:%H:%M:%S}Z" if event.onset else "?"
+            onset = clock(event.onset, "?")
             lines.append(
                 f"- [{event.id}] {event.type}/{event.reason} x{event.count} "
                 f"pod={event.pod or '-'} from {onset}\n    {event.message[:220]}"
@@ -324,7 +325,7 @@ class ToolBindings:
                  "the closest thing to a trigger):"]
         ids = []
         for when, text in entries[:25]:
-            lines.append(f"  {when:%H:%M:%S}Z  {text}")
+            lines.append(f"  {clock(when)}  {text}")
             found = re.search(r"\[([a-z]+:[^\]]+)\]", text)
             if found:
                 ids.append(found.group(1))
@@ -357,7 +358,7 @@ class ToolBindings:
                 continue
             if service_name not in ("all", "", None) and sample.service != service_name:
                 continue
-            rows.append([f"{sample.timestamp:%H:%M:%S}Z", sample.level,
+            rows.append([clock(sample.timestamp), sample.level,
                          sample.service or "-", sample.message[:160]])
             ids.append(sample.id)
             sample_ids.append(sample.id)

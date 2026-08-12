@@ -5,6 +5,7 @@ from app.models.analysis import Candidate, InvestigationWindows
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
 from app.models.signals import Signal
+from app.util.timefmt import clock, stamp
 
 SELECTION_SYSTEM_PROMPT = """You are an SRE reviewing an incident that has already been measured.
 
@@ -104,7 +105,7 @@ def _format_patterns(evidence: EvidenceBundle, limit: int) -> str:
         growth = f" ({pattern.growth:.1f}x baseline)" if pattern.growth and pattern.growth > 1.5 else ""
         window = ""
         if pattern.first_seen:
-            window = f" from {pattern.first_seen:%H:%M:%S}Z"
+            window = f" from {clock(pattern.first_seen)}"
         lines.append(
             f"[{pattern.id}] x{pattern.count}{growth}{flags} {pattern.level} "
             f"{pattern.service}{window}\n    \"{pattern.example[:200]}\""
@@ -120,7 +121,7 @@ def _format_events(evidence: EvidenceBundle, limit: int) -> str:
         return "No warning-level Kubernetes events in scope."
     lines = []
     for event in events:
-        onset = f"{event.onset:%H:%M:%S}Z" if event.onset else "unknown time"
+        onset = clock(event.onset, "unknown time")
         lines.append(f"[{event.id}] {event.reason} x{event.count} on "
                      f"{event.pod or event.involved_name} from {onset}\n"
                      f"    {event.message[:200]}")
@@ -156,7 +157,7 @@ def build_selection_prompt(plan: InvestigationPlan, windows: InvestigationWindow
                            signals: list[Signal], candidates: list[Candidate],
                            evidence: EvidenceBundle) -> str:
     baseline = str(windows.baseline) if windows.baseline else "none available"
-    onset = (f"{windows.onset:%Y-%m-%d %H:%M:%S}Z ({windows.method})"
+    onset = (f"{stamp(windows.onset)} ({windows.method})"
              if windows.onset else f"not detected ({windows.method})")
 
     sections = [

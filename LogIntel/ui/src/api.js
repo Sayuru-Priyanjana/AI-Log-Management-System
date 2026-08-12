@@ -3,7 +3,13 @@
 // directly. That keeps this file the single place network wiring lives, and
 // means /api/health can report on all of them without the browser needing
 // separate credentials or CORS setup for each.
-const BASE_URL = import.meta.env.VITE_AGENT_URL || 'http://localhost:8000';
+// An *empty* VITE_AGENT_URL is meaningful and distinct from an unset one: it
+// means "same origin", which is how the container image is built — nginx serves
+// this bundle and proxies /api to the agent, so the browser never learns the
+// agent's address and there is no CORS to configure. Unset means the dev server,
+// where Vite is on 5173 and the agent is a separate process on 8000.
+const configured = import.meta.env.VITE_AGENT_URL;
+const BASE_URL = configured === undefined ? 'http://localhost:8000' : configured;
 
 async function getJSON(path) {
   const response = await fetch(`${BASE_URL}${path}`);
@@ -27,6 +33,21 @@ async function postJSON(path, body) {
     throw new Error(detail || `POST ${path} -> ${response.status}`);
   }
   return response.json();
+}
+
+async function putJSON(path, body) {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text().catch(() => '');
+  if (!response.ok) {
+    let detail = text;
+    try { detail = JSON.parse(text).detail || text; } catch { /* not json */ }
+    throw new Error(detail || `PUT ${path} -> ${response.status}`);
+  }
+  return text ? JSON.parse(text) : {};
 }
 
 export const getHealth = () => getJSON('/api/health');
@@ -92,3 +113,10 @@ export const runInvestigationTool = (investigationId, tool, toolInput) =>
   });
 
 export { BASE_URL };
+
+// -- configuration ----------------------------------------------------------
+export const getSettings = () => getJSON('/api/settings');
+export const getClusters = () => getJSON('/api/clusters');
+export const updateSettings = (values) => putJSON('/api/settings', { values });
+export const testConnection = (target) => postJSON('/api/settings/test', { target });
+export const refreshSystems = () => postJSON('/api/systems/refresh');

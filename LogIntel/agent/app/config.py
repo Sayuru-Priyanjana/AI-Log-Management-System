@@ -20,6 +20,22 @@ class Settings(BaseSettings):
     prometheus_url: str = "http://localhost:30090"
     prometheus_timeout: float = 30.0
 
+    # --- Model backend ----------------------------------------------------
+    # The model is an external service either way: a local Ollama on the host, or
+    # a hosted API over the network. Local is the default — nothing leaves the
+    # machine, and an investigation that makes eight tool calls costs nothing.
+    #   ollama    -> OLLAMA_BASE_URL / OLLAMA_MODEL
+    #   openai    -> any OpenAI-compatible endpoint (OpenAI, Groq, OpenRouter,
+    #                Together, vLLM, LM Studio): LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
+    #   anthropic -> the Messages API: LLM_MODEL / LLM_API_KEY
+    llm_provider: str = "ollama"
+    llm_model: str = ""
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_timeout: float = 180.0
+    llm_temperature: float = 0.0
+    llm_max_output_tokens: int = 2048
+
     # --- Ollama -----------------------------------------------------------
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder"
@@ -86,6 +102,14 @@ class Settings(BaseSettings):
     # from a bounded window is never certain, and a number that never expresses
     # doubt tells the reader nothing.
     max_reportable_confidence: float = 0.9
+
+    # --- Presentation -----------------------------------------------------
+    # Everything is stored and compared in UTC; this is the zone times are
+    # *shown* in, on both sides of the wire. An answer that says "the departure
+    # began at 05:12" beside a dashboard showing 10:42 is two facts the reader
+    # has to reconcile by hand. Accepts an offset ("+05:30") or an IANA name
+    # ("Asia/Colombo").
+    display_timezone: str = "+05:30"
 
     # --- Misc -------------------------------------------------------------
     incident_controller_url: str = "http://localhost:30099"

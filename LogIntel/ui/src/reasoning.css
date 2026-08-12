@@ -4,34 +4,11 @@
    make the agent's working visible, and they change together.
    ========================================================================== */
 
-/* -- preparation strip ------------------------------------------------------ */
-.li-prep {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 12px 18px; margin-bottom: 1rem;
-}
-.li-prep-node {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 0.82rem; color: var(--text-tertiary);
-  padding: 5px 11px; border-radius: var(--r-full);
-  border: 1px solid transparent; transition: all 0.25s var(--ease);
-}
-.li-prep-node--done { color: var(--text-secondary); border-color: var(--glass-border); }
-.li-prep-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--glass-border); flex-shrink: 0; transition: background 0.25s var(--ease);
-}
-.li-prep-node--done .li-prep-dot { background: var(--success); }
-.li-prep-value { color: var(--text-primary); font-weight: 600; font-size: 0.78rem; }
-.li-prep-signals { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-
-.li-chip--critical { background: rgba(248, 113, 113, 0.16); color: #fca5a5; }
-.li-chip--high     { background: rgba(251, 191, 36, 0.16); color: #fcd34d; }
-.li-chip--medium   { background: rgba(56, 189, 248, 0.14); color: #7dd3fc; }
-.li-chip--low,
-.li-chip--info     { background: rgba(255, 255, 255, 0.06); color: var(--text-secondary); }
-.li-chip--mode     { background: rgba(139, 123, 246, 0.18); color: #c4b5fd; }
-.li-chip--service  {
-  background: rgba(56, 189, 248, 0.14); color: #7dd3fc;
+/* Answer-header chips. Severity chips live in index.css with the prep strip
+   they were designed alongside; these two label the answer itself. */
+.li-chip--mode { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
+.li-chip--service {
+  background: var(--accent-soft); color: var(--accent-color); border-color: var(--accent-color);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -42,12 +19,12 @@
   padding: 14px 20px; background: transparent; border: none; cursor: pointer;
   font-family: inherit; color: var(--text-primary); text-align: left;
 }
-.li-trace-head:hover { background: rgba(255, 255, 255, 0.02); }
+.li-trace-head:hover { background: var(--bg-color); }
 .li-trace-title { font-weight: 600; font-size: 0.95rem; }
 .li-trace-live {
   font-size: 0.72rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.8px;
   color: var(--accent-color); padding: 3px 9px; border-radius: var(--r-full);
-  background: rgba(56, 189, 248, 0.12);
+  background: var(--accent-soft);
 }
 .li-trace-list {
   list-style: none; padding: 0 20px 18px; margin: 0;
@@ -66,10 +43,10 @@
   background: var(--bg-color-raised); border: 1px solid var(--glass-border);
   color: var(--text-tertiary); flex-shrink: 0;
 }
-.li-trace-item--thought .li-trace-marker { border-color: rgba(56, 189, 248, 0.5); color: var(--accent-color); }
-.li-trace-item--action .li-trace-marker { border-color: rgba(251, 191, 36, 0.5); color: var(--warning); }
-.li-trace-item--observation .li-trace-marker { border-color: rgba(52, 211, 153, 0.5); color: var(--success); }
-.li-trace-item--note .li-trace-marker { border-color: rgba(248, 113, 113, 0.5); color: var(--error); }
+.li-trace-item--thought .li-trace-marker { border-color: var(--accent-color); color: var(--accent-color); }
+.li-trace-item--action .li-trace-marker { border-color: var(--warning-border); color: var(--warning); }
+.li-trace-item--observation .li-trace-marker { border-color: var(--success-border); color: var(--success); }
+.li-trace-item--note .li-trace-marker { border-color: var(--error-border); color: var(--error); }
 
 .li-trace-kind {
   font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px;
@@ -78,21 +55,21 @@
 
 /* The measured signals, handed to the agent before it chose anything. Marked
    so the trace does not read as though it went and asked for them. */
-.li-trace-item--seeded { border-left: 2px solid rgba(139, 123, 246, 0.45); }
+.li-trace-item--seeded { border-left: 2px solid var(--violet-border); }
 .li-trace-item--seeded .li-trace-marker {
-  border-color: rgba(139, 123, 246, 0.6); color: #c4b5fd;
+  border-color: var(--violet-border); color: var(--violet);
 }
 .li-trace-seeded-tag {
   display: inline-block; margin-left: 8px;
   font-size: 0.62rem; letter-spacing: 0.6px; font-weight: 700;
   padding: 2px 7px; border-radius: var(--r-sm); cursor: help;
-  background: rgba(139, 123, 246, 0.16); color: #c4b5fd;
+  background: var(--violet-bg); color: var(--violet);
 }
 .li-trace-text { color: var(--text-primary); font-size: 0.93rem; line-height: 1.6; }
 .li-trace-item--thought .li-trace-text { color: var(--text-secondary); font-style: italic; }
 .li-trace-tool code {
   font-size: 0.85rem; color: var(--warning);
-  background: rgba(251, 191, 36, 0.08); padding: 3px 9px; border-radius: var(--r-sm);
+  background: var(--warning-bg); padding: 3px 9px; border-radius: var(--r-sm);
   display: inline-block; word-break: break-all;
 }
 
@@ -108,14 +85,14 @@
 .li-answer-warning {
   display: flex; gap: 10px; align-items: flex-start;
   margin-top: 1.1rem; padding: 12px 15px; border-radius: var(--r-md);
-  background: rgba(251, 191, 36, 0.07); border: 1px solid rgba(251, 191, 36, 0.28);
-  color: #fcd34d; font-size: 0.89rem; line-height: 1.5;
+  background: var(--warning-bg); border: 1px solid var(--warning-border);
+  color: var(--warning); font-size: 0.89rem; line-height: 1.5;
 }
 
 .li-confidence-block { position: relative; }
 .li-confidence-toggle {
   display: flex; align-items: center; gap: 8px;
-  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--glass-border);
+  background: var(--bg-color-raised); border: 1px solid var(--glass-border);
   border-radius: var(--r-full); padding: 7px 14px; cursor: pointer;
   font-family: inherit; font-size: 0.85rem; color: var(--text-secondary);
   transition: border-color 0.2s var(--ease);
@@ -130,15 +107,15 @@
   display: flex; flex-direction: column; gap: 8px;
 }
 .li-factor { display: flex; gap: 9px; font-size: 0.85rem; line-height: 1.5; align-items: flex-start; }
-.li-factor--raises { color: #6ee7b7; }
-.li-factor--lowers { color: #fcd34d; }
+.li-factor--raises { color: var(--success); }
+.li-factor--lowers { color: var(--warning); }
 
 .li-reasoning {
   list-style: none; padding: 0; display: flex; flex-direction: column; gap: 14px;
 }
-.li-reasoning li { padding-left: 16px; border-left: 2px solid rgba(56, 189, 248, 0.35); }
+.li-reasoning li { padding-left: 16px; border-left: 2px solid var(--accent-color); }
 /* A step resting on nothing is coloured like a warning, because that is what it is. */
-.li-reasoning--bare { border-left-color: rgba(251, 191, 36, 0.45); }
+.li-reasoning--bare { border-left-color: var(--warning); }
 .li-reasoning-claim { color: var(--text-primary); font-size: 0.97rem; line-height: 1.55; }
 .li-reasoning-because { color: var(--text-secondary); font-size: 0.89rem; margin-top: 4px; line-height: 1.5; }
 .li-kind {
@@ -146,15 +123,15 @@
   font-weight: 700; padding: 2px 7px; border-radius: var(--r-sm); margin-right: 9px;
   vertical-align: 1px;
 }
-.li-kind--observation { background: rgba(52, 211, 153, 0.16); color: #6ee7b7; }
-.li-kind--inference   { background: rgba(56, 189, 248, 0.14); color: #7dd3fc; }
-.li-kind--elimination { background: rgba(139, 123, 246, 0.16); color: #c4b5fd; }
+.li-kind--observation { background: var(--success-bg); color: var(--success); }
+.li-kind--inference { background: var(--accent-soft); color: var(--accent-color); }
+.li-kind--elimination { background: var(--violet-bg); color: var(--violet); }
 
 .li-evidence-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .li-evidence-row--empty { font-size: 0.76rem; color: var(--warning); font-style: italic; }
 
 .li-assumptions { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-.li-assumptions li { padding-left: 16px; border-left: 2px solid rgba(139, 123, 246, 0.4); }
+.li-assumptions li { padding-left: 16px; border-left: 2px solid var(--violet-border); }
 .li-assumptions strong { color: var(--text-primary); font-weight: 550; }
 .li-assumption-risk { color: var(--warning); font-size: 0.86rem; margin-top: 3px; }
 
@@ -162,7 +139,7 @@
 .li-table-wrap { overflow-x: auto; border: 1px solid var(--glass-border); border-radius: var(--r-md); }
 .li-table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
 .li-table th {
-  text-align: left; padding: 10px 14px; background: rgba(255, 255, 255, 0.04);
+  text-align: left; padding: 10px 14px; background: var(--bg-color);
   color: var(--text-tertiary); font-size: 0.7rem; text-transform: uppercase;
   letter-spacing: 0.9px; font-weight: 650; white-space: nowrap;
 }
@@ -171,12 +148,7 @@
   color: var(--text-primary); vertical-align: top;
 }
 .li-table td:last-child { font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; }
-.li-table tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
-
-.li-run-footer {
-  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-  padding: 10px 4px; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace;
-}
+.li-table tbody tr:hover { background: var(--glass-bg-soft); }
 
 @media (max-width: 768px) {
   .li-answer-panel { padding: 1.4rem 1.25rem; }
@@ -189,10 +161,10 @@
 .li-steps { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .li-step {
   border: 1px solid var(--glass-border); border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.02); padding: 13px 15px;
+  background: var(--glass-bg-soft); padding: 13px 15px;
   transition: border-color 0.2s var(--ease);
 }
-.li-step:hover { border-color: rgba(255, 255, 255, 0.14); }
+.li-step:hover { border-color: var(--glass-highlight); }
 .li-step-main { display: flex; gap: 14px; align-items: flex-start; }
 .li-step-text { flex: 1; min-width: 0; }
 .li-step-label { color: var(--text-primary); font-size: 0.95rem; line-height: 1.5; }
@@ -200,7 +172,7 @@
 .li-step-tool {
   display: inline-block; margin-top: 7px; font-size: 0.78rem;
   font-family: 'JetBrains Mono', monospace; color: var(--accent-color);
-  background: rgba(56, 189, 248, 0.08); padding: 3px 9px; border-radius: var(--r-sm);
+  background: var(--accent-soft); padding: 3px 9px; border-radius: var(--r-sm);
   word-break: break-all;
 }
 .li-step-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }

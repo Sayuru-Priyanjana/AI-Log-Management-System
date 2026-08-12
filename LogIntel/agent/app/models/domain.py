@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, Field
+from app.util.timefmt import clock, stamp
 
 _DURATION = re.compile(r"^(\d+)([smhdw])$")
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
@@ -59,7 +60,7 @@ class TimeWindow(BaseModel):
         return {"start": self.start.isoformat(), "end": self.end.isoformat()}
 
     def __str__(self) -> str:
-        return f"{self.start:%Y-%m-%d %H:%M:%S}Z .. {self.end:%H:%M:%S}Z ({self.minutes:.0f}m)"
+        return f"{stamp(self.start)} .. {clock(self.end)} ({self.minutes:.0f}m)"
 
     @classmethod
     def last(cls, duration: str | timedelta, *, now: datetime | None = None, label: str = "") -> "TimeWindow":

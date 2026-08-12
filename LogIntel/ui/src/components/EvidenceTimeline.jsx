@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { usePreferences } from '../preferences';
 
 /**
  * Everything the investigation looked at, in order.
@@ -15,6 +16,7 @@ import { useState } from 'react';
 const KIND_LABEL = { log: 'log', event: 'k8s', metric: 'metric', marker: '' };
 
 export default function EvidenceTimeline({ data }) {
+  const { formatClock, zoneLabel } = usePreferences();
   const [onlyNotable, setOnlyNotable] = useState(false);
   const [kinds, setKinds] = useState({ log: true, event: true, metric: true });
   const [collapsed, setCollapsed] = useState(false);
@@ -65,12 +67,12 @@ export default function EvidenceTimeline({ data }) {
             ))}
             <span className="li-spacer" />
             <span className="li-muted li-evtl-window">
-              {short(data.window?.start)} – {short(data.window?.end)}
+              {formatClock(data.window?.start)} – {formatClock(data.window?.end)} {zoneLabel}
             </span>
           </div>
 
           <ol className="li-evtl-list">
-            {visible.map((entry) => <Row key={entry.id} entry={entry} />)}
+            {visible.map((entry) => <Row key={entry.id} entry={entry} short={formatClock} />)}
           </ol>
 
           {visible.length === 0 && (
@@ -84,7 +86,7 @@ export default function EvidenceTimeline({ data }) {
   );
 }
 
-function Row({ entry }) {
+function Row({ entry, short }) {
   const [open, setOpen] = useState(false);
   const level = (entry.level || '').toLowerCase();
 
@@ -101,7 +103,7 @@ function Row({ entry }) {
         <div className="li-evtl-title">
           {entry.title}
           {entry.occurrences > 1 && (
-            <span className="li-evtl-count" title={spanLabel(entry)}>
+            <span className="li-evtl-count" title={spanLabel(entry, short)}>
               ×{entry.occurrences.toLocaleString()}
             </span>
           )}
@@ -133,12 +135,9 @@ function Row({ entry }) {
   );
 }
 
-function spanLabel(entry) {
+function spanLabel(entry, short) {
   if (!entry.last_seen) return `${entry.occurrences} occurrences`;
   return `${entry.occurrences} occurrences between ${short(entry.first_seen)} and ${short(entry.last_seen)}`;
 }
 
-function short(iso) {
-  if (!iso) return '—';
-  return String(iso).slice(11, 19) || String(iso);
-}
+
