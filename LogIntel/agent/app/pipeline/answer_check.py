@@ -12,6 +12,7 @@ wrong answer wearing 95% confidence is not.
 from __future__ import annotations
 
 import logging
+import re
 
 from app.config import settings
 from app.models.analysis import Candidate, InvestigationWindows
@@ -127,6 +128,24 @@ def _is_placeholder(evidence_id: str) -> bool:
     _, _, tail = evidence_id.partition(":")
     tail = tail.strip().lower()
     return not tail or tail in _PLACEHOLDER_TAILS or set(tail) <= {".", "…"}
+
+
+# Phrasings that assert the search came back empty. Matched against the headline
+# only — the headline *is* the answer, whereas a mid-argument "no disk errors
+# were found" is a legitimate elimination step and must not be penalised.
+_NOTHING_FOUND = re.compile(
+    r"\b(no|not any|none|zero)\b[^.]{0,60}\b"
+    r"(match|matched|found|detected|returned|present|observed|logs?|errors?|"
+    r"patterns?|results?|anomal\w*|issues?|problems?)\b"
+    r"|\bnothing\b[^.]{0,40}\b(found|matched|detected|wrong|unusual)\b"
+    r"|\b(did ?n[o']t|could ?n[o']t|was ?n[o']t|were ?n[o']t)\b[^.]{0,40}"
+    r"\b(match|find|found|detect|return)\b",
+    re.IGNORECASE,
+)
+
+
+def _asserts_nothing_found(headline: str) -> bool:
+    return bool(headline and _NOTHING_FOUND.search(headline))
 
 
 def verify_answer(
@@ -277,6 +296,19 @@ def verify_answer(
                f"{len(unsupported)} reasoning step(s) cite no evidence at all",
                "lowers")
 
+    # An answer whose headline is "nothing was found" while measurements are
+    # sitting in the same run is not merely thin, it is contradicted by the
+    # evidence. This is the failure the loop falls into when a log search comes
+    # back empty and it stops there: signals from metrics and Kubernetes events
+    # go unread, and the report reads as an all-clear. Scored below the
+    # cite-nothing cap because a wrong answer is worse than an unsupported one.
+    if signals and _asserts_nothing_found(answer.headline):
+        kinds = sorted({s.type.value for s in signals})
+        adjust(0.4, 0.0,
+               f"the answer reports that nothing was found, but {len(signals)} "
+               f"signal(s) were measured in this window ({', '.join(kinds[:4])})",
+               "lowers")
+
     if not signals and mode is AnswerMode.ROOT_CAUSE:
         adjust(0.4, 0.0,
                "no measurement crossed its threshold, so there is nothing to "
@@ -286,6 +318,12 @@ def verify_answer(
         adjust(settings.no_baseline_confidence_cap, 0.0,
                "no quiet baseline window was available, so 'elevated' could not be "
                "established by comparison", "lowers")
+    elif windows.baseline_quality == "degraded":
+        # Detection still worked, but every comparison was against a stretch that
+        # may itself have been unhealthy — so ratios understate the change.
+        adjust(0.7, 0.0,
+               "the comparison window may itself have been unhealthy, so every "
+               "'x times baseline' figure here is a lower bound", "lowers")
 
     gaps = evidence.gaps()
     if gaps:
@@ -304,7 +342,10 @@ def verify_answer(
     # Agreement with the rule engine is the one thing that can raise confidence:
     # it is the only independent check available on the model's choice.
     top = candidates[0] if candidates else None
-    if top and answer.root_cause_service and mode is AnswerMode.ROOT_CAUSE:
+    # `top.service` may be unset — a system-wide candidate names no component. It
+    # cannot agree or disagree with a named service, and reporting that the engine
+    # "ranked 'None' highest" is both meaningless and a penalty for nothing.
+    if top and top.service and answer.root_cause_service and mode is AnswerMode.ROOT_CAUSE:
         if top.service == answer.root_cause_service:
             adjust(None, 0.1,
                    f"the rule engine independently ranked {top.service} highest, "
@@ -357,6 +398,18 @@ def verify_answer(
         answer.limitations.insert(
             0, "No signal crossed its threshold in this window, so no cause could be "
                "established from measurement alone.")
+
+    # Say plainly what the answer skipped. Lowering the number alone leaves the
+    # reader to work out *which* measurements went unread, which is the one thing
+    # they need in order to correct the conclusion.
+    if signals and _asserts_nothing_found(answer.headline):
+        named = "; ".join(
+            f"{s.type.value} on {s.service or s.pod or 'system'}"
+            for s in sorted(signals, key=lambda s: -s.severity.rank)[:4])
+        answer.limitations.insert(
+            0, f"This answer reports nothing found, yet {len(signals)} signal(s) were "
+               f"measured in the same window ({named}). Metrics and Kubernetes events "
+               f"are evidence in their own right — treat the conclusion as incomplete.")
 
     for gap in gaps:
         if gap not in answer.limitations:

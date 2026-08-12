@@ -13,6 +13,18 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
+echo "Waiting for endpoints to be ready..."
+for _ in $(seq 1 60); do
+  PROM_OK=0
+  INC_OK=0
+  curl -fsS -m 2 "http://localhost:30090/-/healthy" >/dev/null 2>&1 && PROM_OK=1
+  curl -fsS -m 2 "http://localhost:30099/incidents" >/dev/null 2>&1 && INC_OK=1
+  if [ "$PROM_OK" -eq 1 ] && [ "$INC_OK" -eq 1 ]; then
+    break
+  fi
+  sleep 2
+done
+
 green() { printf '\033[32m  [ok]\033[0m %s\n' "$*"; }
 red()   { printf '\033[31m  [--]\033[0m %s\n' "$*"; }
 

@@ -143,14 +143,46 @@ def test_notable_entries_survive_the_cap(windows):
     assert any("connection refused" in e.title for e in entries)
 
 
-def test_a_metric_on_a_service_with_a_signal_is_highlighted(windows):
+def test_a_modest_metric_move_is_highlighted_when_a_signal_corroborates(windows):
     signal = Signal(id="sig:MEMORY_PRESSURE:x", type=SignalType.MEMORY_PRESSURE,
                     severity=Severity.HIGH, service="payment-api", first_seen=at(600),
                     description="memory high")
-    metrics = [series("memory_working_set_bytes", [4.0e8, 4.4e8],
+    # ~1.8x — enough to appear, not enough to be a large change on its own
+    metrics = [series("memory_working_set_bytes", [1.7e8, 1.9e8],
                       labels={"service": "payment-api"},
                       baseline=[1.0e8, 1.0e8], unit="bytes")]
     entries = build_evidence_timeline(windows, [signal], bundle(metrics=metrics))
     entry = next(e for e in entries if e.kind == "metric")
     assert entry.notable
-    assert "signal fired" in entry.notable_reason
+    assert "signal also fired" in entry.notable_reason
+
+
+def test_a_large_metric_move_is_highlighted_on_its_own(windows):
+    """The bug this prevents: a 12x traffic surge sat in the timeline unmarked
+    because highlighting required some *other* detector to have fired on the
+    same service first."""
+    metrics = [series("http_request_rate", [15.9, 16.2, 15.4],
+                      labels={"service": "checkout-api"},
+                      baseline=[1.3, 1.3, 1.3], unit="req/s")]
+    entries = build_evidence_timeline(windows, [], bundle(metrics=metrics))
+    entry = next(e for e in entries if e.kind == "metric")
+    assert entry.notable, "a 12x rise is worth attention with or without a signal"
+    assert "large change" in entry.notable_reason
+
+
+def test_metrics_still_appear_when_there_is_no_baseline(windows):
+    """Regression: `ratio_to_baseline()` returns None without a baseline, and the
+    filter skipped every metric — so runs with the thinnest evidence showed no
+    metrics at all. A swing inside the window is still a real event."""
+    windows.baseline = None
+    windows.baseline_quality = "none"
+    metrics = [series("http_request_rate", [1.3, 1.4, 16.0, 15.8],
+                      labels={"service": "checkout-api"}, unit="req/s")]
+
+    entries = build_evidence_timeline(windows, [], bundle(metrics=metrics,
+                                                          baseline_documents=0))
+    metric_entries = [e for e in entries if e.kind == "metric"]
+
+    assert metric_entries, "a metric that swung inside the window must still show"
+    assert "within the window" in metric_entries[0].notable_reason
+    assert "no baseline available" in metric_entries[0].detail

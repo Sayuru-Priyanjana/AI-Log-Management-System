@@ -107,6 +107,13 @@ class InvestigationWindows(BaseModel):
     onset_before_window: bool = False
     method: str = ""
 
+    # How much the baseline can be trusted. Almost every signal is a comparison
+    # against it, so "none" is not a small gap — it silently disables most of the
+    # detection. "degraded" means a comparison window was taken from a stretch
+    # that may itself have been unhealthy: worse than clean, far better than
+    # nothing, and the reader is told which they got.
+    baseline_quality: str = "clean"      # clean | degraded | none
+
 
 class InvestigationResult(BaseModel):
     id: str

@@ -311,3 +311,56 @@ async def test_invented_citations_survive_into_the_answer_as_unresolved():
     bad = [c for c in result.answer.citations if c.status is CitationStatus.UNRESOLVED]
     assert bad and bad[0].id == "sig:MADE_UP:nothing"
     assert result.answer.confidence <= 0.6
+
+
+@pytest.mark.asyncio
+async def test_the_signals_are_in_front_of_the_model_before_it_asks_for_them():
+    """The loop used to be free to never call get_signals, and it took that
+    freedom: one live run opened with a log search, got nothing, and answered
+    "no log patterns matched" while six signals — three of them traffic surges
+    measured from metrics — sat uncollected. Whether the deterministic layer's
+    output is consulted is not a decision worth delegating to a 7B model."""
+    logs, events, metrics = dependency_outage_evidence()
+    llm = ScriptedLLM(
+        PLAN,
+        # The model finishes immediately, without ever calling a tool.
+        json.dumps({"thought": "done", "action": None, "is_finished": True,
+                    "answer": {"headline": "payment-db failed", "confidence": 0.7}}),
+    )
+    pipeline = build(llm, logs, events, metrics, COUNTS)
+
+    observations = []
+    async for stage_event in pipeline.run(ask()):
+        if stage_event.stage == "reasoning" and stage_event.data.get("type") == "observation":
+            observations.append(stage_event.data)
+
+    assert observations, "signals must be supplied even when no tool is called"
+    assert observations[0]["automatic"] is True
+    assert observations[0]["step"] == 0
+    assert "DEPENDENCY_UNAVAILABLE" in observations[0]["text"]
+    assert observations[0]["evidence_ids"], "the IDs must be citable"
+
+    # and the model saw them in its prompt, not only the UI
+    react_prompt = llm.prompts[1]
+    assert "provided automatically" in react_prompt
+    assert "DEPENDENCY_UNAVAILABLE" in react_prompt
+
+
+@pytest.mark.asyncio
+async def test_re_requesting_the_seeded_signals_does_not_cost_a_step():
+    logs, events, metrics = dependency_outage_evidence()
+    llm = ScriptedLLM(
+        PLAN,
+        json.dumps({"thought": "let me check signals", "action": "get_signals",
+                    "action_input": {"service_name": "all"}, "is_finished": False}),
+        json.dumps({"thought": "done", "action": None, "is_finished": True,
+                    "answer": {"headline": "payment-db failed", "confidence": 0.7}}),
+    )
+    pipeline = build(llm, logs, events, metrics, COUNTS)
+
+    texts = []
+    async for stage_event in pipeline.run(ask()):
+        if stage_event.stage == "reasoning" and stage_event.data.get("type") == "observation":
+            texts.append(stage_event.data["text"])
+
+    assert "already called" in texts[1], "the repeat guard should catch the re-ask"

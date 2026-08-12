@@ -41,7 +41,9 @@ export default function ReasoningTrace({ steps, live }) {
 }
 
 function TraceStep({ step }) {
-  const [open, setOpen] = useState(false);
+  // The seeded signals are the measured facts the whole answer should rest on,
+  // so they start expanded rather than hidden behind a "show 6 more lines".
+  const [open, setOpen] = useState(Boolean(step.automatic));
 
   if (step.type === 'thought') {
     return (
@@ -79,11 +81,22 @@ function TraceStep({ step }) {
     const rest = lines.slice(1);
     const ids = step.evidence_ids || [];
     return (
-      <li className="li-trace-item li-trace-item--observation">
+      <li className={`li-trace-item li-trace-item--observation${
+        step.automatic ? ' li-trace-item--seeded' : ''}`}>
         <span className="li-trace-marker">←</span>
         <div style={{ minWidth: 0 }}>
           <div className="li-trace-kind">
             observed
+            {/* Saying "observed" alone would imply the agent asked for this.
+                It did not — the measured signals are put in front of it before
+                it chooses anything, and the trace has to say so. */}
+            {step.automatic && (
+              <span className="li-trace-seeded-tag" title={
+                'Measured signals from logs, Kubernetes events and metrics. Supplied '
+                + 'automatically so the agent cannot answer without having seen them.'}>
+                supplied automatically
+              </span>
+            )}
             {ids.length > 0 && (
               <span className="li-muted"> · {ids.length} evidence id{ids.length > 1 ? 's' : ''}</span>
             )}

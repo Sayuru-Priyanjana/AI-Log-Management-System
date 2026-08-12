@@ -317,3 +317,79 @@ def test_assumptions_survive_in_both_shapes(windows):
     assert len(answer.assumptions) == 2
     assert answer.assumptions[0].impact_if_wrong
     assert answer.assumptions[1].statement == "the clocks are synchronised"
+
+
+def test_an_uncited_claim_labelled_observation_does_not_escape_the_cap(windows):
+    """Regression: `kind` was self-reported, and calling a claim an observation
+    exempted it from needing evidence. A live run scored 80% on "No log patterns
+    matched" with nothing cited, while six signals sat uncollected."""
+    signals = [signal(SignalType.ERROR_RATE_SPIKE, service="payment-api", onset=600)]
+    answer = check({
+        "headline": "The investigation examined the window.",
+        "confidence": 0.8,
+        "reasoning": [{"claim": "No log patterns matched service='all'",
+                       "kind": "observation", "evidence_ids": []}],
+    }, signals=signals, windows=windows)
+
+    assert len(answer.unsupported_claims) == 1
+    assert answer.confidence <= 0.65
+    assert any("cite no evidence" in f.factor for f in answer.confidence_factors)
+
+
+def test_reporting_nothing_found_while_signals_fired_is_scored_as_contradicted(windows):
+    """The exact failure the user hit: a log search came back empty, the loop
+    stopped there, and the answer read as an all-clear while metrics and events
+    had already measured three spikes."""
+    signals = [
+        signal(SignalType.ERROR_RATE_SPIKE, service="payment-api", onset=600),
+        signal(SignalType.TRAFFIC_SURGE, service="checkout-api", onset=620),
+    ]
+    answer = check({
+        "headline": "No log patterns matched the query, so nothing was found.",
+        "confidence": 0.9,
+        "reasoning": [{"claim": "searched all levels", "evidence_ids": [signals[0].id]}],
+    }, signals=signals, windows=windows)
+
+    assert answer.confidence <= 0.4
+    assert any("signal(s) were measured" in f.factor for f in answer.confidence_factors)
+    # and the reader is told which ones, not just handed a smaller number
+    assert any("measured in the same window" in lim for lim in answer.limitations)
+    assert any("TRAFFIC_SURGE" in lim for lim in answer.limitations)
+
+
+def test_a_mid_argument_elimination_is_not_mistaken_for_an_all_clear(windows):
+    """"No disk pressure was found" as a *step* is good reasoning. Only the
+    headline — the answer itself — asserting emptiness is the contradiction."""
+    signals = [signal(SignalType.ERROR_RATE_SPIKE, service="payment-api", onset=600)]
+    answer = check({
+        "headline": "payment-api began returning 5xx after its database stopped responding.",
+        "confidence": 0.8,
+        "reasoning": [
+            {"claim": "errors rose sharply", "evidence_ids": [signals[0].id],
+             "kind": "observation"},
+            {"claim": "no disk pressure was found on any node",
+             "evidence_ids": [signals[0].id], "kind": "elimination"},
+        ],
+    }, signals=signals, windows=windows)
+
+    assert not any("signal(s) were measured" in f.factor for f in answer.confidence_factors)
+    assert answer.confidence > 0.4
+
+
+def test_a_candidate_that_names_no_component_neither_agrees_nor_disagrees(windows):
+    """A system-wide candidate has no service. Comparing it against a named one
+    produced "the rule engine ranked 'None' highest" — a penalty for nothing,
+    phrased as though the engine had made a competing claim."""
+    from app.models.analysis import Candidate, CauseCategory
+
+    signals = [signal(SignalType.ERROR_RATE_SPIKE, service="payment-api", onset=600)]
+    system_wide = Candidate(id="cand:1", category=CauseCategory.UNKNOWN, service=None,
+                            score=0.4, hypothesis="something is off", rationale="x")
+    answer = check({
+        "headline": "payment-db stopped responding",
+        "root_cause_service": "payment-db",
+        "confidence": 0.8,
+        "reasoning": [{"claim": "db down", "evidence_ids": [signals[0].id]}],
+    }, signals=signals, candidates=[system_wide], windows=windows)
+
+    assert not any("ranked" in f.factor for f in answer.confidence_factors)

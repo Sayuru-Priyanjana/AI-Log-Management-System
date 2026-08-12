@@ -47,6 +47,45 @@ def test_gradual_ramp_is_caught_before_the_peak():
     assert result.index == 5
 
 
+@pytest.mark.asyncio
+async def test_an_already_broken_system_still_gets_a_comparison_window():
+    """Regression from a live run. Errors had been elevated for hours, so no
+    quiet baseline existed and the resolver returned none — which silently
+    disabled every baseline-relative signal. A 12x traffic surge went undetected
+    and the evidence timeline showed no metrics at all.
+
+    An imperfect comparison window still catches a change that happened *inside*
+    the range; if both stretches are equally bad the ratios sit near 1 and
+    nothing fires, which is the correct answer.
+    """
+    from datetime import timedelta
+
+    from app.models.domain import TimeWindow
+    from app.models.plan import Intent, InvestigationPlan
+    from app.pipeline.windows import WindowResolver
+
+    class AlwaysElevated:
+        async def histogram(self, plan, window, interval="60s"):
+            # every bucket busy: no quiet stretch anywhere in range
+            return buckets([40] * 60)
+
+    now = datetime(2026, 8, 12, 5, 0, tzinfo=timezone.utc)
+    plan = InvestigationPlan(
+        intent=Intent.INCIDENT_INVESTIGATION, system_id="shopdemo",
+        system_name="S", environment="staging", namespaces=["shopdemo"],
+        requested_window=TimeWindow(start=now - timedelta(hours=1), end=now),
+        tools=["logs"], goal="what is wrong",
+    )
+
+    windows, _ = await WindowResolver(AlwaysElevated()).resolve(plan)
+
+    assert windows.onset_before_window is True
+    assert windows.baseline is not None, "a degraded baseline beats none at all"
+    assert windows.baseline_quality == "degraded"
+    assert windows.baseline.end <= windows.incident.start, "must not overlap"
+    assert "may itself have been unhealthy" in windows.method
+
+
 def test_a_latency_step_is_found_where_an_error_histogram_sees_nothing():
     """The failure this exists to prevent, observed on the live testbed.
 
@@ -181,3 +220,125 @@ def test_a_blip_with_nothing_after_it_is_still_rejected():
     result = detect_onset(buckets(counts))
     assert result.detected is False
     assert "blip" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_the_baseline_ends_at_the_onset_not_at_the_edge_of_the_question():
+    """Measured on the live testbed. A traffic surge began at 05:12; the question
+    asked about 05:22 onwards. The window analysed was clamped to the question —
+    correctly — but the baseline was then taken as "the stretch before the window
+    analysed", which put eight surging minutes inside it. Request rate read 26.2
+    against a baseline of 11.4: a 2.3x ratio, just under the 2.5x bar, so
+    TRAFFIC_SURGE never fired on a surge plainly visible in the dashboard.
+
+    What to examine and what to compare it against are two different questions.
+    """
+    from datetime import timedelta
+
+    from app.models.domain import TimeWindow
+    from app.models.plan import Intent, InvestigationPlan
+    from app.pipeline.windows import WindowResolver
+
+    now = datetime(2026, 8, 12, 5, 42, tzinfo=timezone.utc)
+    requested = TimeWindow(start=now - timedelta(minutes=20), end=now)
+
+    class SurgeAt0512:
+        """Quiet until 05:12, elevated from then on. The search looks back
+        further than the question, so the onset is visible but outside it."""
+
+        async def histogram(self, plan, window, interval="60s"):
+            from app.models.evidence import LogBucket
+
+            onset_at = datetime(2026, 8, 12, 5, 12, tzinfo=timezone.utc)
+            minutes = int((window.end - window.start).total_seconds() // 60)
+            out = []
+            for i in range(minutes):
+                stamp = window.start + timedelta(minutes=i)
+                count = 40 if stamp >= onset_at else 1
+                out.append(LogBucket(timestamp=stamp, total=count,
+                                     by_level={"ERROR": count}))
+            return out
+
+    plan = InvestigationPlan(
+        intent=Intent.INCIDENT_INVESTIGATION, system_id="shopdemo",
+        system_name="S", environment="staging", namespaces=["shopdemo"],
+        requested_window=requested, tools=["logs"], goal="what is wrong",
+    )
+
+    windows, _ = await WindowResolver(SurgeAt0512()).resolve(plan)
+
+    assert windows.onset_detected is True
+    assert windows.onset_before_window is True, "the onset precedes the question"
+    assert windows.baseline is not None
+    # the whole point: not one second of the baseline may postdate the onset
+    assert windows.baseline.end <= windows.onset, (
+        f"baseline ends {windows.baseline.end} but the incident started "
+        f"{windows.onset} — it is being compared against itself"
+    )
+    assert windows.baseline.seconds > 120, "and it must still be long enough to use"
+
+
+def test_the_baseline_skips_an_earlier_episode_instead_of_averaging_it_in():
+    """Measured on the live testbed, and the reason a real surge went unreported.
+
+    Load ran at 15 rps until 04:55, dropped to 2, and rose to 15 again at 05:12.
+    Request rate was 3.9 req/s while quiet and 26.7 req/s during the surge — 6.8x.
+    The resolver took the fixed-length stretch immediately before the onset,
+    which was two thirds the *earlier* surge, and measured 13.5 req/s. The
+    reported ratio was 1.97x, under the 2.5x bar, so TRAFFIC_SURGE never fired.
+
+    Position alone is not enough: the stretch has to be quiet as well as prior.
+    """
+    from datetime import timedelta
+
+    from app.pipeline.windows import place_baseline
+    from app.models.evidence import LogBucket
+
+    base = datetime(2026, 8, 12, 4, 26, tzinfo=timezone.utc)
+    # 15 quiet minutes, 12 busy (the earlier episode), 13 quiet, then the onset.
+    counts = [0] * 15 + [39, 29, 30, 54, 39, 14, 27, 24, 14, 29, 26, 14] + [4, 5, 5, 1, 5, 3, 2, 7, 6, 4, 5, 7, 6]
+    series = [
+        LogBucket(timestamp=base + timedelta(minutes=i), total=c, by_level={"ERROR": c})
+        for i, c in enumerate(counts)
+    ]
+    onset = base + timedelta(minutes=len(counts))
+
+    window, quiet = place_baseline(
+        series, latest_end=onset, length=timedelta(minutes=22),
+        earliest=base, quiet_threshold=10.0, min_length=timedelta(minutes=10),
+    )
+
+    assert window is not None
+    assert quiet is True, "a quiet stretch exists in range and must be found"
+    busy_start = base + timedelta(minutes=15)
+    busy_end = base + timedelta(minutes=27)
+    overlap = (min(window.end, busy_end) - max(window.start, busy_start))
+    assert overlap <= timedelta(minutes=4), (
+        f"baseline {window} overlaps the earlier episode by {overlap}"
+    )
+
+
+def test_a_system_busy_everywhere_still_gets_the_calmest_window_marked_degraded():
+    """No quiet stretch exists, so honesty is the deliverable: return the calmest
+    placement and say the ratios are lower bounds. Returning nothing instead
+    switches off every baseline-relative signal there is."""
+    from datetime import timedelta
+
+    from app.pipeline.windows import place_baseline
+    from app.models.evidence import LogBucket
+
+    base = datetime(2026, 8, 12, 4, 0, tzinfo=timezone.utc)
+    counts = [30] * 20 + [45] * 20
+    series = [
+        LogBucket(timestamp=base + timedelta(minutes=i), total=c, by_level={"ERROR": c})
+        for i, c in enumerate(counts)
+    ]
+
+    window, quiet = place_baseline(
+        series, latest_end=base + timedelta(minutes=40),
+        length=timedelta(minutes=15), earliest=base, quiet_threshold=10.0,
+    )
+
+    assert window is not None, "a degraded comparison beats none at all"
+    assert quiet is False
+    assert window.start < base + timedelta(minutes=20), "the calmer half is the earlier one"

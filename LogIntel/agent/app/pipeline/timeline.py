@@ -95,10 +95,21 @@ def build_evidence_timeline(windows: InvestigationWindows, signals: list[Signal]
 
     # -- metrics that moved -------------------------------------------------
     for series in evidence.metrics.series:
-        ratio = series.ratio_to_baseline()
-        if ratio is None or (0.66 < ratio < 1.5):
-            continue
         if not series.points:
+            continue
+
+        ratio = series.ratio_to_baseline()
+        in_window = False
+        if ratio is None:
+            # No baseline to compare against — but a metric that swung inside the
+            # window is still a real event, and dropping it left the timeline
+            # with no metrics at all on exactly the runs where evidence was
+            # thinnest. Fall back to comparing the window against itself.
+            low, high = series.incident.minimum, series.incident.maximum
+            if low is None or high is None or low <= 0:
+                continue
+            ratio, in_window = high / low, True
+        if 0.66 < ratio < 1.5:
             continue
         # Place it where it was most extreme — the closest thing a continuous
         # series has to a moment.
@@ -106,24 +117,40 @@ def build_evidence_timeline(windows: InvestigationWindows, signals: list[Signal]
                 else min(series.points, key=lambda p: p.value))
         # "fell 0.0x" is not English. A rise reads as a multiple, a fall as the
         # fraction that remains.
+        against = "within the window" if in_window else "baseline"
         if ratio >= 1.5:
             movement = f"rose {ratio:.1f}x"
         elif ratio < 0.05:
             movement = "fell to zero"
         else:
-            movement = f"fell to {ratio:.0%} of baseline"
+            movement = f"fell to {ratio:.0%} of {against}"
         scope = series.pod or series.service or "—"
         baseline = (series.baseline.average
                     if series.baseline and series.baseline.average is not None else None)
+
+        # Notability comes from the size of the movement, not from whether some
+        # other detector happened to fire on the same service. A 12x traffic rise
+        # is worth the reader's attention on its own; requiring a corroborating
+        # signal meant a genuine surge could sit in the timeline unmarked.
+        if ratio >= 3 or ratio <= 0.33:
+            notable = True
+            reason = (f"A large change: {movement}"
+                      + (", measured within the window because no baseline was "
+                         "available to compare against." if in_window else "."))
+        elif series.service in signal_targets:
+            notable = True
+            reason = "A signal also fired on this service."
+        else:
+            notable, reason = False, ""
+
         entries.append(TimelineEntry(
             id=series.id, kind="metric", first_seen=peak.timestamp,
             title=f"{series.metric} {movement} on {scope}",
             detail=(f"peak {peak.value:.4g} {series.unit}"
-                    + (f", baseline {baseline:.4g}" if baseline is not None else "")),
+                    + (f", baseline {baseline:.4g}" if baseline is not None else "")
+                    + (", no baseline available" if in_window else "")),
             service=series.service, level="metric",
-            notable=series.service in signal_targets,
-            notable_reason=("A signal fired on this service."
-                            if series.service in signal_targets else ""),
+            notable=notable, notable_reason=reason,
         ))
 
     entries.sort(key=lambda e: e.first_seen)

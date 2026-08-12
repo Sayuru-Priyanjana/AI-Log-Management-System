@@ -46,6 +46,10 @@ Available tools:
   everything against a baseline; your arithmetic is not needed and is not trusted.
 - Absence of evidence is not evidence of absence. If a tool returns nothing,
   call get_investigation_scope before concluding that nothing happened.
+- Logs are one source of three. If signals were detected, they are measurements
+  from metrics and Kubernetes events, and an answer that discusses only logs
+  while ignoring them is wrong however well written. Never report "no logs
+  matched" as a conclusion when signals are present — explain the signals.
 - Failures propagate upward through the call graph. If a dependency is broken,
   the services calling it are symptoms. Name the deepest failing component.
 - Prefer the explanation that started first. An effect cannot precede its cause.
@@ -68,15 +72,24 @@ When finished, set "is_finished": true, "action": null, and fill "answer":
 MODE_GUIDANCE: dict[AnswerMode, str] = {
     AnswerMode.ROOT_CAUSE: (
         "The user wants to know WHY something broke. Establish the causal chain and "
-        "name the single component at its root. Start with get_signals, then "
-        "get_dependencies to tell cause from symptom, then get_timeline to confirm "
-        "the ordering. `headline` must name the failing component and what it did."
+        "name the single component at its root. The signals are already in front of "
+        "you; every one of them is a fact this answer has to account for, whether it "
+        "came from a log, a Kubernetes event or a metric. Use get_dependencies to tell "
+        "cause from symptom and get_timeline to confirm the ordering, and reach for "
+        "get_service_events and get_service_metrics on the services the signals name — "
+        "a restart, an eviction or a request-rate step change is often the cause the "
+        "logs only describe the effects of. `headline` must name the failing component "
+        "and what it did, and `detail` must say what the metrics and events showed, not "
+        "only the logs."
     ),
     AnswerMode.DATA_EXTRACTION: (
-        "The user wants to SEE specific records, not an analysis of them. Use "
-        "search_logs or get_service_events to retrieve what was asked for, and return "
-        "it in `table`. `headline` states what was found and how much of it. Do not "
-        "write a root-cause analysis — it was not asked for."
+        "The user wants to SEE specific records, not an analysis of them. Retrieve "
+        "them and return them in `table`, one row per item, with the evidence ID in "
+        "the first column. Which tool depends on what was asked for: search_logs for "
+        "log lines, get_service_events for Kubernetes events, get_service_metrics or "
+        "the signals already shown for metric movements and spikes. `headline` states "
+        "what was found and how much of it. Do not write a root-cause analysis — it "
+        "was not asked for."
     ),
     AnswerMode.AGGREGATION: (
         "The user wants a NUMBER or a breakdown. Use count_logs, or read the figures "
@@ -218,7 +231,43 @@ class ReActAgent:
             "--- investigation log ---",
         ]
 
-        seen_calls: set[str] = set()
+        # The measured facts are put in front of the model before it chooses
+        # anything. Left to itself it opens with a log search, gets nothing, and
+        # concludes — one live run answered "what are the metric spikes?" with
+        # "no log patterns matched" while six signals, three of them traffic
+        # surges, sat uncollected. Signals are the whole point of the
+        # deterministic layer; whether the loop consults them is not a decision
+        # worth delegating.
+        opening_input = {"service_name": "all"}
+        opening = bindings.execute("get_signals", opening_input)
+        opening_text = opening.text
+        if opening.evidence_ids:
+            # Naming what the list *is* matters as much as showing it. Asked to
+            # list the metric spikes, the loop ran three log searches for the
+            # words "metric spike", found nothing, and reported none — with the
+            # spikes sitting in the observation above. A spike is a measurement,
+            # not a phrase that appears in a log line.
+            opening_text += (
+                "\n\nThese ARE the detected spikes, anomalies and departures from "
+                "normal in this window, measured from logs, Kubernetes events and "
+                "metrics alike. If the question asks which spikes, anomalies or "
+                "signals occurred, this list is the answer — do not search the logs "
+                "for the words 'spike' or 'anomaly', they do not appear in log text."
+            )
+            if mode in (AnswerMode.DATA_EXTRACTION, AnswerMode.AGGREGATION):
+                opening_text += (" Put one row per signal in `table`, leading with "
+                                 "its evidence ID.")
+        transcript.append("Observation (provided automatically, before you asked): "
+                          + opening_text)
+        yield {"type": "observation", "step": 0, "text": opening_text,
+               "evidence_ids": opening.evidence_ids, "table": opening.table,
+               "automatic": True}
+
+        # Registered as already-called so re-asking for it is caught by the repeat
+        # guard instead of burning a step to re-read what is already on screen.
+        seen_calls: set[str] = {
+            f"get_signals:{json.dumps(opening_input, sort_keys=True)}"
+        }
         empty_calls: dict[str, int] = {}
         repeated = 0
 

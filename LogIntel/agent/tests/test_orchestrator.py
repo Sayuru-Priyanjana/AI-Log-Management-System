@@ -166,3 +166,55 @@ def test_fingerprint_masks_pod_names_and_addresses():
     )
     assert "10.42.0.54" not in template
     assert "mqxxd" not in template
+
+
+@pytest.mark.asyncio
+async def test_asking_to_be_shown_items_beats_the_planner_calling_it_an_incident(system):
+    """"what are the metric spikes for the last 15 minutes, I need a list of
+    them" came back as a root-cause narrative. A request to *see* the items is
+    unambiguous in a way intent inference is not, so it overrides the model."""
+    llm = FakeLLM({"intent": "incident_investigation", "service": None,
+                   "duration": "15m", "goal": "spikes"})
+    plan = await OrchestratorAgent(llm).plan(
+        InvestigationRequest(
+            system_id="shopdemo", environment="staging",
+            question="what are the metric spikes for last 15 minits. i need list of them"),
+        system)
+
+    assert plan.intent is Intent.DATA_EXTRACTION
+    assert any("asks to be shown specific items" in note for note in plan.notes), \
+        "the override must be recorded, not applied silently"
+
+
+@pytest.mark.asyncio
+async def test_asking_for_a_count_of_items_is_an_aggregation_not_an_extraction(system):
+    llm = FakeLLM({"intent": "incident_investigation", "duration": "1h", "goal": "x"})
+    plan = await OrchestratorAgent(llm).plan(
+        InvestigationRequest(system_id="shopdemo", environment="staging",
+                             question="show me how many errors payment-api logged"),
+        system)
+    assert plan.intent is Intent.AGGREGATION
+
+
+@pytest.mark.asyncio
+async def test_asking_for_the_root_cause_still_wins_over_the_word_show(system):
+    """"show me the root cause" wants the analysis, not a table of rows."""
+    llm = FakeLLM(None)
+    plan = await OrchestratorAgent(llm).plan(
+        InvestigationRequest(
+            system_id="shopdemo", environment="staging",
+            question="show me the root cause across logs, events and metrics"),
+        system)
+    assert plan.intent is Intent.INCIDENT_INVESTIGATION
+
+
+@pytest.mark.asyncio
+async def test_retrieval_wording_is_classified_without_the_model(system):
+    """The heuristics used to have no keywords for extraction or aggregation at
+    all, so every planner failure fell through to an incident investigation."""
+    llm = FakeLLM(fail=True)
+    plan = await OrchestratorAgent(llm).plan(
+        InvestigationRequest(system_id="shopdemo", environment="staging",
+                             question="list the warnings from checkout-api"),
+        system)
+    assert plan.intent is Intent.DATA_EXTRACTION

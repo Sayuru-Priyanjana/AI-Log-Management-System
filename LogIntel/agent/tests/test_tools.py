@@ -191,3 +191,78 @@ def test_exposed_ids_accumulate_across_calls(plan, windows):
     tools.execute("get_service_logs", {"service_name": "payment-api"})
     assert len(tools.exposed_ids) >= 2
     assert all(i.startswith(("pat:", "log:")) for i in tools.exposed_ids)
+
+
+# --------------------------------------------------------------------------
+# Level filters written the way a person would write them.
+# --------------------------------------------------------------------------
+def test_a_comma_separated_level_filter_is_understood_not_rejected(plan, windows):
+    """Regression: the model asked for `level="ERROR, WARN"` — a reasonable thing
+    to mean — and the tool compared it as one opaque string, matched nothing, and
+    reported "no log patterns matched". The loop believed it and concluded the
+    investigation while six signals sat uncollected. Accepting the obvious intent
+    is better than being right about the schema."""
+    logs = LogEvidence(
+        patterns=[
+            pattern("payment-api failed", service="payment-api", count=9, level="ERROR"),
+            pattern("retrying upstream call", service="payment-api", count=4, level="WARN"),
+            pattern("request served", service="payment-api", count=90, level="INFO"),
+        ],
+        totals_by_level={"ERROR": 9, "WARN": 4, "INFO": 90},
+        total_documents=103,
+    )
+    tools = bindings(logs=logs, plan=plan, windows=windows)
+
+    both = tools.get_service_logs("payment-api", "ERROR, WARN").text
+    assert "payment-api failed" in both
+    assert "retrying upstream call" in both
+    assert "request served" not in both, "INFO was not asked for"
+
+    # the same leniency where the records themselves are retrieved
+    found = tools.search_logs("", "payment-api", "ERROR/WARN").text
+    assert "payment-api failed" in found
+    assert "retrying upstream call" in found
+    assert "request served" not in found
+
+
+def test_a_single_level_filter_still_narrows_to_that_level(plan, windows):
+    logs = LogEvidence(
+        patterns=[
+            pattern("payment-api failed", service="payment-api", count=9, level="ERROR"),
+            pattern("retrying upstream call", service="payment-api", count=4, level="WARN"),
+        ],
+        totals_by_level={"ERROR": 9, "WARN": 4}, total_documents=13,
+    )
+    tools = bindings(logs=logs, plan=plan, windows=windows)
+
+    only_errors = tools.get_service_logs("payment-api", "error").text
+    assert "payment-api failed" in only_errors
+    assert "retrying upstream call" not in only_errors
+
+
+def test_the_signal_list_comes_back_as_rows_not_only_prose(plan, windows):
+    """"Which spikes happened" is a retrieval question, and a signal list is a
+    table of records. Without rows the extraction path had no payload, the answer
+    was scored as having found nothing, and the UI showed prose where it should
+    have shown a table."""
+    signals = [
+        Signal(id="sig:TRAFFIC_SURGE:checkout-api", type=SignalType.TRAFFIC_SURGE,
+               severity=Severity.MEDIUM, service="checkout-api",
+               magnitude=Magnitude(baseline=5.6, incident=26.4, unit="req/s", ratio=4.7),
+               description="checkout-api request rate rose 4.7x above baseline."),
+    ]
+    result = bindings(signals=signals, plan=plan, windows=windows).get_signals("all")
+
+    assert result.table is not None
+    assert result.table["rows"], "a detected signal must appear as a row"
+    assert result.table["rows"][0][0] == "sig:TRAFFIC_SURGE:checkout-api", \
+        "the evidence ID leads the row so the answer can cite it"
+    assert result.table["columns"][0] == "id"
+
+
+def test_no_signals_yields_no_table_rather_than_an_empty_one(plan, windows):
+    """An empty table reads as "we looked and there is a result of zero". The
+    honest shape for "nothing crossed a threshold" is prose saying exactly that."""
+    result = bindings(signals=[], plan=plan, windows=windows).get_signals("all")
+    assert result.table is None
+    assert "No signals crossed" in result.text

@@ -29,6 +29,24 @@ from app.models.signals import Signal
 ERROR_LEVELS = ("ERROR", "FATAL", "CRITICAL")
 
 
+def _levels(value: str | list | None) -> set[str]:
+    """Parses a level filter leniently.
+
+    The model writes `level="ERROR, WARN"` because that is a reasonable thing to
+    mean, and rejecting it cost a whole investigation: the tool reported no logs
+    of level "ERROR, WARN", the model believed it, and answered "no log patterns
+    matched" while six signals sat uncollected. Accepting the obvious intent is
+    better than being right about the schema.
+    """
+    if not value:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(v) for v in value]
+    else:
+        parts = re.split(r"[,\s/|]+", str(value))
+    return {p.strip().upper() for p in parts if p.strip()}
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -95,6 +113,7 @@ class ToolBindings:
         lines = ["Measured signals (each compared against the baseline window, "
                  "ordered by when it started):"]
         ids = []
+        rows = []
         for signal in matching:
             magnitude = f" | {signal.magnitude.describe()}" if signal.magnitude else ""
             onset = f"{signal.first_seen:%H:%M:%S}Z" if signal.first_seen else "unknown"
@@ -106,7 +125,27 @@ class ToolBindings:
                 f"    {signal.description}"
             )
             ids.append(signal.id)
-        return ToolResult("\n".join(lines), ids)
+            rows.append([signal.id, signal.type.value, signal.severity.value,
+                         signal.service or "-", onset,
+                         signal.magnitude.describe() if signal.magnitude else "",
+                         signal.description])
+
+        # A signal list is a table of records, and "which spikes happened" is a
+        # retrieval question as much as "which log lines matched". Without this
+        # the extraction path had no payload to return, the answer was scored as
+        # having found nothing, and the UI showed prose where it should show rows.
+        table = {
+            "columns": ["id", "signal", "severity", "service", "onset",
+                        "magnitude", "what was measured"],
+            "rows": rows,
+            "total_matched": len(rows),
+            "truncated": False,
+            "query_description": (
+                f"signals detected for "
+                f"{'all services' if service_name in ('all', '', None) else service_name}"
+            ),
+        }
+        return ToolResult("\n".join(lines), ids, table)
 
     def get_hypotheses(self, _: str = "") -> ToolResult:
         """Pre-ranked candidate explanations from the rule engine."""
@@ -162,11 +201,11 @@ class ToolBindings:
         if logs.status != "ok":
             return ToolResult(f"Log data unavailable: {logs.reason or logs.status}")
 
-        wanted_level = (level or "").upper()
+        wanted = _levels(level)
         patterns = [
             p for p in logs.patterns
             if (service_name in ("all", "", None) or p.service == service_name)
-            and (not wanted_level or p.level == wanted_level)
+            and (not wanted or p.level in wanted)
         ]
         if not patterns:
             return ToolResult(
@@ -304,7 +343,7 @@ class ToolBindings:
             return ToolResult(f"Log data unavailable: {logs.reason or logs.status}")
 
         needle = (query or "").lower()
-        wanted_level = (level or "").upper()
+        wanted = _levels(level)
         try:
             limit = max(1, min(int(limit), 100))
         except (TypeError, ValueError):
@@ -314,7 +353,7 @@ class ToolBindings:
         for sample in logs.samples:
             if needle and needle not in sample.message.lower():
                 continue
-            if wanted_level and sample.level != wanted_level:
+            if wanted and sample.level not in wanted:
                 continue
             if service_name not in ("all", "", None) and sample.service != service_name:
                 continue
@@ -330,7 +369,7 @@ class ToolBindings:
         for pattern in logs.patterns:
             if needle and needle not in pattern.example.lower():
                 continue
-            if wanted_level and pattern.level != wanted_level:
+            if wanted and pattern.level not in wanted:
                 continue
             if service_name not in ("all", "", None) and pattern.service != service_name:
                 continue

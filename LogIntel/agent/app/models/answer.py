@@ -189,8 +189,18 @@ class StructuredAnswer(BaseModel):
 
     @property
     def unsupported_claims(self) -> list[ReasoningStep]:
-        return [s for s in self.reasoning
-                if s.kind != "observation" and not s.evidence_ids]
+        """Every step that names no evidence, whatever it calls itself.
+
+        Observations used to be exempt, on the theory that they merely restate a
+        tool result. They do not: a tool result carries its IDs, so an observation
+        with none is either a genuine null or an invention, and the label alone
+        cannot tell them apart. The exemption became a loophole — one run answered
+        "No log patterns matched" as an uncited *observation* and scored 80% while
+        six signals sat uncollected. The healthy-system case that motivated the
+        exemption is handled where it belongs, at the call site: citing nothing
+        only counts against an answer when there was something to cite.
+        """
+        return [s for s in self.reasoning if not s.evidence_ids]
 
 
 # Which mode each intent produces. A lookup rather than a model decision: the

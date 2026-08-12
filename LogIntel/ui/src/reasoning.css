@@ -75,6 +75,19 @@
   font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px;
   color: var(--text-tertiary); font-weight: 650; margin-bottom: 4px;
 }
+
+/* The measured signals, handed to the agent before it chose anything. Marked
+   so the trace does not read as though it went and asked for them. */
+.li-trace-item--seeded { border-left: 2px solid rgba(139, 123, 246, 0.45); }
+.li-trace-item--seeded .li-trace-marker {
+  border-color: rgba(139, 123, 246, 0.6); color: #c4b5fd;
+}
+.li-trace-seeded-tag {
+  display: inline-block; margin-left: 8px;
+  font-size: 0.62rem; letter-spacing: 0.6px; font-weight: 700;
+  padding: 2px 7px; border-radius: var(--r-sm); cursor: help;
+  background: rgba(139, 123, 246, 0.16); color: #c4b5fd;
+}
 .li-trace-text { color: var(--text-primary); font-size: 0.93rem; line-height: 1.6; }
 .li-trace-item--thought .li-trace-text { color: var(--text-secondary); font-style: italic; }
 .li-trace-tool code {

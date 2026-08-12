@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import statistics
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.config import settings
 from app.models.analysis import InvestigationWindows
@@ -246,6 +246,113 @@ def detect_step_change(points: list[tuple[datetime, float]], *,
     return best[0], best[1], best[2]
 
 
+def place_baseline(
+    buckets: list[LogBucket],
+    *,
+    latest_end: datetime,
+    length: timedelta,
+    earliest: datetime,
+    quiet_threshold: float | None = None,
+    min_length: timedelta | None = None,
+) -> tuple[TimeWindow | None, bool]:
+    """Finds a genuinely quiet stretch to compare the incident against.
+
+    The baseline used to be taken purely by position — the fixed-length stretch
+    immediately before the onset — and never checked for whether that stretch was
+    itself quiet. On a system where incidents recur, it very often is not.
+
+    Measured on the live testbed: load ran at 15 rps until 04:55, dropped to 2,
+    and rose to 15 again at 05:12. Request rate was 3.9 req/s while quiet and
+    26.7 req/s during the surge — 6.8x. The resolver placed the baseline at
+    04:48–05:10, two thirds of which was the *earlier* surge, and measured
+    13.5 req/s. The reported ratio was 1.97x, under the 2.5x bar, so no
+    TRAFFIC_SURGE fired on a surge visible at a glance in the dashboard.
+
+    So the window is slid backwards until it lands somewhere the error rate is
+    near the range's own quiet level. What counts as quiet is taken from a low
+    quantile of the range rather than from the onset detector's threshold: that
+    threshold is `median + 4*spread` over the calmest 60% of buckets, set high on
+    purpose so routine noise is never called a failure. When an episode fills
+    more than 40% of the range it drags that median up with it — measured live at
+    24 errors/min against a true quiet level of 5 — and a stretch running at six
+    times normal passes for a baseline.
+
+    A shorter placement is tried before giving up, because a quiet period is
+    often shorter than the incident it precedes. When nowhere in range is quiet
+    the calmest placement is returned and reported as degraded — an imperfect
+    comparison still catches a change, and no comparison at all switches off
+    every baseline-relative signal there is.
+    """
+    if length <= timedelta(0) or latest_end <= earliest:
+        return None, False
+
+    if quiet_threshold is None:
+        counts = sorted(float(b.errors) for b in buckets)
+        if not counts:
+            quiet_threshold = float(settings.onset_min_absolute)
+        else:
+            typical = counts[max(0, int(len(counts) * 0.25) - 1)]
+            quiet_threshold = max(2.0 * typical, float(settings.onset_min_absolute))
+
+    lengths = [length]
+    if min_length is not None and min_length < length:
+        lengths.append(min_length)
+
+    def mean_errors(start: datetime, end: datetime) -> float | None:
+        inside = [float(b.errors) for b in buckets
+                  if start <= ensure_utc(b.timestamp) < end]
+        return statistics.fmean(inside) if len(inside) >= 3 else None
+
+    # Slide one bucket at a time. A coarser step leaves the window straddling the
+    # edge of the episode it was moved back to avoid: at a quarter-window step a
+    # 15-minute baseline kept four minutes of the ramp, which held the measured
+    # surge at 2.4x against a 2.5x bar. There is no reason to be coarser than the
+    # histogram being judged, and a lookback holds tens of buckets, not
+    # thousands.
+    spacings = [
+        (ensure_utc(b.timestamp) - ensure_utc(a.timestamp)).total_seconds()
+        for a, b in zip(buckets, buckets[1:])
+    ]
+    bucket_step = timedelta(seconds=statistics.median(spacings)) if spacings else timedelta(minutes=1)
+
+    step = max(bucket_step, timedelta(seconds=30))
+    # (level, span_rank, end, window) for every placement that could be used.
+    # Longer spans rank first, so a shorter one is only chosen when it is calmer.
+    placements: list[tuple[float, int, datetime, TimeWindow]] = []
+    for rank, span in enumerate(lengths):
+        end = latest_end
+        while end > earliest:
+            start = max(end - span, earliest)
+            if (end - start) <= timedelta(minutes=2):
+                break
+            level = mean_errors(start, end)
+            if level is not None:
+                placements.append((level, rank, end,
+                                   TimeWindow(start=start, end=end, label="baseline")))
+            end -= step
+
+    if placements:
+        best = min(level for level, _, _, _ in placements)
+        # Recency is worth having — the closer the comparison stretch, the fewer
+        # unrelated changes sit between it and the incident — but not at the cost
+        # of dragging part of an episode in. So: the latest placement that is both
+        # quiet in absolute terms and not materially busier than the calmest one
+        # available. On a steady system every placement scores alike and this
+        # picks the immediately preceding stretch, exactly as before.
+        ceiling = min(quiet_threshold, best * 1.5 + 1.0)
+        acceptable = [p for p in placements if p[0] <= ceiling]
+        if acceptable:
+            _, _, _, window = min(acceptable, key=lambda p: (p[1], -p[2].timestamp()))
+            return window, True
+        calmest = min(placements, key=lambda p: (p[0], p[1]))
+        return calmest[3], False
+    if latest_end - earliest > timedelta(minutes=2):
+        # No bucket coverage to judge by — fall back to position, as before.
+        return TimeWindow(start=max(latest_end - length, earliest),
+                          end=latest_end, label="baseline"), True
+    return None, False
+
+
 class WindowResolver:
     def __init__(self, log_tool: LogTool, prometheus=None) -> None:
         self._logs = log_tool
@@ -329,20 +436,38 @@ class WindowResolver:
         min_baseline = timedelta(minutes=settings.min_baseline_minutes)
 
         if not onset_result.detected or onset_result.index is None:
-            # Nothing stood out. Analyse exactly what was asked for, and compare
-            # it against the equivalent stretch immediately before.
+            # Nothing changed *inside* the range. Analyse exactly what was asked
+            # for — but still compare it against a quiet stretch rather than the
+            # one that happens to sit immediately before. Asked about the last
+            # 15 minutes of a surge that began 23 minutes ago, the old code
+            # compared surge against surge, found every ratio near 1, and
+            # reported no metric spikes while the dashboard showed request rate
+            # at seven times its usual level.
             incident = requested
-            baseline = incident.shifted_back(timedelta(0), max(incident.duration, min_baseline))
-            baseline = TimeWindow(start=max(baseline.start, search.start),
-                                  end=incident.start, label="baseline")
+            baseline, baseline_quiet = place_baseline(
+                buckets,
+                latest_end=incident.start,
+                length=max(incident.duration, min_baseline),
+                earliest=search.start,
+                min_length=min_baseline,
+            )
+            method = f"no_onset ({onset_result.reason}; threshold {onset_result.threshold:.1f}/min)"
+            if baseline and baseline.end < incident.start:
+                method += (f"; the stretch immediately before was itself busy, so the "
+                           f"comparison window was moved back to {baseline}")
+            if baseline and not baseline_quiet:
+                method += ("; nothing in range was quiet, so the calmest stretch was used "
+                           "and every ratio is a lower bound")
             windows = InvestigationWindows(
                 requested=requested,
                 incident=TimeWindow(start=incident.start, end=incident.end, label="incident"),
-                baseline=baseline if baseline.seconds > 60 else None,
+                baseline=baseline,
+                baseline_quality=("none" if not baseline
+                                  else "clean" if baseline_quiet else "degraded"),
                 onset=None,
                 onset_detected=False,
                 onset_before_window=False,
-                method=f"no_onset ({onset_result.reason}; threshold {onset_result.threshold:.1f}/min)",
+                method=method,
             )
             return windows, buckets
 
@@ -354,11 +479,31 @@ class WindowResolver:
             # the edge of the search range as the onset.
             incident = TimeWindow(start=max(requested.start, search.start),
                                   end=requested.end, label="incident")
+
+            # Returning no baseline at all used to be the honest-looking choice,
+            # but almost every signal is a ratio against the baseline — so it
+            # silently switched off traffic, latency, saturation and 5xx
+            # detection, and dropped every metric from the evidence timeline. A
+            # comparison against an imperfect stretch still catches a change that
+            # happened *inside* the window; if the two stretches are equally bad,
+            # the ratios sit near 1 and nothing fires, which is the right answer.
+            degraded = TimeWindow(
+                start=search.start,
+                end=min(search.start + max(incident.duration, min_baseline),
+                        incident.start),
+                label="baseline",
+            )
+            usable = degraded.seconds > 120 and degraded.end <= incident.start
             windows = InvestigationWindows(
-                requested=requested, incident=incident, baseline=None,
+                requested=requested, incident=incident,
+                baseline=degraded if usable else None,
                 onset=onset, onset_detected=True, onset_before_window=True,
-                method=(f"errors already elevated {lookback.total_seconds() / 3600:.1f}h ago; "
-                        f"no quiet baseline available in range"),
+                baseline_quality="degraded" if usable else "none",
+                method=(f"errors already elevated {lookback.total_seconds() / 3600:.1f}h ago, "
+                        f"so no quiet period was available; "
+                        + (f"comparing against {degraded} instead, which may itself have "
+                           f"been unhealthy" if usable else
+                           "no comparison window could be formed at all")),
             )
             return windows, buckets
 
@@ -377,13 +522,25 @@ class WindowResolver:
         incident_start = max(onset - pre_roll, earliest_allowed, search.start)
         incident = TimeWindow(start=incident_start, end=requested.end, label="incident")
 
-        baseline_end = incident_start
+        # The baseline ends at the onset, not at the edge of the window analysed.
+        # These are two different questions — what to examine, and what to compare
+        # it against — and tying the second to the first put the incident inside
+        # its own baseline whenever the onset preceded the period asked about.
+        #
+        # Measured live: a traffic surge began at 05:12, the question asked about
+        # 05:22 onwards, and the baseline was drawn from 04:58–05:20 — eight of
+        # its twenty-two minutes already surging. Request rate read 26.2 against a
+        # "baseline" of 11.4, a 2.3x ratio that sat just under the 2.5x bar, so
+        # TRAFFIC_SURGE never fired on a surge plainly visible in the dashboard.
+        # Every baseline-relative signal was understated the same way.
+        baseline_end = min(incident_start, onset - pre_roll)
         baseline_length = min(max(incident.duration, min_baseline), timedelta(hours=1))
-        baseline_start = max(baseline_end - baseline_length, search.start)
-        baseline = (
-            TimeWindow(start=baseline_start, end=baseline_end, label="baseline")
-            if (baseline_end - baseline_start) > timedelta(minutes=2)
-            else None
+        baseline, baseline_quiet = place_baseline(
+            buckets,
+            latest_end=baseline_end,
+            length=baseline_length,
+            earliest=search.start,
+            min_length=min_baseline,
         )
 
         if onset_source == "latency":
@@ -396,10 +553,22 @@ class WindowResolver:
             method += (f"; the departure began at {onset:%H:%M:%S}Z, before the period asked "
                        f"about, so the window analysed starts at the edge of that period and "
                        f"the earlier part of the incident was not examined")
+            if baseline:
+                method += (f" — the comparison window still ends at or before the onset "
+                           f"({baseline.end:%H:%M:%S}Z) so the ratios are not measured "
+                           f"against the incident itself")
+        if baseline and baseline.end < baseline_end:
+            method += (f"; the stretch immediately before the onset was itself busy, so the "
+                       f"comparison window was moved back to {baseline}")
+        if baseline and not baseline_quiet:
+            method += ("; no genuinely quiet stretch existed anywhere in range, so the "
+                       "calmest available one was used and every ratio is a lower bound")
 
         windows = InvestigationWindows(
             requested=requested, incident=incident, baseline=baseline,
             onset=onset, onset_detected=True, onset_before_window=clamped,
+            baseline_quality=("none" if not baseline
+                              else "clean" if baseline_quiet else "degraded"),
             method=method,
         )
         logger.info(

@@ -104,3 +104,31 @@
   .li-evtl-body { grid-column: 2; }
   .li-evtl-list { padding: 12px 12px 14px; }
 }
+
+/* ==========================================================================
+   Window banner — the period examined and what it was compared against.
+   ========================================================================== */
+.li-window {
+  display: flex; gap: 2rem; flex-wrap: wrap;
+  padding: 14px 20px; margin-bottom: 1rem;
+  border-left: 3px solid var(--success);
+}
+.li-window--degraded { border-left-color: var(--warning); }
+.li-window--none { border-left-color: var(--error); }
+
+.li-window-part { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.li-window-part--wide { flex: 1; min-width: 240px; }
+.li-window-label {
+  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-tertiary); font-weight: 650;
+}
+.li-window-value {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.95rem;
+  color: var(--text-primary); font-weight: 600; white-space: nowrap;
+}
+.li-window-value--warn { color: var(--error); }
+.li-window-sub { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; }
+
+@media (max-width: 768px) {
+  .li-window { gap: 1rem; }
+}

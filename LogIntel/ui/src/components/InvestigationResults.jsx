@@ -112,6 +112,8 @@ export default function InvestigationResults({ request, onFollowUp }) {
 
       {errorMsg && <ErrorBanner><strong>Something went wrong.</strong> {errorMsg}</ErrorBanner>}
 
+      <WindowBanner windows={stages.windows} />
+
       <PrepStrip stages={stages} />
 
       {/* The answer sits above the trace once it exists: the conclusion is what
@@ -138,6 +140,80 @@ export default function InvestigationResults({ request, onFollowUp }) {
       {result && <RunFooter result={result} />}
     </div>
   );
+}
+
+/**
+ * The period actually examined, and what it was compared against.
+ *
+ * Every signal is a ratio against the baseline, so which stretch was used is not
+ * a footnote — it decides what could be detected at all. A degraded or missing
+ * baseline is stated plainly rather than left for the reader to infer from a
+ * confidence factor.
+ */
+function WindowBanner({ windows }) {
+  if (!windows) return null;
+
+  const quality = windows.baseline_quality || (windows.baseline ? 'clean' : 'none');
+  const tone = { clean: '', degraded: 'li-window--degraded', none: 'li-window--none' }[quality];
+
+  return (
+    <div className={`glass-panel li-window ${tone}`}>
+      <div className="li-window-part">
+        <span className="li-window-label">Analysed</span>
+        <span className="li-window-value">
+          {clock(windows.incident?.start)} – {clock(windows.incident?.end)}
+        </span>
+        <span className="li-window-sub">{span(windows.incident)} · {day(windows.incident?.start)}</span>
+      </div>
+
+      <div className="li-window-part">
+        <span className="li-window-label">Compared against</span>
+        {windows.baseline ? (
+          <>
+            <span className="li-window-value">
+              {clock(windows.baseline.start)} – {clock(windows.baseline.end)}
+            </span>
+            <span className="li-window-sub">
+              {span(windows.baseline)}
+              {quality === 'degraded' && ' · may itself have been unhealthy'}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="li-window-value li-window-value--warn">nothing</span>
+            <span className="li-window-sub">
+              most detection is baseline-relative and could not run
+            </span>
+          </>
+        )}
+      </div>
+
+      <div className="li-window-part li-window-part--wide">
+        <span className="li-window-label">
+          {windows.onset_detected ? 'Onset' : 'No onset detected'}
+        </span>
+        {windows.onset && (
+          <span className="li-window-value">{clock(windows.onset)}</span>
+        )}
+        <span className="li-window-sub">{windows.method}</span>
+      </div>
+    </div>
+  );
+}
+
+function clock(iso) {
+  return iso ? String(iso).slice(11, 19) : '—';
+}
+
+function day(iso) {
+  return iso ? String(iso).slice(0, 10) : '';
+}
+
+function span(window) {
+  if (!window?.start || !window?.end) return '';
+  const minutes = (new Date(window.end) - new Date(window.start)) / 60000;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  return `${(minutes / 60).toFixed(1)} h`;
 }
 
 function PrepStrip({ stages }) {
