@@ -1,0 +1,174 @@
+# The whole stack, one command:
+#
+#   docker compose up --build
+#
+#   UI          http://localhost:5173
+#   Agent API   http://localhost:8000/docs
+#   Dashboards  http://localhost:5601
+#   OpenSearch  http://localhost:9200
+#
+# Two things stay outside, because they cannot sensibly live here:
+#
+#   Ollama      wants a GPU and a model cache measured in gigabytes. Re-pulling
+#               a 5GB model on every `compose down -v` is not a workflow.
+#   Prometheus  runs inside the k3s testbed VM, scraping pods this network
+#               cannot see. Mirroring it here would mean mirroring the cluster.
+#
+# Both are reached over the network and configured below. On Docker Desktop
+# `host.docker.internal` is the host; from WSL that is your Windows IP, which
+# `ip route | awk '/default/{print $3}'` prints. Override per environment:
+#
+#   PROMETHEUS_URL=http://172.23.80.1:30090 docker compose up
+#
+# or with a .env file beside this one. Note that a stray OPENSEARCH_URL in such
+# a file will override the internal address below and break the agent — inside
+# a container, `localhost` is the container.
+
+name: log-analysis
+
+services:
+  # ---------------------------------------------------------------- storage
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    container_name: log-opensearch
+    restart: unless-stopped
+    environment:
+      # Single node, security off. This is an analysis workbench on a laptop,
+      # not a cluster: TLS and an admin password here would buy nothing and
+      # cost every component a credential to carry.
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms2g -Xmx2g}
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+    healthcheck:
+      # `yellow` is the healthy state for a single node: every index has an
+      # unassigned replica with nowhere to go. Waiting for green never returns.
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 10s
+      timeout: 8s
+      retries: 20
+      start_period: 40s
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.0
+    container_name: log-dashboards
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+      SERVER_BASEPATH: "/osd"
+      SERVER_REWRITEBASEPATH: "true"
+    ports:
+      - "${DASHBOARDS_PORT:-5601}:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/osd/api/status || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 60s
+
+  # Index patterns and the overview dashboard, applied once and then gone.
+  # Every saved object has a fixed id and is written with overwrite=true, so
+  # this is safe to re-run and safe to leave in the default `up`.
+  dashboards-setup:
+    image: python:3.12-slim
+    container_name: log-dashboards-setup
+    restart: "no"
+    environment:
+      OSD_URL: http://dashboards:5601/osd
+    volumes:
+      - ./scripts:/scripts:ro
+    command: ["python3", "/scripts/setup-dashboards.py"]
+    depends_on:
+      dashboards:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ agent
+  agent:
+    build: ./agent
+    image: log-agent:latest
+    container_name: log-agent
+    restart: unless-stopped
+    ports:
+      - "${AGENT_PORT:-8000}:8000"
+    environment:
+      # Internal address. The agent talks to OpenSearch over the compose
+      # network, never through the published port.
+      OPENSEARCH_URL: http://opensearch:9200
+
+      # External, and genuinely so.
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:30090}
+      INCIDENT_CONTROLLER_URL: ${INCIDENT_CONTROLLER_URL:-http://host.docker.internal:30099}
+
+      # The model. Local Ollama by default: nothing leaves the machine, and an
+      # investigation that makes eight tool calls costs nothing to run. Set
+      # LLM_PROVIDER=openai or anthropic plus LLM_API_KEY for a hosted one.
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder}
+      # Load-bearing: Ollama defaults this to 2048 and silently truncates
+      # longer prompts, keeping only the tail.
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
+
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  ui:
+    build: ./ui
+    image: log-ui:latest
+    container_name: log-ui
+    restart: unless-stopped
+    ports:
+      - "${UI_PORT:-5173}:80"
+    depends_on:
+      - agent
+
+  # ------------------------------------------------------------------ extras
+  # Copies a fixed set of Prometheus series into OpenSearch so Dashboards can
+  # chart metrics beside the logs and events. The agent does not read this — it
+  # queries Prometheus directly, and a mirror it depended on would be a second
+  # source of truth to keep honest.
+  metrics-mirror:
+    build: ./metrics-mirror
+    image: log-metrics-mirror:latest
+    container_name: log-metrics-mirror
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_URL: http://opensearch:9200
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:30090}
+      NAMESPACE: ${TESTBED_NAMESPACE:-shopdemo}
+      POLL_SECONDS: ${MIRROR_POLL_SECONDS:-30}
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  # Defaults to the volume the standalone lab stack in ~/opensearch already
+  # writes to, so this compose file *replaces* it rather than standing a second
+  # OpenSearch beside it — the indices, and everything already in them, carry
+  # over. Bring that stack down first (`docker compose -f ~/opensearch/
+  # docker-compose.yml down`) so the port and the volume are free.
+  #
+  # Set OPENSEARCH_VOLUME to anything else for a clean, empty cluster.
+  opensearch-data:
+    name: ${OPENSEARCH_VOLUME:-opensearch_opensearch-data}
