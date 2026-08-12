@@ -17,7 +17,7 @@ from app.models.plan import InvestigationPlan, InvestigationRequest
 from app.pipeline.answer_check import verify_answer
 from app.pipeline.hypotheses import HypothesisEngine
 from app.pipeline.signals import SignalEngine
-from app.pipeline.timeline import build_timeline
+from app.pipeline.timeline import build_evidence_timeline, build_timeline
 from app.pipeline.windows import WindowResolver
 from app.registry.systems import SystemRegistry
 from app.tools.events import EventTool
@@ -172,6 +172,16 @@ class InvestigationPipeline:
         mark("verify", started)
         yield StageEvent(stage="answer", data=answer.model_dump(mode="json"))
 
+        # The evidence itself, folded and ordered. Streamed as its own stage so
+        # the reader can check the conclusion against what it was drawn from.
+        evidence_timeline = build_evidence_timeline(windows, signals, evidence)
+        yield StageEvent(stage="evidence_timeline", data={
+            "window": windows.incident.model_dump(mode="json"),
+            "baseline": windows.baseline.model_dump(mode="json") if windows.baseline else None,
+            "entries": [e.model_dump(mode="json") for e in evidence_timeline],
+            "collapsed_from": evidence.logs.total_documents,
+        })
+
         result = InvestigationResult(
             id=investigation_id,
             question=request.question,
@@ -199,6 +209,7 @@ class InvestigationPipeline:
                 agrees_with_engine=self._agrees(answer, candidates),
             ),
             answer=answer,
+            evidence_timeline=evidence_timeline,
             evidence_summary=self._evidence_summary(evidence),
             timings_ms=timings,
             errors=errors,

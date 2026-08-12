@@ -5,7 +5,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from .answer import StructuredAnswer
+from .answer import StructuredAnswer, TimelineEntry
 from .domain import TimeWindow, utcnow
 from .plan import InvestigationPlan
 from .signals import Signal
@@ -122,6 +122,11 @@ class InvestigationResult(BaseModel):
     # basis for the confidence. `analysis` carries the same conclusion in the
     # flatter shape the stored history and evaluation harness read.
     answer: StructuredAnswer | None = None
+
+    # Every distinct thing the investigation looked at, in order, with repeats
+    # folded into occurrence counts. This is the evidence the conclusion rests
+    # on, shown rather than summarised.
+    evidence_timeline: list[TimelineEntry] = Field(default_factory=list)
 
     evidence_summary: dict = Field(default_factory=dict)
     timings_ms: dict[str, float] = Field(default_factory=dict)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
@@ -74,6 +75,39 @@ class ConfidenceFactor(BaseModel):
     factor: str
     direction: str      # raises | lowers
     weight: float = 0.0
+
+
+class TimelineEntry(BaseModel):
+    """One thing that happened, with everything repeated about it folded in.
+
+    Deliberately *not* one row per log line. A window holding 40,000 documents
+    holds maybe a dozen distinct things; printing every line buries the dozen.
+    Each entry is a distinct message template, Kubernetes event, or metric
+    movement, with `occurrences` recording how many times it happened and
+    `first_seen`/`last_seen` bounding when.
+    """
+
+    id: str
+    kind: str                       # log | event | metric | signal | marker
+    first_seen: datetime
+    last_seen: datetime | None = None
+
+    title: str
+    detail: str = ""
+    service: str | None = None
+    level: str = ""                 # ERROR / WARN / Warning / critical / ...
+
+    occurrences: int = 1
+    baseline_occurrences: int | None = None
+
+    # Whether this is worth the reader's attention, and why. Highlighting
+    # everything highlights nothing, so the reason has to be stateable.
+    notable: bool = False
+    notable_reason: str = ""
+
+    @property
+    def is_repeated(self) -> bool:
+        return self.occurrences > 1
 
 
 class NextStep(BaseModel):

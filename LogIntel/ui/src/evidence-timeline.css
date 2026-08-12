@@ -1,0 +1,106 @@
+/* ==========================================================================
+   Evidence timeline — one row per distinct thing, never per occurrence.
+   ========================================================================== */
+.li-evtl { margin-bottom: 1rem; overflow: hidden; }
+
+.li-evtl-controls {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0 20px 14px; border-bottom: 1px solid var(--glass-border);
+}
+.li-filter {
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--glass-border);
+  color: var(--text-tertiary); font-family: inherit; font-size: 0.76rem; font-weight: 550;
+  padding: 5px 12px; border-radius: var(--r-full); cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.li-filter:hover { color: var(--text-primary); border-color: var(--glass-highlight); }
+.li-filter--on {
+  background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.4);
+  color: var(--accent-color);
+}
+.li-evtl-window { font-family: 'JetBrains Mono', monospace; font-size: 0.76rem; }
+
+.li-evtl-list {
+  list-style: none; margin: 0; padding: 14px 20px 18px;
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 620px; overflow-y: auto;
+}
+
+.li-evtl-row {
+  display: grid;
+  grid-template-columns: 72px 74px 1fr;
+  gap: 12px; align-items: start;
+  padding: 10px 12px 10px 8px;
+  border-radius: var(--r-sm);
+  border-left: 3px solid transparent;
+  transition: background 0.15s var(--ease);
+}
+.li-evtl-row:hover { background: rgba(255, 255, 255, 0.025); }
+
+/* Highlighting is earned: only rows that state a reason get the treatment. */
+.li-evtl-row--notable {
+  background: rgba(251, 191, 36, 0.05);
+  border-left-color: rgba(251, 191, 36, 0.55);
+}
+.li-evtl-row--notable:hover { background: rgba(251, 191, 36, 0.08); }
+.li-evtl-row--marker {
+  background: rgba(56, 189, 248, 0.07);
+  border-left-color: var(--accent-color);
+}
+.li-evtl-row--marker .li-evtl-title { color: var(--accent-color); font-weight: 600; }
+
+.li-evtl-time {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.76rem;
+  color: var(--text-tertiary); padding-top: 2px; white-space: nowrap;
+}
+
+.li-evtl-badge {
+  font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+  padding: 3px 7px; border-radius: var(--r-sm); text-align: center;
+  background: rgba(255, 255, 255, 0.06); color: var(--text-tertiary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.li-evtl-badge--error,
+.li-evtl-badge--fatal,
+.li-evtl-badge--critical { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+.li-evtl-badge--warn,
+.li-evtl-badge--warning  { background: rgba(251, 191, 36, 0.18); color: #fcd34d; }
+.li-evtl-badge--info,
+.li-evtl-badge--normal   { background: rgba(255, 255, 255, 0.06); color: var(--text-tertiary); }
+.li-evtl-badge--metric   { background: rgba(139, 123, 246, 0.16); color: #c4b5fd; }
+.li-evtl-badge--onset    { background: rgba(56, 189, 248, 0.18); color: #7dd3fc; }
+
+.li-evtl-body { min-width: 0; }
+.li-evtl-title {
+  color: var(--text-primary); font-size: 0.89rem; line-height: 1.5;
+  word-break: break-word;
+}
+/* The count is the point of the folding, so it reads as data, not decoration. */
+.li-evtl-count {
+  display: inline-block; margin-left: 8px;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.76rem; font-weight: 700;
+  color: var(--accent-color); background: rgba(56, 189, 248, 0.1);
+  padding: 1px 7px; border-radius: var(--r-sm); cursor: help;
+}
+.li-evtl-meta {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+  margin-top: 5px; font-size: 0.72rem; color: var(--text-tertiary);
+  font-family: 'JetBrains Mono', monospace;
+}
+.li-evtl-service { color: var(--text-secondary); font-weight: 600; }
+.li-evtl-id {
+  background: transparent; border: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: inherit; color: var(--text-tertiary);
+  opacity: 0.65; text-decoration: underline dotted;
+}
+.li-evtl-id:hover { opacity: 1; color: var(--accent-color); }
+.li-evtl-why {
+  margin-top: 5px; font-size: 0.78rem; color: #fcd34d; line-height: 1.45;
+}
+
+@media (max-width: 768px) {
+  .li-evtl-row { grid-template-columns: 64px 1fr; }
+  .li-evtl-badge { grid-column: 2; justify-self: start; margin-bottom: 4px; }
+  .li-evtl-body { grid-column: 2; }
+  .li-evtl-list { padding: 12px 12px 14px; }
+}

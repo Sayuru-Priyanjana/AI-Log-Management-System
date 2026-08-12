@@ -110,6 +110,31 @@ def render(event: dict) -> None:
         elif kind in ("note", "exhausted", "error"):
             print(f"\033[31m{kind.upper()}\033[0m       {data.get('message')}")
 
+    elif stage == "evidence_timeline":
+        entries = data.get("entries", [])
+        folded = data.get("collapsed_from") or 0
+        print("\n" + "=" * 110)
+        print(f"\033[1mEVIDENCE TIMELINE\033[0m  {len(entries)} distinct entries"
+              + (f", folded from {folded:,} log documents" if folded else ""))
+        print(f"  window {str(data.get('window', {}).get('start'))[11:19]} – "
+              f"{str(data.get('window', {}).get('end'))[11:19]}\n")
+        for entry in entries:
+            mark = "\033[33m*\033[0m" if entry.get("notable") else " "
+            occurrences = (f"  \033[36m×{entry['occurrences']:,}\033[0m"
+                           if entry.get("occurrences", 1) > 1 else "")
+            baseline = ""
+            if entry.get("baseline_occurrences") is not None:
+                baseline = (" [new]" if entry["baseline_occurrences"] == 0
+                            else f" [baseline ×{entry['baseline_occurrences']:,}]")
+            span = ""
+            if entry.get("occurrences", 1) > 1 and entry.get("last_seen"):
+                span = f"  {str(entry['first_seen'])[11:19]}→{str(entry['last_seen'])[11:19]}"
+            print(f"{mark} {str(entry['first_seen'])[11:19]} "
+                  f"{entry['kind']:<7} {(entry.get('level') or ''):<9}"
+                  f"{entry['title'][:70]}{occurrences}{baseline}{span}")
+            if entry.get("notable") and entry.get("notable_reason"):
+                print(f"      \033[33m{entry['notable_reason']}\033[0m")
+
     elif stage == "answer":
         print("\n" + "=" * 110)
         print(f"\033[1mANSWER\033[0m     mode={data.get('mode')}  "

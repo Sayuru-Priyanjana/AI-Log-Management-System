@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { runInvestigation } from '../api';
 import AnswerPanel from './AnswerPanel';
 import { ErrorBanner } from './common';
+import EvidenceTimeline from './EvidenceTimeline';
 import ReasoningTrace from './ReasoningTrace';
 
 // The stages that run before the model does. Shown as a compact strip rather
@@ -19,6 +20,7 @@ export default function InvestigationResults({ request, onFollowUp }) {
   const [stages, setStages] = useState({});
   const [trace, setTrace] = useState([]);
   const [answer, setAnswer] = useState(null);
+  const [evidenceTimeline, setEvidenceTimeline] = useState(null);
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState('connecting');
   const [errorMsg, setErrorMsg] = useState(null);
@@ -29,7 +31,8 @@ export default function InvestigationResults({ request, onFollowUp }) {
     const controller = new AbortController();
     let mounted = true;
     startedAt.current = Date.now();
-    setStages({}); setTrace([]); setAnswer(null); setResult(null); setErrorMsg(null);
+    setStages({}); setTrace([]); setAnswer(null); setResult(null);
+    setEvidenceTimeline(null); setErrorMsg(null);
 
     const tick = setInterval(() => {
       if (mounted) {
@@ -60,6 +63,8 @@ export default function InvestigationResults({ request, onFollowUp }) {
               setTrace((prev) => [...prev, data]);
             } else if (stage === 'answer') {
               setAnswer(data);
+            } else if (stage === 'evidence_timeline') {
+              setEvidenceTimeline(data);
             } else if (stage === 'result') {
               setResult(data);
             } else {
@@ -119,6 +124,8 @@ export default function InvestigationResults({ request, onFollowUp }) {
             onInvestigate={onFollowUp} />
         </div>
       )}
+
+      <EvidenceTimeline data={evidenceTimeline} />
 
       <ReasoningTrace steps={trace} live={status === 'streaming' && !answer} />
 
