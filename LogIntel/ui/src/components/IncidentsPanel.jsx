@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getIncidents, resetIncidents, startIncident, stopIncident } from '../api';
-import { Chip, ErrorBanner } from './common';
+import { Chip } from './common';
+import { useToast } from '../toast';
 
 function useElapsed(startedAt) {
   const [, force] = useState(0);
@@ -62,6 +63,7 @@ function ScenarioCard({ id, spec, activeSince, busy, onStart, onStop, onInvestig
 }
 
 export default function IncidentsPanel({ onInvestigate }) {
+  const toast = useToast();
   const [catalogue, setCatalogue] = useState(null);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
@@ -88,15 +90,24 @@ export default function IncidentsPanel({ onInvestigate }) {
       await fn();
       await refresh();
     } catch (err) {
-      setError(err.message);
+      toast.error('Scenario command failed', { detail: err.message });
     } finally {
       setBusyId(null);
     }
   };
 
-  const handleStart = (id) => withBusy(id, () => startIncident(id));
-  const handleStop = (id) => withBusy(id, () => stopIncident(id));
-  const handleResetAll = () => withBusy('*', () => resetIncidents());
+  const handleStart = (id) => withBusy(id, async () => {
+    await startIncident(id);
+    toast.success(`Started ${id}`, { detail: 'Give it time to develop before investigating.' });
+  });
+  const handleStop = (id) => withBusy(id, async () => {
+    await stopIncident(id);
+    toast.success(`Stopped ${id}`);
+  });
+  const handleResetAll = () => withBusy('*', async () => {
+    await resetIncidents();
+    toast.success('All scenarios reset');
+  });
 
   const handleInvestigate = (spec) => {
     // The testbed's namespace and its system_id are the same string
@@ -110,36 +121,33 @@ export default function IncidentsPanel({ onInvestigate }) {
 
   if (error && !catalogue) {
     return (
-      <ErrorBanner>
-        <strong>Cannot reach the incident injector.</strong> {error}
-        <p className="li-muted" style={{ marginTop: 8 }}>
-          Check that the testbed VM is up: <code className="li-mono">cd testbed &amp;&amp; vagrant status</code>
-        </p>
-      </ErrorBanner>
+      <div className="page">
+        <div className="empty">
+          The incident injector is not answering ({error}).<br />
+          Check the testbed VM: <code>cd testbed &amp;&amp; vagrant status</code>
+        </div>
+      </div>
     );
   }
 
-  if (!catalogue) return <p className="li-muted">Loading scenarios…</p>;
+  if (!catalogue) return <div className="page"><div className="empty">Loading scenarios…</div></div>;
 
   const scenarios = Object.entries(catalogue.scenarios || {});
   const activeCount = Object.keys(catalogue.active || {}).length;
 
   return (
-    <div className="li-incidents">
-      <div className="glass-panel li-incidents-header">
-        <div>
-          <h3>Inject a real failure into <span className="text-gradient">{catalogue.namespace}</span></h3>
-          <p className="li-muted">
-            Each scenario patches the live cluster the same way an eval run does — real pods,
-            real Prometheus metrics, real Kubernetes events. Nothing here is simulated data.
-          </p>
-        </div>
+    <div className="page">
+      <div className="pagehead">
+        <h2>Incidents</h2>
+        <p>
+          Each scenario patches <strong>{catalogue.namespace}</strong> for real — real pods,
+          real metrics, real events. Nothing here is simulated.
+        </p>
+        <span className="spacer" />
         <button type="button" className="li-btn" disabled={activeCount === 0 || busyId === '*'} onClick={handleResetAll}>
           {busyId === '*' ? 'Resetting…' : `Reset all (${activeCount} active)`}
         </button>
       </div>
-
-      {error && <div style={{ marginBottom: 16 }}><ErrorBanner>{error}</ErrorBanner></div>}
 
       <div className="li-incident-grid">
         {scenarios.map(([id, spec]) => (

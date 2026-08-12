@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { runInvestigation } from '../api';
 import { usePreferences } from '../preferences';
 import AnswerPanel from './AnswerPanel';
-import { ErrorBanner } from './common';
+import { useToast } from '../toast';
 import EvidenceTimeline from './EvidenceTimeline';
 import ReasoningTrace from './ReasoningTrace';
 
@@ -18,13 +18,13 @@ const PREP_STAGES = [
 ];
 
 export default function InvestigationResults({ request, onFollowUp }) {
+  const toast = useToast();
   const [stages, setStages] = useState({});
   const [trace, setTrace] = useState([]);
   const [answer, setAnswer] = useState(null);
   const [evidenceTimeline, setEvidenceTimeline] = useState(null);
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState('connecting');
-  const [errorMsg, setErrorMsg] = useState(null);
   const startedAt = useRef(Date.now());
   const [elapsed, setElapsed] = useState(0);
 
@@ -33,7 +33,7 @@ export default function InvestigationResults({ request, onFollowUp }) {
     let mounted = true;
     startedAt.current = Date.now();
     setStages({}); setTrace([]); setAnswer(null); setResult(null);
-    setEvidenceTimeline(null); setErrorMsg(null);
+    setEvidenceTimeline(null);
 
     const tick = setInterval(() => {
       if (mounted) {
@@ -55,7 +55,7 @@ export default function InvestigationResults({ request, onFollowUp }) {
 
             if (stage === 'error') {
               setStatus('error');
-              setErrorMsg(data?.detail || 'The investigation failed.');
+              toast.error('Investigation failed', { detail: data?.detail });
               return;
             }
             setStatus('streaming');
@@ -77,7 +77,7 @@ export default function InvestigationResults({ request, onFollowUp }) {
       } catch (err) {
         if (mounted && err.name !== 'AbortError') {
           setStatus('error');
-          setErrorMsg(err.message);
+          toast.error('Investigation failed', { detail: err.message });
         }
       }
     })();
@@ -95,14 +95,10 @@ export default function InvestigationResults({ request, onFollowUp }) {
 
   return (
     <div className="li-results">
-      <div className="glass-panel li-results-header">
-        <div style={{ minWidth: 0 }}>
-          <h3>
-            <span className="text-gradient">{request.system_id}</span>
-            {plan?.service ? <span className="li-muted"> · {plan.service}</span> : null}
-          </h3>
-          <p className="li-muted">{request.question}</p>
-        </div>
+      <div className="li-results-header">
+        <span className="li-goal">{request.question}</span>
+        {plan?.service && <span className="li-chip li-chip--service">{plan.service}</span>}
+        <span className="spacer" />
         <div className="li-status-pill">
           {status === 'connecting' && <StatusDot color="var(--warning)" label="Connecting…" pulse />}
           {status === 'streaming' && <StatusDot color="var(--accent-color)" label={`Working… ${seconds}s`} pulse />}
@@ -111,7 +107,6 @@ export default function InvestigationResults({ request, onFollowUp }) {
         </div>
       </div>
 
-      {errorMsg && <ErrorBanner><strong>Something went wrong.</strong> {errorMsg}</ErrorBanner>}
 
       <WindowBanner windows={stages.windows} />
 

@@ -13,33 +13,33 @@
 }
 
 /* -- reasoning trace -------------------------------------------------------- */
-.li-trace { margin-bottom: 1rem; overflow: hidden; }
+.li-trace { margin-bottom: 8px; overflow: hidden; }
 .li-trace-head {
   display: flex; align-items: center; gap: 12px; width: 100%;
-  padding: 14px 20px; background: transparent; border: none; cursor: pointer;
+  padding: 8px 12px; background: transparent; border: none; cursor: pointer;
   font-family: inherit; color: var(--text-primary); text-align: left;
 }
 .li-trace-head:hover { background: var(--bg-color); }
-.li-trace-title { font-weight: 600; font-size: 0.95rem; }
+.li-trace-title { font-weight: 600; font-size: 12.5px; }
 .li-trace-live {
-  font-size: 0.72rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.8px;
-  color: var(--accent-color); padding: 3px 9px; border-radius: var(--r-full);
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--accent); padding: 1px 6px; border-radius: var(--r);
   background: var(--accent-soft);
 }
 .li-trace-list {
-  list-style: none; padding: 0 20px 18px; margin: 0;
-  display: flex; flex-direction: column; gap: 2px;
+  list-style: none; padding: 0 12px 10px; margin: 0;
+  display: flex; flex-direction: column; gap: 0;
 }
 .li-trace-item {
-  display: flex; gap: 14px; padding: 10px 0;
-  border-left: 2px solid var(--glass-border); padding-left: 18px; margin-left: 10px;
+  display: flex; gap: 10px; padding: 6px 0 6px 14px;
+  border-left: 2px solid var(--border); margin-left: 8px;
   position: relative;
 }
 .li-trace-marker {
-  position: absolute; left: -11px; top: 10px;
-  width: 20px; height: 20px; border-radius: 50%;
+  position: absolute; left: -9px; top: 7px;
+  width: 16px; height: 16px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 0.68rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px; font-weight: 700; font-family: var(--mono);
   background: var(--bg-color-raised); border: 1px solid var(--glass-border);
   color: var(--text-tertiary); flex-shrink: 0;
 }
@@ -49,8 +49,8 @@
 .li-trace-item--note .li-trace-marker { border-color: var(--error-border); color: var(--error); }
 
 .li-trace-kind {
-  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px;
-  color: var(--text-tertiary); font-weight: 650; margin-bottom: 4px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text-3); font-weight: 600; margin-bottom: 2px;
 }
 
 /* The measured signals, handed to the agent before it chose anything. Marked
@@ -60,126 +60,113 @@
   border-color: var(--violet-border); color: var(--violet);
 }
 .li-trace-seeded-tag {
-  display: inline-block; margin-left: 8px;
-  font-size: 0.62rem; letter-spacing: 0.6px; font-weight: 700;
-  padding: 2px 7px; border-radius: var(--r-sm); cursor: help;
+  display: inline-block; margin-left: 6px;
+  font-size: 9.5px; letter-spacing: .4px; font-weight: 700;
+  padding: 1px 5px; border-radius: 3px; cursor: help;
   background: var(--violet-bg); color: var(--violet);
 }
-.li-trace-text { color: var(--text-primary); font-size: 0.93rem; line-height: 1.6; }
+.li-trace-text { font-size: 12.5px; line-height: 1.5; }
 .li-trace-item--thought .li-trace-text { color: var(--text-secondary); font-style: italic; }
 .li-trace-tool code {
-  font-size: 0.85rem; color: var(--warning);
-  background: var(--warning-bg); padding: 3px 9px; border-radius: var(--r-sm);
+  font-size: 11.5px; color: var(--warn);
+  background: var(--warn-soft); padding: 1px 6px; border-radius: var(--r);
   display: inline-block; word-break: break-all;
 }
 
 /* -- structured answer ------------------------------------------------------ */
-.li-answer-panel { padding: 1.9rem 2.1rem; margin-bottom: 1rem; }
-.li-answer-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 1rem; }
+.li-answer-panel { padding: 12px 14px; margin-bottom: 8px; }
+.li-answer-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .li-answer-headline {
-  font-size: 1.45rem; font-weight: 650; line-height: 1.35;
-  color: var(--text-primary); letter-spacing: -0.3px; margin-bottom: 0.6rem;
+  font-size: 16px; font-weight: 600; line-height: 1.35;
+  letter-spacing: -.2px; margin-bottom: 5px;
 }
-.li-answer-detail { color: var(--text-secondary); line-height: 1.7; font-size: 1rem; }
+.li-answer-detail { color: var(--text-2); line-height: 1.6; font-size: 13px; }
 
 .li-answer-warning {
   display: flex; gap: 10px; align-items: flex-start;
-  margin-top: 1.1rem; padding: 12px 15px; border-radius: var(--r-md);
+  margin-top: 10px; padding: 8px 10px; border-radius: var(--r);
   background: var(--warning-bg); border: 1px solid var(--warning-border);
-  color: var(--warning); font-size: 0.89rem; line-height: 1.5;
+  color: var(--warn); font-size: 12px; line-height: 1.45;
 }
 
 .li-confidence-block { position: relative; }
 .li-confidence-toggle {
   display: flex; align-items: center; gap: 8px;
   background: var(--bg-color-raised); border: 1px solid var(--glass-border);
-  border-radius: var(--r-full); padding: 7px 14px; cursor: pointer;
-  font-family: inherit; font-size: 0.85rem; color: var(--text-secondary);
+  border-radius: var(--r); padding: 3px 9px; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--text-2);
   transition: border-color 0.2s var(--ease);
 }
 .li-confidence-toggle:hover { border-color: var(--glass-highlight); }
-.li-confidence-value { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.3px; }
+.li-confidence-value { font-size: 13px; font-weight: 700; }
 .li-confidence-factors {
   position: absolute; right: 0; top: calc(100% + 8px); z-index: 20;
-  width: min(460px, 78vw); padding: 14px 16px;
+  width: min(420px, 80vw); padding: 10px 11px;
   background: var(--glass-bg-solid); border: 1px solid var(--glass-border);
   border-radius: var(--r-md); box-shadow: var(--shadow-lg);
   display: flex; flex-direction: column; gap: 8px;
 }
-.li-factor { display: flex; gap: 9px; font-size: 0.85rem; line-height: 1.5; align-items: flex-start; }
+.li-factor { display: flex; gap: 7px; font-size: 12px; line-height: 1.45; align-items: flex-start; }
 .li-factor--raises { color: var(--success); }
 .li-factor--lowers { color: var(--warning); }
 
 .li-reasoning {
-  list-style: none; padding: 0; display: flex; flex-direction: column; gap: 14px;
+  list-style: none; padding: 0; display: flex; flex-direction: column; gap: 9px;
 }
-.li-reasoning li { padding-left: 16px; border-left: 2px solid var(--accent-color); }
+.li-reasoning li { padding-left: 10px; border-left: 2px solid var(--accent); }
 /* A step resting on nothing is coloured like a warning, because that is what it is. */
 .li-reasoning--bare { border-left-color: var(--warning); }
-.li-reasoning-claim { color: var(--text-primary); font-size: 0.97rem; line-height: 1.55; }
-.li-reasoning-because { color: var(--text-secondary); font-size: 0.89rem; margin-top: 4px; line-height: 1.5; }
+.li-reasoning-claim { font-size: 12.5px; line-height: 1.5; }
+.li-reasoning-because { color: var(--text-2); font-size: 12px; margin-top: 2px; line-height: 1.45; }
 .li-kind {
-  display: inline-block; font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.8px;
-  font-weight: 700; padding: 2px 7px; border-radius: var(--r-sm); margin-right: 9px;
+  display: inline-block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .4px;
+  font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-right: 6px;
   vertical-align: 1px;
 }
 .li-kind--observation { background: var(--success-bg); color: var(--success); }
 .li-kind--inference { background: var(--accent-soft); color: var(--accent-color); }
 .li-kind--elimination { background: var(--violet-bg); color: var(--violet); }
 
-.li-evidence-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.li-evidence-row--empty { font-size: 0.76rem; color: var(--warning); font-style: italic; }
+.li-evidence-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+.li-evidence-row--empty { font-size: 11px; color: var(--warn); }
 
-.li-assumptions { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-.li-assumptions li { padding-left: 16px; border-left: 2px solid var(--violet-border); }
+.li-assumptions { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.li-assumptions li { padding-left: 10px; border-left: 2px solid var(--alt-border); }
 .li-assumptions strong { color: var(--text-primary); font-weight: 550; }
-.li-assumption-risk { color: var(--warning); font-size: 0.86rem; margin-top: 3px; }
+.li-assumption-risk { color: var(--warn); font-size: 11.5px; margin-top: 2px; }
 
-/* -- data table (extraction and aggregation answers) ------------------------ */
-.li-table-wrap { overflow-x: auto; border: 1px solid var(--glass-border); border-radius: var(--r-md); }
-.li-table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
-.li-table th {
-  text-align: left; padding: 10px 14px; background: var(--bg-color);
-  color: var(--text-tertiary); font-size: 0.7rem; text-transform: uppercase;
-  letter-spacing: 0.9px; font-weight: 650; white-space: nowrap;
-}
-.li-table td {
-  padding: 9px 14px; border-top: 1px solid var(--glass-border);
-  color: var(--text-primary); vertical-align: top;
-}
-.li-table td:last-child { font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; }
-.li-table tbody tr:hover { background: var(--glass-bg-soft); }
+/* Data tables are styled once, in index.css. */
 
 @media (max-width: 768px) {
-  .li-answer-panel { padding: 1.4rem 1.25rem; }
-  .li-answer-headline { font-size: 1.2rem; }
+  .li-answer-panel { padding: 10px; }
+  .li-answer-headline { font-size: 14px; }
   .li-confidence-factors { width: min(320px, 88vw); }
   .li-trace-list { padding: 0 12px 14px; }
 }
 
 /* -- executable next steps -------------------------------------------------- */
-.li-steps { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.li-steps { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .li-step {
-  border: 1px solid var(--glass-border); border-radius: var(--r-md);
-  background: var(--glass-bg-soft); padding: 13px 15px;
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface-2); padding: 8px 10px;
   transition: border-color 0.2s var(--ease);
 }
 .li-step:hover { border-color: var(--glass-highlight); }
-.li-step-main { display: flex; gap: 14px; align-items: flex-start; }
+.li-step-main { display: flex; gap: 10px; align-items: flex-start; }
 .li-step-text { flex: 1; min-width: 0; }
-.li-step-label { color: var(--text-primary); font-size: 0.95rem; line-height: 1.5; }
-.li-step-reason { color: var(--text-tertiary); font-size: 0.8rem; margin-top: 3px; }
+.li-step-label { font-size: 12.5px; line-height: 1.45; }
+.li-step-reason { color: var(--text-3); font-size: 11.5px; margin-top: 2px; }
 .li-step-tool {
-  display: inline-block; margin-top: 7px; font-size: 0.78rem;
-  font-family: 'JetBrains Mono', monospace; color: var(--accent-color);
-  background: var(--accent-soft); padding: 3px 9px; border-radius: var(--r-sm);
+  display: inline-block; margin-top: 5px; font-size: 11px;
+  font-family: var(--mono); color: var(--accent);
+  background: var(--accent-soft); padding: 1px 6px; border-radius: var(--r);
   word-break: break-all;
 }
 .li-step-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-.li-step-button { padding: 7px 16px; font-size: 0.82rem; white-space: nowrap; }
-.li-step-manual { font-size: 0.75rem; font-style: italic; }
-.li-step-result { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--glass-border); }
-.li-step-result--error { color: var(--error); font-size: 0.86rem; }
+.li-step-button { height: 22px; padding: 0 9px; font-size: 11.5px; white-space: nowrap; }
+.li-step-manual { font-size: 11px; color: var(--text-3); }
+.li-step-result { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.li-step-result--error { color: var(--err); font-size: 11.5px; }
 
 @media (max-width: 640px) {
   .li-step-main { flex-direction: column; gap: 10px; }

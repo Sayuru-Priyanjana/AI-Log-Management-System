@@ -1,18 +1,30 @@
 // Every request goes through the agent's own API — the browser never talks to
 // OpenSearch, Prometheus, Ollama, or the testbed's incident controller
-// directly. That keeps this file the single place network wiring lives, and
-// means /api/health can report on all of them without the browser needing
-// separate credentials or CORS setup for each.
-// An *empty* VITE_AGENT_URL is meaningful and distinct from an unset one: it
-// means "same origin", which is how the container image is built — nginx serves
-// this bundle and proxies /api to the agent, so the browser never learns the
-// agent's address and there is no CORS to configure. Unset means the dev server,
-// where Vite is on 5173 and the agent is a separate process on 8000.
+// directly. That keeps this file the single place network wiring lives.
 const configured = import.meta.env.VITE_AGENT_URL;
 const BASE_URL = configured === undefined ? 'http://localhost:8000' : configured;
 
+function getHeaders(custom = {}) {
+  const token = localStorage.getItem('jwt');
+  const headers = { ...custom };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
+function handleAuthError(response) {
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('jwt');
+    localStorage.removeItem('role');
+    // If not already on login page, redirect
+    if (window.location.pathname !== '/') {
+      window.location.href = '/';
+    }
+  }
+}
+
 async function getJSON(path) {
-  const response = await fetch(`${BASE_URL}${path}`);
+  const response = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  handleAuthError(response);
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new Error(`GET ${path} -> ${response.status}: ${body.slice(0, 300)}`);
@@ -23,9 +35,10 @@ async function getJSON(path) {
 async function postJSON(path, body) {
   const response = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: getHeaders(body ? { 'Content-Type': 'application/json' } : {}),
     body: body ? JSON.stringify(body) : undefined,
   });
+  handleAuthError(response);
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     let detail = text;
@@ -38,14 +51,30 @@ async function postJSON(path, body) {
 async function putJSON(path, body) {
   const response = await fetch(`${BASE_URL}${path}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   });
+  handleAuthError(response);
   const text = await response.text().catch(() => '');
   if (!response.ok) {
     let detail = text;
     try { detail = JSON.parse(text).detail || text; } catch { /* not json */ }
     throw new Error(detail || `PUT ${path} -> ${response.status}`);
+  }
+  return text ? JSON.parse(text) : {};
+}
+
+async function deleteJSON(path) {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  });
+  handleAuthError(response);
+  const text = await response.text().catch(() => '');
+  if (!response.ok) {
+    let detail = text;
+    try { detail = JSON.parse(text).detail || text; } catch { /* not json */ }
+    throw new Error(detail || `DELETE ${path} -> ${response.status}`);
   }
   return text ? JSON.parse(text) : {};
 }
@@ -61,18 +90,14 @@ export const startIncident = (id) => postJSON(`/api/incidents/${id}/start`);
 export const stopIncident = (id) => postJSON(`/api/incidents/${id}/stop`);
 export const resetIncidents = () => postJSON('/api/incidents/reset-all');
 
-/**
- * Streams an investigation as NDJSON, calling onEvent for every line as it
- * arrives — this is what makes the flow map light up stage by stage instead
- * of waiting for the whole run and rendering it all at once.
- */
 export async function runInvestigation(payload, { onEvent, signal }) {
   const response = await fetch(`${BASE_URL}/api/investigations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
     signal,
   });
+  handleAuthError(response);
   if (!response.ok || !response.body) {
     throw new Error(`Server responded with ${response.status}`);
   }
@@ -98,14 +123,6 @@ export async function runInvestigation(payload, { onEvent, signal }) {
   }
 }
 
-/**
- * Runs a single tool against a finished investigation's evidence.
- *
- * This is what a "next step" button calls. It rebuilds the evidence from the
- * plan and windows the investigation stored, so the result comes back in a
- * second or two with no model call — and against the same window the conclusion
- * was drawn from, which is the point of following up on it at all.
- */
 export const runInvestigationTool = (investigationId, tool, toolInput) =>
   postJSON(`/api/investigations/${investigationId}/run-tool`, {
     tool,
@@ -114,9 +131,21 @@ export const runInvestigationTool = (investigationId, tool, toolInput) =>
 
 export { BASE_URL };
 
-// -- configuration ----------------------------------------------------------
 export const getSettings = () => getJSON('/api/settings');
 export const getClusters = () => getJSON('/api/clusters');
 export const updateSettings = (values) => putJSON('/api/settings', { values });
 export const testConnection = (target) => postJSON('/api/settings/test', { target });
 export const refreshSystems = () => postJSON('/api/systems/refresh');
+
+// Auth endpoints
+export const login = (username, password) => postJSON('/api/auth/login', { username, password });
+export const changePassword = (oldPassword, newPassword) => putJSON('/api/auth/password', { oldPassword, newPassword });
+
+// Admin endpoints
+export const getUsers = () => getJSON('/api/admin/users');
+export const createUser = (username, password, role, systems) => postJSON('/api/admin/users', { username, password, role, systems });
+export const updateUserSystems = (id, systems) => putJSON(`/api/admin/users/${id}/systems`, { systems });
+export const deleteUser = (id) => deleteJSON(`/api/admin/users/${id}`);
+export const getRegisteredSystems = () => getJSON('/api/admin/systems');
+export const registerSystem = (name) => postJSON('/api/admin/systems', { name });
+export const deleteSystem = (id) => deleteJSON(`/api/admin/systems/${id}`);

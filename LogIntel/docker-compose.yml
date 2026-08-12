@@ -140,6 +140,40 @@ services:
       - "${UI_PORT:-5173}:80"
     depends_on:
       - agent
+      - gateway
+
+  # ------------------------------------------------------------------ identity & gateway
+  postgres:
+    image: postgres:15-alpine
+    container_name: log-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: logintel
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  gateway:
+    build: ./gateway
+    image: log-gateway:latest
+    container_name: log-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      AGENT_URL: http://agent:8000
+      JWT_SECRET: super-secret-jwt-key
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: logintel
+    depends_on:
+      - postgres
+      - agent
 
   # ------------------------------------------------------------------ extras
   # Copies a fixed set of Prometheus series into OpenSearch so Dashboards can
@@ -172,3 +206,6 @@ volumes:
   # Set OPENSEARCH_VOLUME to anything else for a clean, empty cluster.
   opensearch-data:
     name: ${OPENSEARCH_VOLUME:-opensearch_opensearch-data}
+
+  postgres-data:
+    name: logintel-postgres-data

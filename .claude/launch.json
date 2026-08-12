@@ -4,7 +4,16 @@
     {
       "name": "ui",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "LogIntel/ui"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "LogIntel/ui",
+        "--",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
       "port": 5173
     }
   ]
