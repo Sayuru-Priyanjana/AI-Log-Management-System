@@ -1,30 +1,37 @@
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import { getHealth, getSystems } from '../api';
+import { useNavigate } from 'react-router-dom';
+import { getHealth, getRecentInvestigations, getSystemIntegrations, getSystems, testConnection } from '../api';
 import { useToast } from '../toast';
-import InvestigationForm from './InvestigationForm';
-import InvestigationResults from './InvestigationResults';
+import ActivitiesPanel from './ActivitiesPanel';
+import AlertsPanel from './AlertsPanel';
+import SystemIntegrationsModal from './SystemIntegrationsModal';
+
+const COMPONENT_LABEL = {
+  opensearch: 'OpenSearch', prometheus: 'Prometheus', model: 'Agent model',
+  incident_controller: 'Fluent Bit source', registry: 'Registry',
+};
 
 /**
- * Systems on the left, the selected one on the right, both full height.
+ * The dashboard: pick a system, see its shape, act on it.
  *
- * The right pane shows the system as a header strip and a services table — a
- * dense, sortable-shaped list of what is actually shipping logs. It replaced a
- * drawn "cluster architecture" tree of boxes and connector lines: that took
- * roughly a screen of height to say a cluster contains environments and
- * services, which the two rows beneath it already said, and it could not show
- * the log counts that make the list worth reading.
+ * Three columns once a system is selected — details and services on the left,
+ * what has happened in the middle, what needs attention on the right — plus a
+ * status row above them and the two things you actually do from here: open the
+ * agent, or open configuration. Both are their own screens; this one only
+ * orients.
  */
 export default function WorkstationPage() {
-  const location = useLocation();
+  const navigate = useNavigate();
   const toast = useToast();
-  const [prefill] = useState(location.state?.prefill || null);
 
   const [systems, setSystems] = useState([]);
   const [health, setHealth] = useState(null);
+  const [investigations, setInvestigations] = useState([]);
+  const [integrations, setIntegrations] = useState(null);
+  const [editingIntegrations, setEditingIntegrations] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(prefill?.system_id || null);
-  const [request, setRequest] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => localStorage.getItem('lastSystemId') || null);
+  const [tests, setTests] = useState({});
 
   useEffect(() => {
     let mounted = true;
@@ -34,117 +41,175 @@ export default function WorkstationPage() {
         const list = systemData.systems || [];
         setSystems(list);
         setHealth(healthData);
-        setSelectedId((current) => current || list[0]?.id || null);
+        setSelectedId((current) => {
+          const next = list.some((s) => s.id === current) ? current : (list[0]?.id || null);
+          if (next) localStorage.setItem('lastSystemId', next);
+          return next;
+        });
       })
-      .catch((err) => mounted && toast.error('Could not load systems', { detail: err.message }))
+      .catch((err) => mounted && toast.error('Could not load the workstation', { detail: err.message }))
       .finally(() => mounted && setLoading(false));
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selected = systems.find((system) => system.id === selectedId);
+  useEffect(() => {
+    if (!selectedId) return;
+    getRecentInvestigations(50, selectedId)
+      .then((res) => setInvestigations(res.investigations || []))
+      .catch(() => setInvestigations([]));
+    // This system's own settings, not the agent's — see SystemIntegrationsModal.
+    getSystemIntegrations(selectedId)
+      .then((res) => setIntegrations(res.values))
+      .catch(() => setIntegrations(null));
+  }, [selectedId]);
+
+  const selectSystem = (id) => {
+    setSelectedId(id);
+    localStorage.setItem('lastSystemId', id);
+  };
+
+  const runTest = async (target) => {
+    setTests((t) => ({ ...t, [target]: 'pending' }));
+    try {
+      const result = await testConnection(target);
+      setTests((t) => ({ ...t, [target]: result.ok ? 'ok' : 'bad' }));
+      if (result.ok) toast.success(`${COMPONENT_LABEL[target] || target} reachable`, { detail: result.detail });
+      else toast.error(`${COMPONENT_LABEL[target] || target} not reachable`, { detail: result.detail });
+    } catch (err) {
+      setTests((t) => ({ ...t, [target]: 'bad' }));
+      toast.error('Test failed', { detail: err.message });
+    }
+  };
+
+  const selected = systems.find((s) => s.id === selectedId);
+  const teamsConfigured = Boolean(integrations?.teams_webhook_url);
 
   return (
-    <div className="ws">
-      <aside className="ws-side">
-        <div className="ws-side-head">
-          <h4>Systems</h4>
-          <span className="spacer" />
-          <span className="dim">{systems.length}</span>
-        </div>
-        <div className="ws-side-list">
-          {loading && <div className="empty">Loading…</div>}
-          {!loading && systems.length === 0 && (
-            <div className="empty">No systems assigned to you.</div>
-          )}
-          {systems.map((system) => (
-            <button key={system.id} type="button"
-              className={`ws-item ${system.id === selectedId ? 'is-active' : ''}`}
-              onClick={() => { setSelectedId(system.id); setRequest(null); }}>
-              <span className="ws-item-name">{system.name}</span>
-              <span className="ws-item-meta">
-                {system.id} · {system.services?.length || 0} svc
-              </span>
-            </button>
-          ))}
-        </div>
-      </aside>
-
-      <section className="ws-main">
-        {!selected ? (
-          <div className="empty" style={{ margin: 'auto' }}>
-            {loading ? 'Loading…' : 'Select a system.'}
-          </div>
-        ) : (
-          <>
-            <div className="ws-bar">
-              <h2>{selected.name}</h2>
-              <span className="chip chip--mono">{selected.id}</span>
-              {(selected.environments || []).map((env) => (
-                <span key={env} className="chip">{env}</span>
-              ))}
-              <span className="spacer" />
-              {health && (
-                <span className="row" style={{ gap: 5 }}>
-                  <span className={`dot dot--${tone(health.status)}`} />
-                  <span className="dim">integrations {health.status}</span>
-                </span>
-              )}
-              {request && (
-                <button type="button" className="btn btn--sm" onClick={() => setRequest(null)}>
-                  New query
-                </button>
-              )}
-            </div>
-
-            <div className="ws-body">
-              {request ? (
-                <InvestigationResults request={request}
-                  onFollowUp={(question) => setRequest({ ...request, question, _at: Date.now() })} />
-              ) : (
-                <div className="grid grid--2" style={{ alignItems: 'start' }}>
-                  <div className="card">
-                    <header><h3>Ask</h3></header>
-                    <div className="card-body">
-                      <InvestigationForm onSubmit={setRequest} initial={prefill}
-                        lockedSystem={selected} />
-                    </div>
-                  </div>
-
-                  <div className="card">
-                    <header>
-                      <h3>Services</h3>
-                      <span className="spacer" />
-                      <span className="dim">{selected.services?.length || 0} shipping logs</span>
-                    </header>
-                    {selected.services?.length ? (
-                      <table className="table">
-                        <thead>
-                          <tr><th>Service</th><th style={{ width: 110, textAlign: 'right' }}>Documents</th></tr>
-                        </thead>
-                        <tbody>
-                          {[...selected.services]
-                            .sort((a, b) => (b.log_count || 0) - (a.log_count || 0))
-                            .map((service) => (
-                              <tr key={service.name}>
-                                <td className="mono">{service.name}</td>
-                                <td className="num">{(service.log_count || 0).toLocaleString()}</td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
-                    ) : (
-                      <div className="empty">
-                        Nothing has shipped logs for this system yet.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
+    <div className="wsx">
+      <div className="wsx-top">
+        <select className="input" value={selectedId || ''} disabled={loading || systems.length === 0}
+          onChange={(e) => selectSystem(e.target.value)}>
+          {systems.length === 0 && <option value="">No systems discovered yet</option>}
+          {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <span className="spacer" />
+        <button type="button" className="btn btn--primary" disabled={!selected}
+          onClick={() => navigate('/agent', { state: { system_id: selectedId } })}>
+          AI Agent
+        </button>
+        {localStorage.getItem('role') === 'admin' && (
+          // This button opens *this system's* configuration — its Teams channel,
+          // its automation settings. The agent's own connections (which
+          // OpenSearch, which model) are a different, global thing, reached
+          // only from the nav bar's Configuration link.
+          <button type="button" className="btn" disabled={!selected}
+            onClick={() => setEditingIntegrations(true)}>
+            Configuration
+          </button>
         )}
-      </section>
+      </div>
+
+      {health && (
+        <div className="wsx-status">
+          {Object.entries(health.components).filter(([key]) => key !== 'registry').map(([key, component]) => {
+            const target = key === 'incident_controller' ? 'incidents' : key;
+            return (
+              <span key={key} className="status-chip" title={component.url || component.error || ''}>
+                <span className={`dot dot--${tone(component.status)}`} />
+                {COMPONENT_LABEL[key] || key}
+                <button type="button" onClick={() => runTest(target)}
+                  disabled={tests[target] === 'pending'}>
+                  {tests[target] === 'pending' ? '…' : 'test'}
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="empty">Loading…</div>
+      ) : !selected ? (
+        <div className="empty" style={{ marginTop: 40 }}>
+          No systems have shipped logs yet. Once one does, it appears here automatically.
+        </div>
+      ) : (
+        <div className="wsx-columns">
+          <div className="wsx-col">
+            <div className="card">
+              <header><h3>System</h3></header>
+              <div className="card-body">
+                <dl className="kv-list">
+                  <div className="kv-row"><dt>Name</dt><dd>{selected.name}</dd></div>
+                  <div className="kv-row"><dt>ID</dt><dd className="mono">{selected.id}</dd></div>
+                  <div className="kv-row"><dt>Environment</dt>
+                    <dd><div className="chiprow">
+                      {(selected.environments || []).map((e) => <span key={e} className="chip">{e}</span>)}
+                    </div></dd>
+                  </div>
+                  <div className="kv-row"><dt>Status</dt>
+                    <dd className="row" style={{ gap: 5 }}>
+                      <span className={`dot dot--${health ? tone(health.status) : 'warn'}`} />
+                      {health?.status || 'unknown'}
+                    </dd>
+                  </div>
+                  <div className="kv-row"><dt>Notify via</dt>
+                    <dd className="row" style={{ gap: 6 }}>
+                      Teams
+                      {teamsConfigured
+                        ? <span className="chip chip--ok">{integrations.teams_channel_name || 'configured'}</span>
+                        : <span className="chip">not configured</span>}
+                      <button type="button" className="btn btn--sm btn--ghost"
+                        onClick={() => setEditingIntegrations(true)}>Edit</button>
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+
+            {editingIntegrations && (
+              <SystemIntegrationsModal system={selected} health={health} tests={tests} onTest={runTest}
+                onClose={() => {
+                  setEditingIntegrations(false);
+                  getSystemIntegrations(selected.id).then((res) => setIntegrations(res.values)).catch(() => {});
+                }} />
+            )}
+
+            <div className="card card--fill">
+              <header>
+                <h3>Services</h3>
+                <span className="spacer" />
+                <span className="dim">{selected.services?.length || 0} shipping logs</span>
+              </header>
+              <div className="card-body" style={{ padding: 0 }}>
+                {selected.services?.length ? (
+                  <table className="table">
+                    <thead><tr><th>Service</th><th style={{ width: 100, textAlign: 'right' }}>Docs</th></tr></thead>
+                    <tbody>
+                      {[...selected.services].sort((a, b) => (b.log_count || 0) - (a.log_count || 0))
+                        .map((service) => (
+                          <tr key={service.name}>
+                            <td className="mono">{service.name}</td>
+                            <td className="num">{(service.log_count || 0).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                ) : <div className="empty">Nothing has shipped logs for this system yet.</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="wsx-col">
+            <ActivitiesPanel systemId={selected.id} investigations={investigations} />
+          </div>
+
+          <div className="wsx-col">
+            <AlertsPanel system={selected} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

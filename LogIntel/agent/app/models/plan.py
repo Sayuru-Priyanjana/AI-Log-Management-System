@@ -51,6 +51,8 @@ class InvestigationRequest(BaseModel):
     question: str
     # Optional override; when set the orchestrator's duration is ignored.
     duration: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
     # Optional override; when set it takes precedence over whatever service
     # name the model extracts from the question. An explicit selection from
     # someone who already knows what they want to investigate is strictly

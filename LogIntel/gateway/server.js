@@ -330,7 +330,10 @@ const agentProxy = createProxyMiddleware({
         // RBAC: Filter recent investigations returned by GET /api/investigations
         if (req.path === '/api/investigations' && req.method === 'GET' && req.user.role === 'developer') {
           if (data.investigations) {
-            data.investigations = data.investigations.filter(inv => req.user.systems.includes(inv.system_id));
+            data.investigations = data.investigations.filter(inv => {
+              const sysId = inv.plan?.system_id || inv.system_id;
+              return req.user.systems.includes(sysId);
+            });
           }
         }
         

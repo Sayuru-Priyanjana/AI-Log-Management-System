@@ -78,14 +78,14 @@ export default function UsersPage() {
 
       <div className="card">
         <header><h3>Create account</h3></header>
-        <form className="card-body col" onSubmit={create}>
-          <div className="row" style={{ alignItems: 'flex-end' }}>
-            <div className="field" style={{ flex: 1, minWidth: 150 }}>
+        <form className="card-body col" onSubmit={create} style={{ maxWidth: 800 }}>
+          <div className="row" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: 16 }}>
+            <div className="field" style={{ width: 250 }}>
               <label htmlFor="u-name">Username</label>
               <input id="u-name" className="input" value={form.username} required
                 onChange={(e) => setForm({ ...form, username: e.target.value })} />
             </div>
-            <div className="field" style={{ flex: 1, minWidth: 150 }}>
+            <div className="field" style={{ width: 250 }}>
               <label htmlFor="u-pass">Password</label>
               <input id="u-pass" className="input" type="password" value={form.password} required
                 autoComplete="new-password"
@@ -99,7 +99,7 @@ export default function UsersPage() {
                 <option value="admin">Administrator</option>
               </select>
             </div>
-            <button type="submit" className="btn btn--primary" disabled={busy}>
+            <button type="submit" className="btn btn--primary" disabled={busy} style={{ minWidth: 100 }}>
               {busy ? 'Creating…' : 'Create'}
             </button>
           </div>

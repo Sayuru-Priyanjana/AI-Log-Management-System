@@ -82,8 +82,14 @@ async function deleteJSON(path) {
 export const getHealth = () => getJSON('/api/health');
 export const getSystems = () => getJSON('/api/systems');
 export const getConfig = () => getJSON('/api/config');
-export const getRecentInvestigations = (limit = 20) =>
-  getJSON(`/api/investigations?limit=${limit}`);
+export const getRecentInvestigations = (limit = 20, systemId) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (systemId) params.set('system_id', systemId);
+  return getJSON(`/api/investigations?${params}`);
+};
+export const getInvestigation = (id) => getJSON(`/api/investigations/${id}`);
+export const deleteInvestigation = (id) =>
+  deleteJSON(`/api/investigations/${id}`);
 
 export const getIncidents = () => getJSON('/api/incidents');
 export const startIncident = (id) => postJSON(`/api/incidents/${id}/start`);
@@ -136,6 +142,15 @@ export const getClusters = () => getJSON('/api/clusters');
 export const updateSettings = (values) => putJSON('/api/settings', { values });
 export const testConnection = (target) => postJSON('/api/settings/test', { target });
 export const refreshSystems = () => postJSON('/api/systems/refresh');
+
+// Per-system integrations (Teams channel, automation) — unlike /api/settings,
+// scoped to one cluster's id, because a webhook and a scan cadence belong to
+// that cluster, not to the agent process.
+export const getSystemIntegrations = (systemId) => getJSON(`/api/systems/${systemId}/integrations`);
+export const updateSystemIntegrations = (systemId, values) =>
+  putJSON(`/api/systems/${systemId}/integrations`, { values });
+export const testSystemIntegrations = (systemId) =>
+  postJSON(`/api/systems/${systemId}/integrations/test`);
 
 // Auth endpoints
 export const login = (username, password) => postJSON('/api/auth/login', { username, password });

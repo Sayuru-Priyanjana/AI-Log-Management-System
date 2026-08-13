@@ -91,6 +91,12 @@ FIELDS: tuple[Field, ...] = (
     Field("display_timezone", "display", "Time zone", rebuilds=False,
           help="An offset like +05:30, or a name like Asia/Colombo. Everything is "
                "stored in UTC; this is what times are shown in."),
+
+    # Notification and automation settings are deliberately absent here: a
+    # Teams channel and an auto-scan cadence belong to one cluster, not to the
+    # agent process, and a global value would either be wrong for every system
+    # but one or would silently point every cluster's alerts at the same
+    # channel. See app/store/system_settings.py for where they actually live.
 )
 
 BY_NAME = {field.name: field for field in FIELDS}

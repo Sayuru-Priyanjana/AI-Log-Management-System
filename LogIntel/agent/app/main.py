@@ -11,6 +11,7 @@ from app.agents.react import ReActAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.api.routes import router
 from app.api.settings_routes import router as settings_router
+from app.api.system_settings_routes import router as system_settings_router
 from app.config import settings
 from app.llm.base import LLMClient
 from app.llm.factory import (
@@ -23,6 +24,7 @@ from app.sources.opensearch import OpenSearchClient
 from app.sources.prometheus import PrometheusClient
 from app.store.investigations import InvestigationStore
 from app.store.runtime_config import RuntimeConfig
+from app.store.system_settings import SystemSettingsStore
 from app.tools.events import EventTool
 from app.tools.logs import LogTool
 from app.tools.metrics import MetricTool
@@ -46,6 +48,7 @@ class Dependencies:
     pipeline: InvestigationPipeline
     incidents: IncidentControllerClient
     config: RuntimeConfig
+    system_settings: SystemSettingsStore
 
 
 def build_dependencies(config: RuntimeConfig) -> Dependencies:
@@ -69,6 +72,7 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
         store=InvestigationStore(opensearch),
         incidents=incidents,
         config=config,
+        system_settings=SystemSettingsStore(opensearch),
         pipeline=InvestigationPipeline(
             log_tool=LogTool(opensearch),
             event_tool=EventTool(opensearch),
@@ -164,6 +168,7 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(system_settings_router, prefix="/api")
 
 
 @app.get("/")

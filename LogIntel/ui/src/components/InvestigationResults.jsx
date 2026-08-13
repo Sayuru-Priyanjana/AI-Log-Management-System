@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { runInvestigation } from '../api';
+import { useInvestigation } from '../InvestigationContext';
 import { usePreferences } from '../preferences';
 import AnswerPanel from './AnswerPanel';
-import { useToast } from '../toast';
 import EvidenceTimeline from './EvidenceTimeline';
 import ReasoningTrace from './ReasoningTrace';
 
@@ -17,78 +15,14 @@ const PREP_STAGES = [
   { id: 'candidates', label: 'Candidates' },
 ];
 
-export default function InvestigationResults({ request, onFollowUp }) {
-  const toast = useToast();
-  const [stages, setStages] = useState({});
-  const [trace, setTrace] = useState([]);
-  const [answer, setAnswer] = useState(null);
-  const [evidenceTimeline, setEvidenceTimeline] = useState(null);
-  const [result, setResult] = useState(null);
-  const [status, setStatus] = useState('connecting');
-  const startedAt = useRef(Date.now());
-  const [elapsed, setElapsed] = useState(0);
+export default function InvestigationResults({ onFollowUp }) {
+  const {
+    request, stages, trace, answer, evidenceTimeline, result,
+    status, elapsed, errorDetail, stopInvestigation
+  } = useInvestigation();
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let mounted = true;
-    startedAt.current = Date.now();
-    setStages({}); setTrace([]); setAnswer(null); setResult(null);
-    setEvidenceTimeline(null);
-
-    const tick = setInterval(() => {
-      if (mounted) {
-        setStatus((s) => {
-          if (s !== 'complete' && s !== 'error') setElapsed(Date.now() - startedAt.current);
-          return s;
-        });
-      }
-    }, 250);
-
-    (async () => {
-      try {
-        setStatus('connecting');
-        await runInvestigation(request, {
-          signal: controller.signal,
-          onEvent: (event) => {
-            if (!mounted) return;
-            const { stage, data } = event;
-
-            if (stage === 'error') {
-              setStatus('error');
-              toast.error('Investigation failed', { detail: data?.detail });
-              return;
-            }
-            setStatus('streaming');
-
-            if (stage === 'reasoning') {
-              setTrace((prev) => [...prev, data]);
-            } else if (stage === 'answer') {
-              setAnswer(data);
-            } else if (stage === 'evidence_timeline') {
-              setEvidenceTimeline(data);
-            } else if (stage === 'result') {
-              setResult(data);
-            } else {
-              setStages((prev) => ({ ...prev, [stage]: data }));
-            }
-          },
-        });
-        if (mounted) setStatus((s) => (s === 'error' ? s : 'complete'));
-      } catch (err) {
-        if (mounted && err.name !== 'AbortError') {
-          setStatus('error');
-          toast.error('Investigation failed', { detail: err.message });
-        }
-      }
-    })();
-
-    return () => {
-      mounted = false;
-      clearInterval(tick);
-      controller.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request]);
+  // If there's an error from context that wasn't displayed, we could show it,
+  // but it's handled in the context. We'll just show the error detail in the UI.
 
   const seconds = (elapsed / 1000).toFixed(1);
   const plan = stages.plan;
@@ -99,13 +33,34 @@ export default function InvestigationResults({ request, onFollowUp }) {
         <span className="li-goal">{request.question}</span>
         {plan?.service && <span className="li-chip li-chip--service">{plan.service}</span>}
         <span className="spacer" />
-        <div className="li-status-pill">
+        <div className="li-status-pill" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {status === 'connecting' && <StatusDot color="var(--warning)" label="Connecting…" pulse />}
           {status === 'streaming' && <StatusDot color="var(--accent-color)" label={`Working… ${seconds}s`} pulse />}
           {status === 'complete' && <StatusDot color="var(--success)" label={`Done in ${seconds}s`} />}
           {status === 'error' && <StatusDot color="var(--error)" label="Failed" />}
+          
+          {(status === 'streaming' || status === 'connecting') && (
+            <button 
+              type="button" 
+              onClick={stopInvestigation}
+              style={{
+                background: 'var(--error-bg)', color: 'var(--error)',
+                border: '1px solid var(--error)', padding: '2px 8px',
+                borderRadius: '4px', fontSize: '12px', cursor: 'pointer',
+                fontWeight: 500
+              }}
+            >
+              Stop
+            </button>
+          )}
         </div>
       </div>
+      
+      {errorDetail && (
+        <div className="glass-panel" style={{ color: 'var(--error)', borderLeft: '3px solid var(--error)' }}>
+          <p style={{ margin: 0 }}><strong>Error:</strong> {errorDetail}</p>
+        </div>
+      )}
 
 
       <WindowBanner windows={stages.windows} />

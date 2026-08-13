@@ -100,6 +100,9 @@ services:
     image: log-agent:latest
     container_name: log-agent
     restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./agent:/app
     ports:
       - "${AGENT_PORT:-8000}:8000"
     environment:
@@ -132,12 +135,18 @@ services:
       - "host.docker.internal:host-gateway"
 
   ui:
-    build: ./ui
+    build:
+      context: ./ui
+      target: build
     image: log-ui:latest
     container_name: log-ui
     restart: unless-stopped
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    volumes:
+      - ./ui:/app
+      - /app/node_modules
     ports:
-      - "${UI_PORT:-5173}:80"
+      - "${UI_PORT:-5173}:5173"
     depends_on:
       - agent
       - gateway
@@ -161,6 +170,10 @@ services:
     image: log-gateway:latest
     container_name: log-gateway
     restart: unless-stopped
+    command: ["node", "--watch", "server.js"]
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
     ports:
       - "3000:3000"
     environment:

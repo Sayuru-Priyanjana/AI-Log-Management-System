@@ -224,6 +224,14 @@ async def get_investigation(investigation_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=f"no investigation '{investigation_id}'")
     return stored
 
+@router.delete("/investigations/{investigation_id}")
+async def delete_investigation(investigation_id: str, request: Request) -> dict:
+    container = deps(request)
+    deleted = await container.store.delete(investigation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"no investigation '{investigation_id}' or could not delete")
+    return {"success": True}
+
 
 class RunToolRequest(BaseModel):
     tool: str

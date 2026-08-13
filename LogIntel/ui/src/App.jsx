@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import AgentPage from './components/AgentPage';
 import ChangePasswordModal from './components/ChangePasswordModal';
 import ConfigurationPanel from './components/ConfigurationPanel';
 import HealthBar from './components/HealthBar';
@@ -93,6 +94,7 @@ export default function App() {
       <div className="pane">
         <Routes>
           <Route path="/" element={<WorkstationPage />} />
+          <Route path="/agent" element={<AgentPage />} />
           {isAdmin && <Route path="/systems" element={<SystemsPage />} />}
           {isAdmin && <Route path="/users" element={<UsersPage />} />}
           {isAdmin && <Route path="/configuration" element={<ConfigurationPanel />} />}

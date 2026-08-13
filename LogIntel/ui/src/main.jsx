@@ -5,14 +5,17 @@ import './index.css'
 import App from './App.jsx'
 import { PreferencesProvider } from './preferences'
 import { ToastProvider } from './toast'
+import { InvestigationProvider } from './InvestigationContext.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <PreferencesProvider>
       <ToastProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <InvestigationProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </InvestigationProvider>
       </ToastProvider>
     </PreferencesProvider>
   </StrictMode>,

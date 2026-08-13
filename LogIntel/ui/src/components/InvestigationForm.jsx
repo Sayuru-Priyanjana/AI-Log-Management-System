@@ -2,11 +2,9 @@ import { useEffect, useState } from 'react';
 import { getSystems } from '../api';
 import { useToast } from '../toast';
 
-// Must match app/models/plan.py ALLOWED_DURATIONS — the orchestrator rejects
-// anything else, so the picker only ever offers values the backend accepts.
-const DURATIONS = ['auto', '15m', '30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d'];
+// Removed DURATIONS array since we use explicit start/end times
 
-export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
+export default function InvestigationForm({ onSubmit, initial, lockedSystem, submitLabel = 'Analyse' }) {
   const toast = useToast();
   const [systems, setSystems] = useState([]);
   
@@ -15,7 +13,8 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
     environment: lockedSystem?.environments?.[0] || initial?.environment || '',
     service: initial?.service || '',
     question: initial?.question || 'Something is wrong. What is the root cause?',
-    duration: initial?.duration || 'auto',
+    start_time: initial?.start_time || new Date(Date.now() - 3600000).toISOString().slice(0, 16),
+    end_time: initial?.end_time || new Date().toISOString().slice(0, 16),
   });
 
   useEffect(() => {
@@ -69,7 +68,8 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
       environment: form.environment,
       question: form.question,
       service_hint: form.service || undefined,
-      duration: form.duration === 'auto' ? undefined : form.duration,
+      start_time: new Date(form.start_time).toISOString(),
+      end_time: new Date(form.end_time).toISOString(),
     });
   };
 
@@ -93,8 +93,14 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
           </div>
         )}
 
-        <div className="row" style={{ alignItems: 'flex-end', flexWrap: 'nowrap' }}>
-          <div className="field" style={{ flex: 1 }}>
+        {/* Two rows rather than one crammed row of four: this form runs both in
+            a wide two-column card (Workstation) and a ~280px sidebar (Agent),
+            and four flex:1 fields with a forced nowrap simply don't fit the
+            narrow case — they overflowed their box and their labels visually
+            collided. Each field wraps to its own line below a natural
+            min-width instead of overlapping its neighbour. */}
+        <div className="row" style={{ alignItems: 'flex-end' }}>
+          <div className="field" style={{ flex: 1, minWidth: 110 }}>
             <label htmlFor="li-environment">Environment</label>
             <select
               id="li-environment"
@@ -109,7 +115,7 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
             </select>
           </div>
 
-          <div className="field" style={{ flex: 1 }}>
+          <div className="field" style={{ flex: 1, minWidth: 110 }}>
             <label htmlFor="li-service">
               Service <span className="dim">optional</span>
             </label>
@@ -125,17 +131,31 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
               ))}
             </select>
           </div>
+        </div>
 
-          <div className="field" style={{ width: 92, flex: 'none' }}>
-            <label htmlFor="li-duration">Window</label>
-            <select
-              id="li-duration"
+        <div className="row" style={{ alignItems: 'flex-end' }}>
+          <div className="field" style={{ flex: 1, minWidth: 150 }}>
+            <label htmlFor="li-start-time">Start time</label>
+            <input
+              type="datetime-local"
+              id="li-start-time"
               className="input"
-              value={form.duration}
-              onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))}
-            >
-              {DURATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+              value={form.start_time}
+              onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
+              required
+            />
+          </div>
+
+          <div className="field" style={{ flex: 1, minWidth: 150 }}>
+            <label htmlFor="li-end-time">End time</label>
+            <input
+              type="datetime-local"
+              id="li-end-time"
+              className="input"
+              value={form.end_time}
+              onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))}
+              required
+            />
           </div>
         </div>
 
@@ -154,13 +174,13 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem }) {
 
       <div className="row">
         <button type="submit" className="btn btn--primary" disabled={!form.system_id}>
-          Analyse
+          {submitLabel}
         </button>
-        <span className="hint">
-          The plan is validated against what exists — it can only pick a service
-          and environment from these lists.
-        </span>
       </div>
+      <span className="hint">
+        The plan is validated against what exists — it can only pick a service
+        and environment from these lists.
+      </span>
     </form>
   );
 }

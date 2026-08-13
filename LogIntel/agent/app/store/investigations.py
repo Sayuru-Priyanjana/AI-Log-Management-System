@@ -38,6 +38,9 @@ class InvestigationStore:
     async def get(self, investigation_id: str) -> dict | None:
         return await self._client.get_document(self._index, investigation_id)
 
+    async def delete(self, investigation_id: str) -> bool:
+        return await self._client.delete_document(self._index, investigation_id)
+
     async def recent(self, limit: int = 20, system_id: str | None = None) -> list[dict]:
         query: dict = {"match_all": {}}
         if system_id:

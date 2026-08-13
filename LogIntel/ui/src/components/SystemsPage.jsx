@@ -71,13 +71,13 @@ export default function SystemsPage() {
 
       <div className="card">
         <header><h3>Register a cluster</h3></header>
-        <form className="card-body row" onSubmit={register} style={{ alignItems: 'flex-end' }}>
-          <div className="field" style={{ flex: 1, minWidth: 220 }}>
+        <form className="card-body row" onSubmit={register} style={{ alignItems: 'flex-end', maxWidth: 600, gap: 16 }}>
+          <div className="field" style={{ width: 300 }}>
             <label htmlFor="sys-name">Name</label>
             <input id="sys-name" className="input" value={name} placeholder="prod-eu-west"
               onChange={(e) => setName(e.target.value)} required />
           </div>
-          <button type="submit" className="btn btn--primary" disabled={busy || !name.trim()}>
+          <button type="submit" className="btn btn--primary" disabled={busy || !name.trim()} style={{ minWidth: 100 }}>
             {busy ? 'Registering…' : 'Register'}
           </button>
         </form>

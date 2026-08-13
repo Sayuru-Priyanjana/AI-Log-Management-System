@@ -201,6 +201,13 @@ class OpenSearchClient:
         path = f"/{index}/_doc/{doc_id}" if doc_id else f"/{index}/_doc"
         return await self._request("PUT" if doc_id else "POST", path, document)
 
+    async def delete_document(self, index: str, doc_id: str) -> bool:
+        try:
+            result = await self._request("DELETE", f"/{index}/_doc/{doc_id}")
+            return result.get("result") == "deleted"
+        except OpenSearchError:
+            return False
+
     async def get_document(self, index: str, doc_id: str) -> dict | None:
         try:
             result = await self._request("GET", f"/{index}/_doc/{doc_id}")
