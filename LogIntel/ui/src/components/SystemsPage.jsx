@@ -56,6 +56,7 @@ export default function SystemsPage() {
   const helm = issued && [
     'helm install logintel-agent logintel/agent \\',
     '  --set central.url="http://YOUR_CENTRAL_IP" \\',
+    '  --set central.prometheus_url="http://YOUR_CENTRAL_IP/api/v1/write" \\',
     `  --set auth.clusterId="${issued.id}" \\`,
     `  --set auth.token="${issued.token}"`,
   ].join('\n');

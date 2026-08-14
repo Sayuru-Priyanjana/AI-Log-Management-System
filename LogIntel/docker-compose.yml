@@ -95,6 +95,7 @@ services:
         condition: service_healthy
 
   # ------------------------------------------------------------------ agent
+
   agent:
     build: ./agent
     image: log-agent:latest
@@ -136,16 +137,12 @@ services:
   ui:
     build:
       context: ./ui
-      target: build
+      target: serve
     image: log-ui:latest
     container_name: log-ui
     restart: unless-stopped
-    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
-    volumes:
-      - ./ui:/app
-      - /app/node_modules
     ports:
-      - "${UI_PORT:-5173}:5173"
+      - "${UI_PORT:-80}:80"
     depends_on:
       - agent
       - gateway
@@ -173,8 +170,7 @@ services:
     volumes:
       - ./gateway:/app
       - /app/node_modules
-    ports:
-      - "3000:3000"
+    # Removed exposed port 3000: Nginx now proxies /api to this internal port
     environment:
       AGENT_URL: http://agent:8000
       JWT_SECRET: super-secret-jwt-key

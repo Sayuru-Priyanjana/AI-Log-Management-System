@@ -43,6 +43,7 @@ data:
             regex: '^$'
             action: drop
 
+
       # --- kubelet: pod-level state ---------------------------------------
       - job_name: kubelet
         scheme: https

@@ -120,34 +120,7 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
               </button>
             </div>
             
-            <span className="hint" style={{ marginTop: 24, display: 'block' }}>Logs (Fluent Bit)</span>
-            <div className="cfg-fields">
-              <p className="hint" style={{ marginBottom: 8, fontSize: 13 }}>
-                Configure Fluent Bit in this system's network to send logs directly to OpenSearch.
-                Make sure to set the <strong>system.id</strong> exactly as <code>{system.id}</code>.
-              </p>
-              <pre className="mono" style={{ padding: 12, background: 'var(--bg-inset)', borderRadius: 4, fontSize: 11, overflowX: 'auto' }}>
-{`[OUTPUT]
-    Name            opensearch
-    Match           *
-    Host            ${ingestInfo ? new URL(ingestInfo.opensearch_url).hostname : 'localhost'}
-    Port            ${ingestInfo ? new URL(ingestInfo.opensearch_url).port || 9200 : 9200}
-    Index           ${ingestInfo ? ingestInfo.log_index : 'logintel-system-logs'}
-    # If TLS is required:
-    # TLS             On
-    # TLS.Verify      Off
-    
-[FILTER]
-    Name            modify
-    Match           *
-    Add             system.id ${system.id}
-    # Optional fields:
-    # Add           environment production
-    # Add           service.name my-service
-    # Add           level INFO`}
-              </pre>
-            </div>
-
+            
             <span className="hint" style={{ marginTop: 24, display: 'block' }}>Automation — this system only</span>
             <div className="field" style={{ marginTop: 4 }}>
               <label className="row" style={{ gap: 6, fontSize: 12.5 }}>
