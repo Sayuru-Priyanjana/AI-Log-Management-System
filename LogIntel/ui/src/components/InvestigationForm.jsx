@@ -1,44 +1,58 @@
 import { useEffect, useState } from 'react';
 import { getSystems } from '../api';
-import { ErrorBanner } from './common';
+import { useToast } from '../toast';
+import { usePreferences } from '../preferences';
 
-// Must match app/models/plan.py ALLOWED_DURATIONS — the orchestrator rejects
-// anything else, so the picker only ever offers values the backend accepts.
-const DURATIONS = ['auto', '15m', '30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d'];
+// Removed DURATIONS array since we use explicit start/end times
 
-export default function InvestigationForm({ onSubmit, initial }) {
+export default function InvestigationForm({ onSubmit, initial, lockedSystem, submitLabel = 'Analyse' }) {
+  const toast = useToast();
+  const { toInput, fromInput, defaultHours } = usePreferences();
   const [systems, setSystems] = useState([]);
-  const [loadError, setLoadError] = useState(null);
-  const [form, setForm] = useState({
-    system_id: initial?.system_id || '',
-    environment: initial?.environment || '',
+  
+  const [form, setForm] = useState(() => ({
+    system_id: lockedSystem?.id || initial?.system_id || '',
+    environment: lockedSystem?.environments?.[0] || initial?.environment || '',
     service: initial?.service || '',
     question: initial?.question || 'Something is wrong. What is the root cause?',
-    duration: initial?.duration || 'auto',
-  });
+    start_time: initial?.start_time ? toInput(initial.start_time) : toInput(new Date(Date.now() - (defaultHours || 24) * 3600000).toISOString()),
+    end_time: initial?.end_time ? toInput(initial.end_time) : toInput(new Date().toISOString()),
+  }));
 
   useEffect(() => {
+    // If we are locked to a system and have environments, we don't necessarily need to fetch systems.
+    // However, if lockedSystem is provided, we sync the form to it.
+    if (lockedSystem) {
+      setForm(f => ({
+        ...f,
+        system_id: lockedSystem.id,
+        environment: f.environment || lockedSystem.environments?.[0] || ''
+      }));
+    }
+    
     let mounted = true;
-    getSystems()
-      .then((res) => {
-        if (!mounted) return;
-        setSystems(res.systems || []);
-        if (!form.system_id && res.systems?.length) {
-          const first = res.systems[0];
-          setForm((f) => ({ ...f, system_id: first.id, environment: first.environments?.[0] || '' }));
-        } else if (form.system_id && !form.environment && res.systems?.length) {
-          const matched = res.systems.find(s => s.id === form.system_id);
-          if (matched) {
-            setForm((f) => ({ ...f, environment: matched.environments?.[0] || '' }));
+    if (!lockedSystem) {
+      getSystems()
+        .then((res) => {
+          if (!mounted) return;
+          setSystems(res.systems || []);
+          if (!form.system_id && res.systems?.length) {
+            const first = res.systems[0];
+            setForm((f) => ({ ...f, system_id: first.id, environment: first.environments?.[0] || '' }));
+          } else if (form.system_id && !form.environment && res.systems?.length) {
+            const matched = res.systems.find(s => s.id === form.system_id);
+            if (matched) {
+              setForm((f) => ({ ...f, environment: matched.environments?.[0] || '' }));
+            }
           }
-        }
-      })
-      .catch((err) => mounted && setLoadError(err.message));
+        })
+        .catch((err) => mounted && toast.error('Could not load systems', { detail: err.message }));
+    }
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [lockedSystem]);
 
-  const selectedSystem = systems.find((s) => s.id === form.system_id);
+  const currentSystem = lockedSystem || systems.find((s) => s.id === form.system_id);
 
   const handleSystemChange = (system_id) => {
     const system = systems.find((s) => s.id === system_id);
@@ -56,106 +70,119 @@ export default function InvestigationForm({ onSubmit, initial }) {
       environment: form.environment,
       question: form.question,
       service_hint: form.service || undefined,
-      duration: form.duration === 'auto' ? undefined : form.duration,
+      start_time: fromInput(form.start_time),
+      end_time: fromInput(form.end_time),
     });
   };
 
   return (
-    <div className="glass-panel li-form-card">
-      <h2>Start Investigation</h2>
-      <p className="li-muted li-form-intro">
-        The orchestrator turns this into a plan validated against what actually exists —
-        it can only pick a system, service and environment from the list below.
-      </p>
+    <form onSubmit={handleSubmit} className="col">
+      {!lockedSystem && (
+        <div className="field">
+          <label htmlFor="li-system">System</label>
+            <select
+              id="li-system"
+              className="input"
+              value={form.system_id}
+              onChange={(e) => handleSystemChange(e.target.value)}
+              required
+            >
+              {systems.length === 0 && <option value="">No systems discovered yet</option>}
+              {systems.map((s) => (
+                <option key={s.id} value={s.id}>{s.name} ({s.id}) — {s.services?.length || 0} services</option>
+              ))}
+            </select>
+          </div>
+        )}
 
-      {loadError && (
-        <div style={{ marginBottom: '1.25rem' }}>
-          <ErrorBanner>Could not load systems: {loadError}. Is the agent running?</ErrorBanner>
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <div className="li-field">
-          <label className="li-label" htmlFor="li-system">System</label>
-          <select
-            id="li-system"
-            className="glass-input"
-            value={form.system_id}
-            onChange={(e) => handleSystemChange(e.target.value)}
-            required
-          >
-            {systems.length === 0 && <option value="">No systems discovered yet</option>}
-            {systems.map((s) => (
-              <option key={s.id} value={s.id}>{s.name} ({s.id}) — {s.services?.length || 0} services</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="li-field-row">
-          <div className="li-field">
-            <label className="li-label" htmlFor="li-environment">Environment</label>
+        {/* Two rows rather than one crammed row of four: this form runs both in
+            a wide two-column card (Workstation) and a ~280px sidebar (Agent),
+            and four flex:1 fields with a forced nowrap simply don't fit the
+            narrow case — they overflowed their box and their labels visually
+            collided. Each field wraps to its own line below a natural
+            min-width instead of overlapping its neighbour. */}
+        <div className="row" style={{ alignItems: 'flex-end' }}>
+          <div className="field" style={{ flex: 1, minWidth: 110 }}>
+            <label htmlFor="li-environment">Environment</label>
             <select
               id="li-environment"
-              className="glass-input"
+              className="input"
               value={form.environment}
               onChange={(e) => setForm((f) => ({ ...f, environment: e.target.value }))}
               required
             >
-              {(selectedSystem?.environments || []).map((env) => (
+              {(currentSystem?.environments || []).map((env) => (
                 <option key={env} value={env}>{env}</option>
               ))}
             </select>
           </div>
 
-          <div className="li-field">
-            <label className="li-label" htmlFor="li-service">
-              Service <span className="li-label-optional">(optional)</span>
+          <div className="field" style={{ flex: 1, minWidth: 110 }}>
+            <label htmlFor="li-service">
+              Service <span className="dim">optional</span>
             </label>
             <select
               id="li-service"
-              className="glass-input"
+              className="input"
               value={form.service}
               onChange={(e) => setForm((f) => ({ ...f, service: e.target.value }))}
             >
               <option value="">Let the orchestrator decide</option>
-              {(selectedSystem?.services || []).map((svc) => (
+              {(currentSystem?.services || []).map((svc) => (
                 <option key={svc.name} value={svc.name}>{svc.name}</option>
               ))}
             </select>
           </div>
         </div>
 
-        <div className="li-field">
-          <label className="li-label" htmlFor="li-question">Question</label>
+        <div className="row" style={{ alignItems: 'flex-end' }}>
+          <div className="field" style={{ flex: 1, minWidth: 150 }}>
+            <label htmlFor="li-start-time">Start time</label>
+            <input
+              type="datetime-local"
+              id="li-start-time"
+              className="input"
+              value={form.start_time}
+              onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
+              required
+            />
+          </div>
+
+          <div className="field" style={{ flex: 1, minWidth: 150 }}>
+            <label htmlFor="li-end-time">End time</label>
+            <input
+              type="datetime-local"
+              id="li-end-time"
+              className="input"
+              value={form.end_time}
+              onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))}
+              required
+            />
+          </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="li-question">Question</label>
           <textarea
             id="li-question"
             value={form.question}
             onChange={(e) => setForm((f) => ({ ...f, question: e.target.value }))}
-            className="glass-input"
+            className="input"
             rows="3"
             style={{ resize: 'vertical' }}
             required
           />
         </div>
 
-        <div className="li-field">
-          <label className="li-label" htmlFor="li-duration">
-            Time window <span className="li-label-optional">(auto lets the plan choose based on your question)</span>
-          </label>
-          <select
-            id="li-duration"
-            className="glass-input"
-            value={form.duration}
-            onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))}
-          >
-            {DURATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-        </div>
-
-        <button type="submit" className="glass-button" style={{ marginTop: '0.5rem' }} disabled={!form.system_id}>
-          Analyze
+      <div className="row">
+        <button type="submit" className="btn btn--primary" disabled={!form.system_id}>
+          {submitLabel}
         </button>
-      </form>
-    </div>
+      </div>
+      <span className="hint">
+        The plan is validated against what exists — it can only pick a service
+        and environment from these lists.
+      </span>
+    </form>
   );
 }

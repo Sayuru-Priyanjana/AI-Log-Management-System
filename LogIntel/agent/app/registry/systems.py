@@ -25,7 +25,8 @@ class SystemRegistry:
         self._cache: dict[str, SystemDescriptor] = {}
         self._fetched_at: float = 0.0
 
-    async def refresh(self, lookback: str = "now-7d") -> dict[str, SystemDescriptor]:
+    async def refresh(self, lookback: str | None = None) -> dict[str, SystemDescriptor]:
+        lookback = lookback or f"now-{settings.system_active_lookback_hours}h"
         body = {
             "size": 0,
             "query": {"range": {"@timestamp": {"gte": lookback}}},

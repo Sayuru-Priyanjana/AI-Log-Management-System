@@ -32,31 +32,39 @@ PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://172.23.80.1:30090").rstrip(
 OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://opensearch:9200").rstrip("/")
 INDEX_PREFIX = os.getenv("INDEX_PREFIX", "logintel-metrics-mirror")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
-NAMESPACE = os.getenv("NAMESPACE", "shopdemo")
+SYSTEM_ID = os.getenv("SYSTEM_ID", "")
+NAMESPACE = os.getenv("NAMESPACE", "")
+
+# Build a safe prefix for PromQL selectors
+# e.g. 'system_id="foo",' or ''
+_filters = []
+if SYSTEM_ID: _filters.append(f'system_id="{SYSTEM_ID}"')
+if NAMESPACE: _filters.append(f'namespace="{NAMESPACE}"')
+SELECTOR = ",".join(_filters) + "," if _filters else ""
 
 # Deliberately the same shape of signal the agent's SignalEngine reads — see
 # agent/app/tools/metrics.py SPECS. Kept as a small, separate list rather than
 # imported, so this container has no dependency on the agent's package layout.
 QUERIES: tuple[tuple[str, str, str], ...] = (
     ("cpu_usage_cores", "cores",
-     f'sum by (pod, container) (rate(container_cpu_usage_seconds_total{{namespace="{NAMESPACE}", container!=""}}[2m]))'),
+     f'sum by (system_id, namespace, pod, container) (rate(container_cpu_usage_seconds_total{{{SELECTOR} container!=""}}[2m]))'),
     ("cpu_throttle_ratio", "ratio",
-     f'sum by (pod, container) (rate(container_cpu_cfs_throttled_seconds_total{{namespace="{NAMESPACE}", container!=""}}[2m])) '
-     f'/ clamp_min(sum by (pod, container) (rate(container_cpu_cfs_periods_total{{namespace="{NAMESPACE}", container!=""}}[2m])), 0.001)'),
+     f'sum by (system_id, namespace, pod, container) (rate(container_cpu_cfs_throttled_seconds_total{{{SELECTOR} container!=""}}[2m])) '
+     f'/ clamp_min(sum by (system_id, namespace, pod, container) (rate(container_cpu_cfs_periods_total{{{SELECTOR} container!=""}}[2m])), 0.001)'),
     ("memory_working_set_bytes", "bytes",
-     f'max by (pod, container) (container_memory_working_set_bytes{{namespace="{NAMESPACE}", container!=""}})'),
+     f'max by (system_id, namespace, pod, container) (container_memory_working_set_bytes{{{SELECTOR} container!=""}})'),
     ("pod_restarts_total", "count",
-     f'max by (pod, container) (kube_pod_container_status_restarts_total{{namespace="{NAMESPACE}"}})'),
+     f'max by (system_id, namespace, pod, container) (kube_pod_container_status_restarts_total{{{SELECTOR} job!=""}})'),
     ("pod_ready", "bool",
-     f'max by (pod) (kube_pod_status_ready{{namespace="{NAMESPACE}", condition="true"}})'),
+     f'max by (system_id, namespace, pod) (kube_pod_status_ready{{{SELECTOR} condition="true"}})'),
     ("http_request_rate", "req/s",
-     f'sum by (service) (rate(http_requests_total{{namespace="{NAMESPACE}"}}[2m]))'),
+     f'sum by (system_id, namespace, service) (rate(http_requests_total{{{SELECTOR} job!=""}}[2m]))'),
     ("http_error_rate", "req/s",
-     f'sum by (service) (rate(http_requests_total{{namespace="{NAMESPACE}", status=~"5.."}}[2m]))'),
+     f'sum by (system_id, namespace, service) (rate(http_requests_total{{{SELECTOR} status=~"5.."}}[2m]))'),
     ("http_latency_p95", "seconds",
-     f'histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{{namespace="{NAMESPACE}"}}[2m])))'),
+     f'histogram_quantile(0.95, sum by (system_id, namespace, service, le) (rate(http_request_duration_seconds_bucket{{{SELECTOR} job!=""}}[2m])))'),
     ("dependency_failure_rate", "req/s",
-     f'sum by (service, dependency) (rate(app_dependency_requests_total{{namespace="{NAMESPACE}", outcome=~"failure|unreachable"}}[2m]))'),
+     f'sum by (system_id, namespace, service, dependency) (rate(app_dependency_requests_total{{{SELECTOR} outcome=~"failure|unreachable"}}[2m]))'),
 )
 
 INDEX_TEMPLATE = {
@@ -75,6 +83,7 @@ INDEX_TEMPLATE = {
                 "service": {"type": "keyword"},
                 "dependency": {"type": "keyword"},
                 "namespace": {"type": "keyword"},
+                "system_id": {"type": "keyword"},
             }
         },
     },
@@ -152,7 +161,8 @@ def poll_once() -> int:
                     continue
                 docs.append({
                     "@timestamp": now, "metric": metric_name, "unit": unit, "value": value,
-                    "namespace": NAMESPACE,
+                    "namespace": labels.get("namespace"),
+                    "system_id": labels.get("system_id"),
                     "pod": labels.get("pod"), "container": labels.get("container"),
                     "service": labels.get("service"), "dependency": labels.get("dependency"),
                 })

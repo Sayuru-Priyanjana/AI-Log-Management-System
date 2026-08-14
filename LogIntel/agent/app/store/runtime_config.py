@@ -67,9 +67,11 @@ FIELDS: tuple[Field, ...] = (
 
     # -- where the metrics are ---------------------------------------------
     Field("prometheus_url", "prometheus", "Prometheus URL",
-          help="Queried directly for every investigation; not mirrored."),
-    Field("incident_controller_url", "prometheus", "Incident controller URL",
-          help="The testbed's fault injector. Optional — only the incidents page uses it."),
+          help="Central Prometheus server URL."),
+
+    # -- registry settings -------------------------------------------------
+    Field("system_active_lookback_hours", "registry", "System Active Window (hours)", kind="number",
+          help="How far back to look for logs to consider a system alive."),
 
     # -- which model -------------------------------------------------------
     Field("llm_provider", "model", "Provider", kind="select",
@@ -91,6 +93,14 @@ FIELDS: tuple[Field, ...] = (
     Field("display_timezone", "display", "Time zone", rebuilds=False,
           help="An offset like +05:30, or a name like Asia/Colombo. Everything is "
                "stored in UTC; this is what times are shown in."),
+    Field("default_investigation_hours", "display", "Default Investigation Window (hours)", kind="number",
+          rebuilds=False, help="How many hours to look back by default when starting a new investigation."),
+
+    # Notification and automation settings are deliberately absent here: a
+    # Teams channel and an auto-scan cadence belong to one cluster, not to the
+    # agent process, and a global value would either be wrong for every system
+    # but one or would silently point every cluster's alerts at the same
+    # channel. See app/store/system_settings.py for where they actually live.
 )
 
 BY_NAME = {field.name: field for field in FIELDS}

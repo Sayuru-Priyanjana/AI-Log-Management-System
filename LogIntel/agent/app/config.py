@@ -16,9 +16,6 @@ class Settings(BaseSettings):
     opensearch_investigation_index: str = "logintel-investigations"
     opensearch_timeout: float = 30.0
 
-    # --- Prometheus -------------------------------------------------------
-    prometheus_url: str = "http://localhost:30090"
-    prometheus_timeout: float = 30.0
 
     # --- Model backend ----------------------------------------------------
     # The model is an external service either way: a local Ollama on the host, or
@@ -110,9 +107,11 @@ class Settings(BaseSettings):
     # has to reconcile by hand. Accepts an offset ("+05:30") or an IANA name
     # ("Asia/Colombo").
     display_timezone: str = "+05:30"
+    default_investigation_hours: int = 24
 
     # --- Misc -------------------------------------------------------------
-    incident_controller_url: str = "http://localhost:30099"
+    prometheus_url: str = "http://localhost:9090"
+    system_active_lookback_hours: int = 24
     log_level: str = "INFO"
     persist_investigations: bool = True
 

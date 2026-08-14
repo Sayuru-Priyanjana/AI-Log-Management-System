@@ -11,6 +11,7 @@ from app.agents.react import ReActAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.api.routes import router
 from app.api.settings_routes import router as settings_router
+from app.api.system_settings_routes import router as system_settings_router
 from app.config import settings
 from app.llm.base import LLMClient
 from app.llm.factory import (
@@ -18,11 +19,11 @@ from app.llm.factory import (
 )
 from app.pipeline.run import InvestigationPipeline
 from app.registry.systems import SystemRegistry
-from app.sources.incidents import IncidentControllerClient
 from app.sources.opensearch import OpenSearchClient
 from app.sources.prometheus import PrometheusClient
 from app.store.investigations import InvestigationStore
 from app.store.runtime_config import RuntimeConfig
+from app.store.system_settings import SystemSettingsStore
 from app.tools.events import EventTool
 from app.tools.logs import LogTool
 from app.tools.metrics import MetricTool
@@ -39,13 +40,13 @@ logger = logging.getLogger("logintel")
 @dataclass
 class Dependencies:
     opensearch: OpenSearchClient
-    prometheus: PrometheusClient
     llm: LLMClient
     registry: SystemRegistry
     store: InvestigationStore
     pipeline: InvestigationPipeline
-    incidents: IncidentControllerClient
+    prometheus: PrometheusClient
     config: RuntimeConfig
+    system_settings: SystemSettingsStore
 
 
 def build_dependencies(config: RuntimeConfig) -> Dependencies:
@@ -56,33 +57,33 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
     alternative is a restart, which is a poor answer to "I typed the wrong URL".
     """
     opensearch = OpenSearchClient()
-    prometheus = PrometheusClient()
     llm = build_llm()
-    incidents = IncidentControllerClient()
+    prometheus = PrometheusClient(settings.prometheus_url)
     registry = SystemRegistry(opensearch)
+    system_settings = SystemSettingsStore(opensearch)
 
     return Dependencies(
         opensearch=opensearch,
-        prometheus=prometheus,
         llm=llm,
         registry=registry,
         store=InvestigationStore(opensearch),
-        incidents=incidents,
+        prometheus=prometheus,
         config=config,
+        system_settings=system_settings,
         pipeline=InvestigationPipeline(
             log_tool=LogTool(opensearch),
             event_tool=EventTool(opensearch),
-            metric_tool=MetricTool(prometheus),
             orchestrator=OrchestratorAgent(llm),
             react_agent=ReActAgent(llm),
             registry=registry,
-            prometheus=prometheus,
+            system_settings=system_settings,
+            prometheus_client=prometheus,
         ),
     )
 
 
 async def close_dependencies(deps: Dependencies) -> None:
-    for client in (deps.opensearch, deps.prometheus, deps.llm, deps.incidents):
+    for client in (deps.opensearch, deps.llm, deps.prometheus):
         try:
             await client.close()
         except Exception as exc:            # noqa: BLE001 - shutdown is best-effort
@@ -116,8 +117,8 @@ async def lifespan(app: FastAPI):
 
     app.state.deps = build_dependencies(config)
     deps = app.state.deps
-    opensearch, prometheus, llm, registry = (
-        deps.opensearch, deps.prometheus, deps.llm, deps.registry)
+    opensearch, llm, registry = (
+        deps.opensearch, deps.llm, deps.registry)
     config.rebind(opensearch)
 
     # The agent owns the index schema. Applying the templates at startup means
@@ -138,8 +139,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Registry empty at startup (%s). It will fill in once logs arrive.", exc)
 
-    logger.info("OpenSearch %s | Prometheus %s | model %s via %s at %s | times shown in %s",
-                opensearch.describe(), prometheus.base_url, describe_model(llm),
+    logger.info("OpenSearch %s | model %s via %s at %s | times shown in %s",
+                opensearch.describe(), describe_model(llm),
                 describe_provider(llm), describe_endpoint(llm), zone_label())
 
     yield
@@ -164,6 +165,7 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(system_settings_router, prefix="/api")
 
 
 @app.get("/")

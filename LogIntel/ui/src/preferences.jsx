@@ -33,6 +33,7 @@ export function PreferencesProvider({ children }) {
   // Seeded from the last known value so the first paint is not in the wrong
   // zone while /api/settings is in flight.
   const [zone, setZoneState] = useState(() => localStorage.getItem(ZONE_KEY) || DEFAULT_ZONE);
+  const [defaultHours, setDefaultHoursState] = useState(() => Number(localStorage.getItem('ui.default_hours')) || 24);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -41,12 +42,20 @@ export function PreferencesProvider({ children }) {
 
   useEffect(() => {
     let mounted = true;
+    if (!localStorage.getItem('jwt')) return;
+
     getSettings()
       .then((data) => {
+        if (!mounted) return;
         const value = data?.timezone?.value;
-        if (mounted && value) {
+        if (value) {
           setZoneState(value);
           localStorage.setItem(ZONE_KEY, value);
+        }
+        const hours = data?.default_investigation_hours?.value;
+        if (hours) {
+          setDefaultHoursState(hours);
+          localStorage.setItem('ui.default_hours', hours);
         }
       })
       .catch(() => { /* the agent may be down; the cached zone still formats */ });
@@ -63,14 +72,21 @@ export function PreferencesProvider({ children }) {
     localStorage.setItem(ZONE_KEY, next);
   }, []);
 
+  const setDefaultHours = useCallback((next) => {
+    setDefaultHoursState(next);
+    localStorage.setItem('ui.default_hours', next);
+  }, []);
+
   const value = useMemo(() => ({
     theme,
     setTheme,
     toggleTheme: () => setTheme(theme === 'dark' ? 'light' : 'dark'),
     zone,
     setZone,
+    defaultHours,
+    setDefaultHours,
     ...formatters(zone),
-  }), [theme, setTheme, zone, setZone]);
+  }), [theme, setTheme, zone, setZone, defaultHours, setDefaultHours]);
 
   return (
     <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>
@@ -140,6 +156,27 @@ function formatters(zone) {
     formatStamp: (iso, fallback = '—') => {
       const p = parts(iso);
       return p ? `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${zone}` : fallback;
+    },
+    /** `2026-08-12T10:42` — for <input type="datetime-local"> */
+    toInput: (iso) => {
+      const p = parts(iso);
+      return p ? `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}` : '';
+    },
+    /** Converts a <input type="datetime-local"> string back to a UTC ISO string */
+    fromInput: (localString) => {
+      if (!localString) return null;
+      const fakeUTC = new Date(localString + 'Z');
+      if (Number.isNaN(fakeUTC.getTime())) return null;
+      
+      if (!named) {
+        return new Date(fakeUTC.getTime() - offsetMinutes * 60000).toISOString();
+      } else {
+        const p = parts(fakeUTC.toISOString());
+        if (!p) return null;
+        const formattedTime = new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`);
+        const diff = formattedTime.getTime() - fakeUTC.getTime();
+        return new Date(fakeUTC.getTime() - diff).toISOString();
+      }
     },
     zoneLabel: zone,
   };

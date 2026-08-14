@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 
 from app.llm.base import LLMClient, LLMUnavailable, PromptTruncated
 from app.models.domain import SystemDescriptor, TimeWindow, parse_duration
@@ -134,6 +135,18 @@ class OrchestratorAgent:
                 f"known environments: {', '.join(system.environments)}"
             )
 
+        requested_window = None
+        if request.start_time and request.end_time:
+            try:
+                start = datetime.fromisoformat(request.start_time.replace('Z', '+00:00'))
+                end = datetime.fromisoformat(request.end_time.replace('Z', '+00:00'))
+                requested_window = TimeWindow(start=start, end=end, label="requested")
+            except ValueError:
+                notes.append("ignored invalid start_time/end_time format")
+        
+        if not requested_window:
+            requested_window = TimeWindow.last(duration, label="requested")
+
         return InvestigationPlan(
             intent=intent,
             system_id=system.id,
@@ -141,7 +154,7 @@ class OrchestratorAgent:
             environment=request.environment,
             service=service,
             namespaces=system.namespaces,
-            requested_window=TimeWindow.last(duration, label="requested"),
+            requested_window=requested_window,
             tools=INTENT_TOOLS[intent],
             goal=(raw.get("goal") or request.question).strip()[:300],
             planner=planner,

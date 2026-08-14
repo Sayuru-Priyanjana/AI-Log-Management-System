@@ -43,9 +43,8 @@ export default function HealthBar() {
 
   if (error) {
     return (
-      <div className="li-healthbar li-healthbar--down">
-        <span className="li-healthbar-dot" style={{ color: 'var(--error)' }} />
-        Cannot reach the agent at localhost:8000 — is it running?
+      <div className="li-healthbar li-healthbar--down" title={error}>
+        <span className="li-healthbar-dot" /> agent unreachable
       </div>
     );
   }

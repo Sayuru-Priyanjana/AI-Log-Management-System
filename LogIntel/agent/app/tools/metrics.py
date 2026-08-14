@@ -125,11 +125,12 @@ class MetricTool:
 
     @staticmethod
     def _namespace_selector(plan: InvestigationPlan) -> str:
+        system_filter = f'system_id="{plan.system_id}"'
         if not plan.namespaces:
-            return 'namespace!=""'
+            return f'{system_filter}, namespace!=""'
         if len(plan.namespaces) == 1:
-            return f'namespace="{plan.namespaces[0]}"'
-        return 'namespace=~"' + "|".join(plan.namespaces) + '"'
+            return f'{system_filter}, namespace="{plan.namespaces[0]}"'
+        return f'{system_filter}, namespace=~"' + "|".join(plan.namespaces) + '"'
 
     @staticmethod
     def _series_id(spec: MetricSpec, labels: dict[str, str]) -> str:

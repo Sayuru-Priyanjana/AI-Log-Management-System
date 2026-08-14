@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -12,6 +13,8 @@ from app.config import settings
 from app.llm.factory import (
     describe_endpoint, describe_model, describe_provider,
 )
+from datetime import datetime, timezone
+from app.models.domain import TimeWindow
 from app.models.analysis import InvestigationResult, InvestigationWindows
 from app.models.plan import InvestigationPlan, InvestigationRequest
 from app.pipeline.signals import SignalEngine
@@ -24,24 +27,15 @@ def deps(request: Request):
     return request.app.state.deps
 
 
-@router.get("/health")
-async def health(request: Request) -> dict:
-    """Reports each dependency separately.
-
-    A single overall boolean makes a half-connected setup look like a broken
-    agent. Each component says what is wrong and where.
-    """
-    container = deps(request)
-    report: dict = {"status": "ok", "components": {}}
-
+async def check_opensearch(container, report):
     try:
-        info = await container.opensearch.ping()
+        info = await asyncio.wait_for(container.opensearch.ping(), timeout=3.0)
         report["components"]["opensearch"] = {
             "status": "ok",
             "url": container.opensearch.describe(),
             "version": info.get("version", {}).get("number"),
         }
-        conflicts = await container.opensearch.check_mapping_conflicts()
+        conflicts = await asyncio.wait_for(container.opensearch.check_mapping_conflicts(), timeout=3.0)
         if conflicts:
             report["components"]["opensearch"] = {
                 **report["components"]["opensearch"],
@@ -53,20 +47,11 @@ async def health(request: Request) -> dict:
             "status": "unreachable", "url": container.opensearch.describe(), "error": str(exc)
         }
 
-    try:
-        ready = await container.prometheus.ready()
-        report["components"]["prometheus"] = {
-            "status": "ok" if ready else "unreachable",
-            "url": container.prometheus.base_url,
-        }
-    except Exception as exc:
-        report["components"]["prometheus"] = {"status": "unreachable", "error": str(exc)}
 
-    # Reported under one key whichever backend is configured, so the UI does not
-    # have to know which provider is in use to show whether the model is reachable.
+async def check_model(container, report):
     try:
         provider = describe_provider(container.llm)
-        available = await container.llm.available()
+        available = await asyncio.wait_for(container.llm.available(), timeout=5.0)
         component = {
             "status": "ok" if available else "degraded",
             "provider": provider,
@@ -75,7 +60,7 @@ async def health(request: Request) -> dict:
         }
         if provider == "ollama":
             component["num_ctx"] = container.llm.num_ctx
-            component["models_present"] = await container.llm.list_models()
+            component["models_present"] = await asyncio.wait_for(container.llm.list_models(), timeout=5.0)
             if not available:
                 component["hint"] = (
                     f"model '{container.llm.model}' is not pulled, or Ollama is not listening "
@@ -91,22 +76,24 @@ async def health(request: Request) -> dict:
     except Exception as exc:
         report["components"]["model"] = {"status": "unreachable", "error": str(exc)}
 
+async def check_prometheus(container, report):
     try:
-        reachable = await container.incidents.reachable()
-        report["components"]["incident_controller"] = {
+        reachable = await asyncio.wait_for(container.prometheus.ready(), timeout=3.0)
+        report["components"]["prometheus"] = {
             "status": "ok" if reachable else "unreachable",
-            "url": container.incidents.base_url,
+            "url": container.prometheus.base_url,
         }
         if not reachable:
-            report["components"]["incident_controller"]["hint"] = (
-                "the testbed VM's incident injector is not answering — "
-                "check 'vagrant status' in testbed/"
+            report["components"]["prometheus"]["hint"] = (
+                "the central Prometheus server is not answering — "
+                "check its status or update the URL in configuration."
             )
     except Exception as exc:
-        report["components"]["incident_controller"] = {"status": "unreachable", "error": str(exc)}
+        report["components"]["prometheus"] = {"status": "unreachable", "error": str(exc)}
 
+async def check_registry(container, report):
     try:
-        systems = await container.registry.all()
+        systems = await asyncio.wait_for(container.registry.all(), timeout=3.0)
         report["components"]["registry"] = {
             "status": "ok" if systems else "empty",
             "systems": [
@@ -117,6 +104,19 @@ async def health(request: Request) -> dict:
         }
     except Exception as exc:
         report["components"]["registry"] = {"status": "unreachable", "error": str(exc)}
+
+@router.get("/health")
+async def health(request: Request) -> dict:
+    """Reports each dependency separately."""
+    container = deps(request)
+    report: dict = {"status": "ok", "components": {}}
+
+    await asyncio.gather(
+        check_opensearch(container, report),
+        check_model(container, report),
+        check_prometheus(container, report),
+        check_registry(container, report)
+    )
 
     statuses = {c.get("status") for c in report["components"].values()}
     if "unreachable" in statuses:
@@ -142,47 +142,6 @@ async def refresh_systems(request: Request) -> dict:
     discovered = await container.registry.refresh()
     return {"refreshed": len(discovered), "systems": sorted(discovered)}
 
-
-@router.get("/incidents")
-async def list_incidents(request: Request) -> dict:
-    """Proxies the testbed's incident catalogue.
-
-    The browser never talks to the VM directly — the agent already has network
-    access to it, so this keeps the UI to a single origin and means the incident
-    controller's reachability shows up in /api/health like everything else.
-    """
-    container = deps(request)
-    try:
-        return await container.incidents.catalogue()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@router.post("/incidents/{scenario_id}/start")
-async def start_incident(scenario_id: str, request: Request) -> dict:
-    container = deps(request)
-    try:
-        return await container.incidents.start(scenario_id)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@router.post("/incidents/{scenario_id}/stop")
-async def stop_incident(scenario_id: str, request: Request) -> dict:
-    container = deps(request)
-    try:
-        return await container.incidents.stop(scenario_id)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@router.post("/incidents/reset-all")
-async def reset_incidents(request: Request) -> dict:
-    container = deps(request)
-    try:
-        return await container.incidents.reset_all()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/investigations")
@@ -223,6 +182,14 @@ async def get_investigation(investigation_id: str, request: Request) -> dict:
     if stored is None:
         raise HTTPException(status_code=404, detail=f"no investigation '{investigation_id}'")
     return stored
+
+@router.delete("/investigations/{investigation_id}")
+async def delete_investigation(investigation_id: str, request: Request) -> dict:
+    container = deps(request)
+    deleted = await container.store.delete(investigation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"no investigation '{investigation_id}' or could not delete")
+    return {"success": True}
 
 
 class RunToolRequest(BaseModel):
@@ -315,3 +282,24 @@ async def effective_config() -> dict:
             "max_prompt_events": settings.max_prompt_events,
         },
     }
+
+@router.get("/systems/{system_id}/metrics/requests")
+async def get_system_metrics_requests(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
+    step = container.prometheus.step_for(window)
+    expression = f'sum by (container) (rate(container_cpu_usage_seconds_total{{system_id="{system_id}", container!="", container!="POD"}}[2m]))'
+    raw_series = await container.prometheus.query_range(expression, window, step)
+    
+    data_by_time = {}
+    for series in raw_series:
+        svc = series.get("metric", {}).get("container", "unknown")
+        points = container.prometheus.to_points(series)
+        for pt_time, val in points:
+            ts = int(pt_time.timestamp()) * 1000
+            if ts not in data_by_time:
+                data_by_time[ts] = {"time": ts}
+            data_by_time[ts][svc] = round(val, 2)
+            
+    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+    return sorted_data

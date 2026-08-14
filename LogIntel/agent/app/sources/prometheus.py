@@ -16,9 +16,10 @@ class PrometheusError(RuntimeError):
 
 
 class PrometheusClient:
-    def __init__(self, base_url: str | None = None) -> None:
-        self.base_url = (base_url or settings.prometheus_url).rstrip("/")
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=settings.prometheus_timeout)
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        # We can hardcode timeout to 30.0s for metrics calls
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
 
     async def close(self) -> None:
         await self._client.aclose()

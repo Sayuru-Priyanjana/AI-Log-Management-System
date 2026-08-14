@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+
+    # --- INPUTS ---
+    # 1. Container Logs
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            docker
+        DB                /var/log/flb_kube.db
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+
+
+
+    # 3. Kubernetes Events (Removed - now handled by dedicated event_collector deployment)
+
+    # --- FILTERS ---
+    # Add Kubernetes metadata to logs
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_processed
+
+    # Transform logs into exact LogIntel schema
+    [FILTER]
+        Name                lua
+        Match               kube.*
+        script              /fluent-bit/etc/normalize.lua
+        call                normalize
+        time_as_table       true
+
+    # Send application logs to central OpenSearch
+    [OUTPUT]
+        Name            opensearch
+        Match           kube.*
+        {{- $url := urlParse .Values.central.url }}
+        Host            {{ $url.hostname }}
+        {{- $hostParts := splitList ":" $url.host }}
+        {{- $port := "" }}{{ if gt (len $hostParts) 1 }}{{ $port = last $hostParts }}{{ end }}
+        Port            {{ if $port }}{{ $port }}{{ else if eq $url.scheme "https" }}443{{ else }}80{{ end }}
+        HTTP_User       logintel
+        HTTP_Passwd     {{ .Values.auth.token }}
+        TLS             {{ if eq $url.scheme "https" }}On{{ else }}Off{{ end }}
+        TLS.Verify      Off
+        Logstash_Format On
+        Logstash_Prefix logintel-logs
+        Time_Key        @timestamp
+        Time_Key_Format %Y-%m-%dT%H:%M:%S
+        Time_Key_Nanos  On
+        Suppress_Type_Name On
+        Replace_Dots    On
+        Generate_ID     On
+
+
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+
+  normalize.lua: |
+    local function iso_to_epoch(value)
+      if type(value) ~= "string" then return nil, nil end
+      local y, mo, d, h, mi, s, frac = value:match("^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)")
+      if not y then return nil, nil end
+      local epoch = os.time({
+        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false
+      })
+      local nanos = 0
+      if frac ~= "" then nanos = tonumber((frac .. "000000000"):sub(1, 9)) or 0 end
+      return epoch, nanos
+    end
+
+    function normalize(tag, timestamp, record)
+      local kube = record["kubernetes"]
+      if kube == nil then return -1, 0, 0 end
+
+      local labels = kube["labels"] or {}
+      local out = {}
+
+      out["system"] = {
+        id   = "{{ .Values.auth.clusterId }}",
+        name = "{{ .Values.central.systemName }}"
+      }
+      out["environment"] = "testbed"
+      out["source"] = { type = "kubernetes", collector = "fluent-bit" }
+      out["kubernetes"] = {
+        cluster   = "{{ .Values.auth.clusterId }}",
+        namespace = kube["namespace_name"],
+        pod       = { name = kube["pod_name"], uid = kube["pod_id"] },
+        container = { name = kube["container_name"], image = kube["container_image"] },
+        node      = { name = kube["host"] }
+      }
+
+      local body = record["log"]
+      local record_ts, record_ns = nil, nil
+
+      if type(body) == "table" then
+        for key, value in pairs(record) do
+          if key ~= "kubernetes" and key ~= "stream" and key ~= "time" and key ~= "logtag" then
+            out[key] = value
+          end
+        end
+        out["log"] = body
+        if body["level"] == nil then out["log"]["level"] = "UNKNOWN" end
+        if body["message"] == nil then out["log"]["message"] = "" end
+        record_ts, record_ns = iso_to_epoch(record["@timestamp"])
+      else
+        out["log"] = { level = "UNKNOWN", message = tostring(body or "") }
+      end
+
+      if out["service"] == nil and labels["app"] ~= nil then
+        out["service"] = { name = labels["app"] }
+      end
+
+      out["@timestamp"] = nil
+
+      if record_ts ~= nil then
+        return 2, { sec = record_ts, nsec = record_ns }, out
+      end
+      return 2, timestamp, out
+    end

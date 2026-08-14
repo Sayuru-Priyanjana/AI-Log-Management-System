@@ -95,11 +95,15 @@ services:
         condition: service_healthy
 
   # ------------------------------------------------------------------ agent
+
   agent:
     build: ./agent
     image: log-agent:latest
     container_name: log-agent
     restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./agent:/app
     ports:
       - "${AGENT_PORT:-8000}:8000"
     environment:
@@ -108,8 +112,7 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
 
       # External, and genuinely so.
-      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:30090}
-      INCIDENT_CONTROLLER_URL: ${INCIDENT_CONTROLLER_URL:-http://host.docker.internal:30099}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
 
       # The model. Local Ollama by default: nothing leaves the machine, and an
       # investigation that makes eight tool calls costs nothing to run. Set
@@ -132,13 +135,52 @@ services:
       - "host.docker.internal:host-gateway"
 
   ui:
-    build: ./ui
+    build:
+      context: ./ui
+      target: serve
     image: log-ui:latest
     container_name: log-ui
     restart: unless-stopped
     ports:
-      - "${UI_PORT:-5173}:80"
+      - "${UI_PORT:-80}:80"
     depends_on:
+      - agent
+      - gateway
+
+  # ------------------------------------------------------------------ identity & gateway
+  postgres:
+    image: postgres:15-alpine
+    container_name: log-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: logintel
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  gateway:
+    build: ./gateway
+    image: log-gateway:latest
+    container_name: log-gateway
+    restart: unless-stopped
+    command: ["node", "--watch", "server.js"]
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+    # Removed exposed port 3000: Nginx now proxies /api to this internal port
+    environment:
+      AGENT_URL: http://agent:8000
+      JWT_SECRET: super-secret-jwt-key
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: logintel
+    depends_on:
+      - postgres
       - agent
 
   # ------------------------------------------------------------------ extras
@@ -153,14 +195,29 @@ services:
     restart: unless-stopped
     environment:
       OPENSEARCH_URL: http://opensearch:9200
-      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:30090}
-      NAMESPACE: ${TESTBED_NAMESPACE:-shopdemo}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
       POLL_SECONDS: ${MIRROR_POLL_SECONDS:-30}
     depends_on:
       opensearch:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: log-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
 
 volumes:
   # Defaults to the volume the standalone lab stack in ~/opensearch already
@@ -172,3 +229,9 @@ volumes:
   # Set OPENSEARCH_VOLUME to anything else for a clean, empty cluster.
   opensearch-data:
     name: ${OPENSEARCH_VOLUME:-opensearch_opensearch-data}
+
+  postgres-data:
+    name: logintel-postgres-data
+
+  prometheus-data:
+    name: logintel-prometheus-data

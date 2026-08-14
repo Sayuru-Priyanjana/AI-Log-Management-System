@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { runInvestigation } from '../api';
+import { useInvestigation } from '../InvestigationContext';
 import { usePreferences } from '../preferences';
 import AnswerPanel from './AnswerPanel';
-import { ErrorBanner } from './common';
 import EvidenceTimeline from './EvidenceTimeline';
 import ReasoningTrace from './ReasoningTrace';
 
@@ -17,101 +15,80 @@ const PREP_STAGES = [
   { id: 'candidates', label: 'Candidates' },
 ];
 
-export default function InvestigationResults({ request, onFollowUp }) {
-  const [stages, setStages] = useState({});
-  const [trace, setTrace] = useState([]);
-  const [answer, setAnswer] = useState(null);
-  const [evidenceTimeline, setEvidenceTimeline] = useState(null);
-  const [result, setResult] = useState(null);
-  const [status, setStatus] = useState('connecting');
-  const [errorMsg, setErrorMsg] = useState(null);
-  const startedAt = useRef(Date.now());
-  const [elapsed, setElapsed] = useState(0);
+export default function InvestigationResults({ onFollowUp }) {
+  const {
+    request, stages, trace, answer, evidenceTimeline, result,
+    status, elapsed, errorDetail, stopInvestigation
+  } = useInvestigation();
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let mounted = true;
-    startedAt.current = Date.now();
-    setStages({}); setTrace([]); setAnswer(null); setResult(null);
-    setEvidenceTimeline(null); setErrorMsg(null);
-
-    const tick = setInterval(() => {
-      if (mounted) {
-        setStatus((s) => {
-          if (s !== 'complete' && s !== 'error') setElapsed(Date.now() - startedAt.current);
-          return s;
-        });
-      }
-    }, 250);
-
-    (async () => {
-      try {
-        setStatus('connecting');
-        await runInvestigation(request, {
-          signal: controller.signal,
-          onEvent: (event) => {
-            if (!mounted) return;
-            const { stage, data } = event;
-
-            if (stage === 'error') {
-              setStatus('error');
-              setErrorMsg(data?.detail || 'The investigation failed.');
-              return;
-            }
-            setStatus('streaming');
-
-            if (stage === 'reasoning') {
-              setTrace((prev) => [...prev, data]);
-            } else if (stage === 'answer') {
-              setAnswer(data);
-            } else if (stage === 'evidence_timeline') {
-              setEvidenceTimeline(data);
-            } else if (stage === 'result') {
-              setResult(data);
-            } else {
-              setStages((prev) => ({ ...prev, [stage]: data }));
-            }
-          },
-        });
-        if (mounted) setStatus((s) => (s === 'error' ? s : 'complete'));
-      } catch (err) {
-        if (mounted && err.name !== 'AbortError') {
-          setStatus('error');
-          setErrorMsg(err.message);
-        }
-      }
-    })();
-
-    return () => {
-      mounted = false;
-      clearInterval(tick);
-      controller.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request]);
+  // If there's an error from context that wasn't displayed, we could show it,
+  // but it's handled in the context. We'll just show the error detail in the UI.
 
   const seconds = (elapsed / 1000).toFixed(1);
   const plan = stages.plan;
 
+  const parseQuestion = (q) => {
+    if (!q) return { goal: '', payload: null, rawPayload: null };
+    const marker = 'Detection payload:\n';
+    const idx = q.indexOf(marker);
+    if (idx === -1) return { goal: q, payload: null, rawPayload: null };
+    
+    const goal = q.substring(0, idx).trim();
+    const jsonStr = q.substring(idx + marker.length).trim();
+    let payload = null;
+    try {
+      payload = JSON.parse(jsonStr);
+    } catch (e) {
+      // ignore
+    }
+    return { goal, payload, rawPayload: jsonStr };
+  };
+
+  const { goal, payload, rawPayload } = parseQuestion(request.question);
+
   return (
     <div className="li-results">
-      <div className="glass-panel li-results-header">
-        <div style={{ minWidth: 0 }}>
-          <h3>
-            <span className="text-gradient">{request.system_id}</span>
-            {plan?.service ? <span className="li-muted"> · {plan.service}</span> : null}
-          </h3>
-          <p className="li-muted">{request.question}</p>
-        </div>
-        <div className="li-status-pill">
+      <div className="li-results-header">
+        <span className="li-goal">{goal}</span>
+        {plan?.service && <span className="li-chip li-chip--service">{plan.service}</span>}
+        <span className="spacer" />
+        <div className="li-status-pill" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {status === 'connecting' && <StatusDot color="var(--warning)" label="Connecting…" pulse />}
           {status === 'streaming' && <StatusDot color="var(--accent-color)" label={`Working… ${seconds}s`} pulse />}
           {status === 'complete' && <StatusDot color="var(--success)" label={`Done in ${seconds}s`} />}
           {status === 'error' && <StatusDot color="var(--error)" label="Failed" />}
+          
+          {(status === 'streaming' || status === 'connecting') && (
+            <button 
+              type="button" 
+              onClick={stopInvestigation}
+              style={{
+                background: 'var(--error-bg)', color: 'var(--error)',
+                border: '1px solid var(--error)', padding: '2px 8px',
+                borderRadius: '4px', fontSize: '12px', cursor: 'pointer',
+                fontWeight: 500
+              }}
+            >
+              Stop
+            </button>
+          )}
         </div>
       </div>
+      
+      {payload ? (
+        <DetectionPayloadCard payload={payload} />
+      ) : rawPayload ? (
+        <div className="glass-panel" style={{ marginTop: '16px', marginBottom: '24px' }}>
+          <pre style={{ margin: 0, overflowX: 'auto', fontSize: '12px', fontFamily: 'var(--mono)' }}>{rawPayload}</pre>
+        </div>
+      ) : null}
 
-      {errorMsg && <ErrorBanner><strong>Something went wrong.</strong> {errorMsg}</ErrorBanner>}
+      {errorDetail && (
+        <div className="glass-panel" style={{ color: 'var(--error)', borderLeft: '3px solid var(--error)' }}>
+          <p style={{ margin: 0 }}><strong>Error:</strong> {errorDetail}</p>
+        </div>
+      )}
+
 
       <WindowBanner windows={stages.windows} />
 
@@ -139,6 +116,76 @@ export default function InvestigationResults({ request, onFollowUp }) {
       )}
 
       {result && <RunFooter result={result} />}
+    </div>
+  );
+}
+
+function DetectionPayloadCard({ payload }) {
+  const SEVERITY_TONE = { high: 'var(--error)', medium: 'var(--warning)', low: 'var(--text-2)' };
+  const tone = SEVERITY_TONE[payload.severity] || 'var(--accent-color)';
+  
+  return (
+    <div className="glass-panel" style={{ 
+      marginTop: '16px', 
+      marginBottom: '16px',
+      borderLeft: `3px solid ${tone}`,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '12px'
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <span style={{ 
+          background: `color-mix(in srgb, ${tone} 15%, transparent)`, 
+          color: tone, 
+          padding: '4px 8px', 
+          borderRadius: '4px', 
+          fontWeight: 600, 
+          fontSize: '11px', 
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px'
+        }}>
+          Alert Payload
+        </span>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: '13px', color: 'var(--text-1)', fontWeight: 500 }}>
+          {payload.rule || payload.title || 'Detection'}
+        </span>
+        <span className="spacer" />
+        <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>
+          {payload.detected_at || payload.timestamp}
+        </span>
+      </div>
+
+      {payload.summary && (
+        <div style={{ fontSize: '14px', lineHeight: 1.5, color: 'var(--text-1)' }}>
+          {payload.summary}
+        </div>
+      )}
+
+      <div style={{ 
+        display: 'flex', 
+        flexWrap: 'wrap', 
+        gap: '24px', 
+        marginTop: '4px',
+        paddingTop: '12px',
+        borderTop: '1px solid var(--border-color)'
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>System</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{payload.system_id || '—'}</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>Service</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{payload.service || '—'}</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>Severity</span>
+          <span style={{ fontSize: '13px', color: tone, fontWeight: 500 }}>{payload.severity || '—'}</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>Window</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{payload.window || '—'}</span>
+        </div>
+      </div>
     </div>
   );
 }

@@ -6,49 +6,30 @@ import { usePreferences } from '../preferences';
 // confidence bar always reads the same way, and the escape hatch to raw JSON
 // always looks and behaves identically.
 
-const SEVERITY_COLORS = {
-  critical: { fg: '#fca5a5', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)' },
-  high: { fg: '#fdba74', bg: 'rgba(249,115,22,0.15)', border: 'rgba(249,115,22,0.4)' },
-  medium: { fg: '#fde68a', bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.4)' },
-  low: { fg: '#93c5fd', bg: 'rgba(59,130,246,0.15)', border: 'rgba(59,130,246,0.4)' },
-  info: { fg: '#cbd5e1', bg: 'rgba(148,163,184,0.15)', border: 'rgba(148,163,184,0.4)' },
-  error: { fg: '#fca5a5', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)' },
-  fatal: { fg: '#fca5a5', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)' },
-  warn: { fg: '#fde68a', bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.4)' },
-  warning: { fg: '#fde68a', bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.4)' },
+// Severity and tone map onto the shared chip classes rather than carrying their
+// own colour table. The old one hardcoded pastels tuned for a dark background,
+// which dropped to ~2:1 the moment the light theme existed.
+const SEVERITY_CLASS = {
+  critical: 'chip--err', fatal: 'chip--err', error: 'chip--err',
+  high: 'chip--err',
+  warn: 'chip--warn', warning: 'chip--warn', medium: 'chip--warn',
+  low: '', info: '',
 };
 
 export function SeverityChip({ level }) {
   const key = String(level || 'info').toLowerCase();
-  const c = SEVERITY_COLORS[key] || SEVERITY_COLORS.info;
-  return (
-    <span
-      className="li-chip"
-      style={{ color: c.fg, background: c.bg, border: `1px solid ${c.border}` }}
-    >
-      {String(level || 'info').toUpperCase()}
-    </span>
-  );
+  return <span className={`li-chip ${SEVERITY_CLASS[key] ?? ''}`}>{key.toUpperCase()}</span>;
 }
 
+const TONE_CLASS = { neutral: '', accent: 'chip--accent', good: 'chip--ok', bad: 'chip--err' };
+
 export function Chip({ children, tone = 'neutral' }) {
-  const tones = {
-    neutral: { fg: 'var(--text-secondary)', bg: 'rgba(255,255,255,0.06)', border: 'var(--glass-border)' },
-    accent: { fg: 'var(--accent-color)', bg: 'rgba(56,189,248,0.12)', border: 'rgba(56,189,248,0.35)' },
-    good: { fg: '#6ee7b7', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.35)' },
-    bad: { fg: '#fca5a5', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)' },
-  };
-  const c = tones[tone] || tones.neutral;
-  return (
-    <span className="li-chip" style={{ color: c.fg, background: c.bg, border: `1px solid ${c.border}` }}>
-      {children}
-    </span>
-  );
+  return <span className={`li-chip ${TONE_CLASS[tone] ?? ''}`}>{children}</span>;
 }
 
 export function ConfidenceBar({ value = 0, label = 'Confidence' }) {
   const pct = Math.round((value || 0) * 100);
-  const color = pct >= 70 ? '#10b981' : pct >= 40 ? '#f59e0b' : '#ef4444';
+  const color = pct >= 70 ? 'var(--ok)' : pct >= 40 ? 'var(--warn)' : 'var(--err)';
   return (
     <div className="li-confidence">
       <div className="li-confidence-label">
@@ -87,19 +68,6 @@ export function EmptyNote({ children }) {
 /** The one error-banner treatment used everywhere in the app, so a broken
  * OpenSearch connection and a broken incident controller look like the same
  * kind of problem, not two different UI languages. */
-export function ErrorBanner({ children }) {
-  return (
-    <div className="glass-panel li-error-banner">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-        style={{ flexShrink: 0, marginTop: 2 }}>
-        <path d="M12 9v4M12 17h.01M10.3 3.9L2.7 17a2 2 0 001.7 3h15.2a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"
-          strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      <div>{children}</div>
-    </div>
-  );
-}
-
 export function Timestamp({ value }) {
   // The agent's zone, not the browser's: the agent writes times into its own
   // prose, and a page formatting in a different one would hand the reader two
