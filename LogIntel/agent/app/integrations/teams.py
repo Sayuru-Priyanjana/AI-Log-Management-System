@@ -38,3 +38,21 @@ async def ping_teams(webhook_url: str, channel_name: str = "") -> dict:
     detail = (f"Teams accepted the message ({response.status_code})" if ok else
               f"Teams returned {response.status_code}: {response.text[:200]}")
     return {"ok": ok, "detail": detail}
+
+
+async def notify_teams(webhook_url: str, payload: dict) -> dict:
+    """Posts a custom MessageCard to the Teams webhook."""
+    url = (webhook_url or "").strip()
+    if not url:
+        return {"ok": False, "detail": "No webhook URL configured for this system."}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=payload)
+    except httpx.HTTPError as exc:
+        return {"ok": False, "detail": f"Could not reach the webhook: {exc}"}
+
+    ok = 200 <= response.status_code < 300
+    detail = (f"Teams accepted the message ({response.status_code})" if ok else
+              f"Teams returned {response.status_code}: {response.text[:200]}")
+    return {"ok": ok, "detail": detail}

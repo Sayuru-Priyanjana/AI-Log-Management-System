@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { deleteInvestigation, getRecentInvestigations, getSystems } from '../api';
+import { deleteInvestigation, getRecentInvestigations, getSystems, getSystemIntegrations, notifyIntegrations } from '../api';
 import { useInvestigation } from '../InvestigationContext';
 import { useToast } from '../toast';
 import { usePreferences } from '../preferences';
@@ -31,6 +31,7 @@ export default function AgentPage() {
   const [chats, setChats] = useState([]);
   const [loadingChats, setLoadingChats] = useState(true);
   const autoStarted = useRef(false);
+  const notifiedRef = useRef(null);
 
   useEffect(() => {
     getSystems()
@@ -64,9 +65,79 @@ export default function AgentPage() {
     startInvestigation({
       system_id: systemId, environment: nav.environment, question: nav.question,
       service_hint: nav.service,
-    }, { kind: nav.kind || 'new', label: nav.label });
+    }, { kind: nav.kind || 'new', label: nav.label, alertId: nav.alertId, auto: nav.auto });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemId]);
+
+  // Handle auto-notification for scheduled scans and alerts when they complete
+  useEffect(() => {
+    if (status === 'complete' && result && (meta?.kind === 'scheduled' || (meta?.kind === 'alert' && meta?.auto)) && notifiedRef.current !== result.id) {
+      notifiedRef.current = result.id;
+      
+      // Sync with UI: if it's an auto-investigated alert, mark it as handled and refresh sidebar
+      if (meta?.kind === 'alert' && meta.alertId) {
+        import('../mockData').then(({ setAlertStatus }) => {
+          setAlertStatus(meta.alertId, 'handled');
+        });
+      }
+      refreshChats(systemId);
+      
+      getSystemIntegrations(systemId)
+        .then(({ values }) => {
+          if (values?.notify_on_scan_result_enabled) {
+            sendResultToIntegrations();
+          }
+        })
+        .catch(console.error);
+    } else if (status === 'complete' && result && meta?.kind === 'alert' && notifiedRef.current !== result.id) {
+      // Manual alert investigations: just refresh chats and mark handled
+      notifiedRef.current = result.id;
+      if (meta.alertId) {
+        import('../mockData').then(({ setAlertStatus }) => {
+          setAlertStatus(meta.alertId, 'handled');
+        });
+      }
+      refreshChats(systemId);
+    } else if (status === 'complete' && result && notifiedRef.current !== result.id) {
+      // Manual normal investigations: just refresh chats
+      notifiedRef.current = result.id;
+      refreshChats(systemId);
+    }
+  }, [status, result, meta, systemId]);
+
+  const sendResultToIntegrations = async () => {
+    if (!result) return;
+    try {
+      // Teams MessageCards are very strict and silently drop messages with unsupported markdown (like code blocks) or HTML tags
+      const headline = result.answer?.headline || "Agent investigation complete.";
+      const detail = result.answer?.detail || "";
+      const rawText = `${headline}\n\n${detail}`;
+
+      let text = rawText
+        .replace(/```[a-z]*\n([\s\S]*?)```/gi, '\n$1\n') // Remove code block fences
+        .replace(/`/g, '') // Remove inline code ticks
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+      if (text.length > 2000) text = text.substring(0, 2000) + "\n\n... (truncated for Teams)";
+      
+      const payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": "1F6FEB",
+        "summary": "Agent Investigation Result",
+        "title": `Agent Result: ${meta?.label || 'Investigation'}`,
+        "text": text,
+      };
+      const response = await notifyIntegrations(systemId, payload);
+      if (response && response.ok === false) {
+        throw new Error(response.detail || "Teams integration returned an error");
+      }
+      toast.success('Sent result to integrations');
+    } catch (err) {
+      toast.error('Could not send to integrations', { detail: err.message });
+    }
+  };
 
   const selected = systems.find((s) => s.id === systemId);
 
@@ -104,6 +175,11 @@ export default function AgentPage() {
         {selected && <span className="chip chip--mono">{selected.id}</span>}
         {meta?.kind === 'alert' && nav.serviceLabel && (
           <span className="chip">{nav.serviceLabel}</span>
+        )}
+        {status === 'complete' && result && (
+          <button type="button" className="btn btn--sm" onClick={sendResultToIntegrations}>
+            Send result to integrations
+          </button>
         )}
         {chats.length > 0 && (
           <button type="button" className="btn btn--sm" onClick={() => clearInvestigation()}>

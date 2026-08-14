@@ -78,6 +78,10 @@ export function setAlertStatus(id, status) {
   writeAll(ALERTS_KEY, readAll(ALERTS_KEY).map((a) => (a.id === id ? { ...a, status } : a)));
 }
 
+export function deleteAlert(id) {
+  writeAll(ALERTS_KEY, readAll(ALERTS_KEY).filter((a) => a.id !== id));
+}
+
 // -- activities ---------------------------------------------------------------
 export function getAutomatedActivities(systemId, sinceMs) {
   const cutoff = sinceMs ? Date.now() - sinceMs : 0;

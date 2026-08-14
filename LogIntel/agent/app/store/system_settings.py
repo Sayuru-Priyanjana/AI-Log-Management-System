@@ -25,12 +25,14 @@ INDEX = "logintel-system-config"
 #                                   alert/detection is recorded for this system
 #   notify_on_scan_result_enabled  post the scheduled scan's own answer to the
 #                                   integrations above once it finishes
+#   auto_investigate_alerts_enabled automatically run an investigation on new alerts
 DEFAULTS: dict = {
     "teams_channel_name": "",
     "teams_webhook_url": "",
     "auto_scan_enabled": False,
     "scan_time": "03:00",
     "notify_on_alert_enabled": False,
+    "auto_investigate_alerts_enabled": False,
     "notify_on_scan_result_enabled": False,
 }
 
@@ -56,7 +58,7 @@ def validate(values: dict) -> dict:
         if not _TIME_RE.match(text):
             raise ValueError("Scan time must be in 24-hour HH:MM form, e.g. 03:00")
         cleaned["scan_time"] = text
-    for flag in ("auto_scan_enabled", "notify_on_alert_enabled", "notify_on_scan_result_enabled"):
+    for flag in ("auto_scan_enabled", "notify_on_alert_enabled", "auto_investigate_alerts_enabled", "notify_on_scan_result_enabled"):
         if flag in cleaned and not isinstance(cleaned[flag], bool):
             cleaned[flag] = str(cleaned[flag]).strip().lower() in ("1", "true", "yes", "on")
     unknown = set(cleaned) - set(DEFAULTS)

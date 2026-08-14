@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -24,24 +25,15 @@ def deps(request: Request):
     return request.app.state.deps
 
 
-@router.get("/health")
-async def health(request: Request) -> dict:
-    """Reports each dependency separately.
-
-    A single overall boolean makes a half-connected setup look like a broken
-    agent. Each component says what is wrong and where.
-    """
-    container = deps(request)
-    report: dict = {"status": "ok", "components": {}}
-
+async def check_opensearch(container, report):
     try:
-        info = await container.opensearch.ping()
+        info = await asyncio.wait_for(container.opensearch.ping(), timeout=3.0)
         report["components"]["opensearch"] = {
             "status": "ok",
             "url": container.opensearch.describe(),
             "version": info.get("version", {}).get("number"),
         }
-        conflicts = await container.opensearch.check_mapping_conflicts()
+        conflicts = await asyncio.wait_for(container.opensearch.check_mapping_conflicts(), timeout=3.0)
         if conflicts:
             report["components"]["opensearch"] = {
                 **report["components"]["opensearch"],
@@ -53,8 +45,9 @@ async def health(request: Request) -> dict:
             "status": "unreachable", "url": container.opensearch.describe(), "error": str(exc)
         }
 
+async def check_prometheus(container, report):
     try:
-        ready = await container.prometheus.ready()
+        ready = await asyncio.wait_for(container.prometheus.ready(), timeout=3.0)
         report["components"]["prometheus"] = {
             "status": "ok" if ready else "unreachable",
             "url": container.prometheus.base_url,
@@ -62,11 +55,10 @@ async def health(request: Request) -> dict:
     except Exception as exc:
         report["components"]["prometheus"] = {"status": "unreachable", "error": str(exc)}
 
-    # Reported under one key whichever backend is configured, so the UI does not
-    # have to know which provider is in use to show whether the model is reachable.
+async def check_model(container, report):
     try:
         provider = describe_provider(container.llm)
-        available = await container.llm.available()
+        available = await asyncio.wait_for(container.llm.available(), timeout=5.0)
         component = {
             "status": "ok" if available else "degraded",
             "provider": provider,
@@ -75,7 +67,7 @@ async def health(request: Request) -> dict:
         }
         if provider == "ollama":
             component["num_ctx"] = container.llm.num_ctx
-            component["models_present"] = await container.llm.list_models()
+            component["models_present"] = await asyncio.wait_for(container.llm.list_models(), timeout=5.0)
             if not available:
                 component["hint"] = (
                     f"model '{container.llm.model}' is not pulled, or Ollama is not listening "
@@ -91,8 +83,9 @@ async def health(request: Request) -> dict:
     except Exception as exc:
         report["components"]["model"] = {"status": "unreachable", "error": str(exc)}
 
+async def check_incidents(container, report):
     try:
-        reachable = await container.incidents.reachable()
+        reachable = await asyncio.wait_for(container.incidents.reachable(), timeout=3.0)
         report["components"]["incident_controller"] = {
             "status": "ok" if reachable else "unreachable",
             "url": container.incidents.base_url,
@@ -105,8 +98,9 @@ async def health(request: Request) -> dict:
     except Exception as exc:
         report["components"]["incident_controller"] = {"status": "unreachable", "error": str(exc)}
 
+async def check_registry(container, report):
     try:
-        systems = await container.registry.all()
+        systems = await asyncio.wait_for(container.registry.all(), timeout=3.0)
         report["components"]["registry"] = {
             "status": "ok" if systems else "empty",
             "systems": [
@@ -117,6 +111,20 @@ async def health(request: Request) -> dict:
         }
     except Exception as exc:
         report["components"]["registry"] = {"status": "unreachable", "error": str(exc)}
+
+@router.get("/health")
+async def health(request: Request) -> dict:
+    """Reports each dependency separately."""
+    container = deps(request)
+    report: dict = {"status": "ok", "components": {}}
+
+    await asyncio.gather(
+        check_opensearch(container, report),
+        check_prometheus(container, report),
+        check_model(container, report),
+        check_incidents(container, report),
+        check_registry(container, report)
+    )
 
     statuses = {c.get("status") for c in report["components"].values()}
     if "unreachable" in statuses:

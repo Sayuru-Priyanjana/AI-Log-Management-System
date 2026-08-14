@@ -57,3 +57,14 @@ async def test_system_integrations(system_id: str, request: Request) -> dict:
     container = deps(request)
     values = await container.system_settings.get(system_id)
     return await ping_teams(values.get("teams_webhook_url", ""), values.get("teams_channel_name", ""))
+
+
+class NotifyPayload(BaseModel):
+    payload: dict = Field(..., description="The message card payload to send to Teams")
+
+@router.post("/systems/{system_id}/integrations/notify")
+async def notify_system_integrations(system_id: str, payload_data: NotifyPayload, request: Request) -> dict:
+    from app.integrations.teams import notify_teams
+    container = deps(request)
+    values = await container.system_settings.get(system_id)
+    return await notify_teams(values.get("teams_webhook_url", ""), payload_data.payload)

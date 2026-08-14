@@ -6,6 +6,8 @@ import ActivitiesPanel from './ActivitiesPanel';
 import AlertsPanel from './AlertsPanel';
 import SystemIntegrationsModal from './SystemIntegrationsModal';
 
+import { useInvestigation } from '../InvestigationContext';
+
 const COMPONENT_LABEL = {
   opensearch: 'OpenSearch', prometheus: 'Prometheus', model: 'Agent model',
   incident_controller: 'Fluent Bit source', registry: 'Registry',
@@ -23,6 +25,7 @@ const COMPONENT_LABEL = {
 export default function WorkstationPage() {
   const navigate = useNavigate();
   const toast = useToast();
+  const { status: agentStatus, meta: agentMeta } = useInvestigation();
 
   const [systems, setSystems] = useState([]);
   const [health, setHealth] = useState(null);
@@ -94,6 +97,15 @@ export default function WorkstationPage() {
           {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
         <span className="spacer" />
+        
+        {(agentStatus === 'connecting' || agentStatus === 'streaming') && (
+          <span className="row" style={{ gap: 6, color: 'var(--accent)', marginRight: 16, cursor: 'pointer' }}
+                onClick={() => navigate('/agent', { state: { system_id: selectedId } })}>
+            <span className="dot dot--ok" style={{ animation: 'toast-in 1s infinite alternate' }} />
+            AI Agent is running {agentMeta?.label ? `(${agentMeta.label})` : ''}
+          </span>
+        )}
+
         <button type="button" className="btn btn--primary" disabled={!selected}
           onClick={() => navigate('/agent', { state: { system_id: selectedId } })}>
           AI Agent

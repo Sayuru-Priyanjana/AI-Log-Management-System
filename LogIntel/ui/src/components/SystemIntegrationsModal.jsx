@@ -122,13 +122,24 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
                 <input type="checkbox" checked={values.auto_scan_enabled}
                   onChange={(e) => set('auto_scan_enabled', e.target.checked)} />
                 Run a scheduled AI agent scan every day
-                <input type="time" className="input" style={{ width: 100, marginLeft: 6 }}
+                <input type="time" className="input input--sm" style={{ width: 100, marginLeft: 6 }}
                   value={values.scan_time} disabled={!values.auto_scan_enabled}
                   onChange={(e) => set('scan_time', e.target.value)} />
               </label>
               <span className="hint">
                 Investigates this system with the agent once a day at the time above, the same as
                 clicking Ask AI yourself. Uncheck to turn the daily run off.
+              </span>
+            </div>
+
+            <div className="field" style={{ marginTop: 8 }}>
+              <label className="row" style={{ gap: 6, fontSize: 12.5 }}>
+                <input type="checkbox" checked={values.auto_investigate_alerts_enabled}
+                  onChange={(e) => set('auto_investigate_alerts_enabled', e.target.checked)} />
+                Auto investigate incoming alert with agent
+              </label>
+              <span className="hint">
+                When a new alert or detection occurs, start an investigation automatically. You will see it running in the AI Agent window.
               </span>
             </div>
 
@@ -147,7 +158,7 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
                     onChange={(e) => set('notify_on_scan_result_enabled', e.target.checked)} />
                   Notify integrations with agent response
                 </label>
-                <span className="hint">Posts the scheduled scan's own answer to Teams once it finishes.</span>
+                <span className="hint">Posts the auto-scanned agent results to Teams once it finishes.</span>
               </div>
             </div>
             <p className="hint" style={{ marginTop: 8 }}>

@@ -80,6 +80,7 @@ export function InvestigationProvider({ children }) {
       await runInvestigation(newRequest, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (controllerRef.current !== controller) return;
           const { stage, data } = event;
 
           if (stage === 'error') {
@@ -107,8 +108,14 @@ export function InvestigationProvider({ children }) {
           }
         },
       });
-      setStatus((s) => (s === 'error' ? s : 'complete'));
+      if (controllerRef.current === controller) {
+        setStatus((s) => (s === 'error' ? s : 'complete'));
+      }
     } catch (err) {
+      if (controllerRef.current !== controller && controllerRef.current !== null) {
+        // Superseded by a new investigation; do not overwrite its state
+        return;
+      }
       setStatus('error');
       setErrorDetail(err.name === 'AbortError' ? 'Investigation aborted' : (err.message || 'Investigation failed'));
     }

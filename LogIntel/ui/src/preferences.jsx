@@ -41,6 +41,8 @@ export function PreferencesProvider({ children }) {
 
   useEffect(() => {
     let mounted = true;
+    if (!localStorage.getItem('jwt')) return;
+
     getSettings()
       .then((data) => {
         const value = data?.timezone?.value;
@@ -140,6 +142,27 @@ function formatters(zone) {
     formatStamp: (iso, fallback = '—') => {
       const p = parts(iso);
       return p ? `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${zone}` : fallback;
+    },
+    /** `2026-08-12T10:42` — for <input type="datetime-local"> */
+    toInput: (iso) => {
+      const p = parts(iso);
+      return p ? `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}` : '';
+    },
+    /** Converts a <input type="datetime-local"> string back to a UTC ISO string */
+    fromInput: (localString) => {
+      if (!localString) return null;
+      const fakeUTC = new Date(localString + 'Z');
+      if (Number.isNaN(fakeUTC.getTime())) return null;
+      
+      if (!named) {
+        return new Date(fakeUTC.getTime() - offsetMinutes * 60000).toISOString();
+      } else {
+        const p = parts(fakeUTC.toISOString());
+        if (!p) return null;
+        const formattedTime = new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`);
+        const diff = formattedTime.getTime() - fakeUTC.getTime();
+        return new Date(fakeUTC.getTime() - diff).toISOString();
+      }
     },
     zoneLabel: zone,
   };

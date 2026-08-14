@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react';
 import { getSystems } from '../api';
 import { useToast } from '../toast';
+import { usePreferences } from '../preferences';
 
 // Removed DURATIONS array since we use explicit start/end times
 
 export default function InvestigationForm({ onSubmit, initial, lockedSystem, submitLabel = 'Analyse' }) {
   const toast = useToast();
+  const { toInput, fromInput } = usePreferences();
   const [systems, setSystems] = useState([]);
   
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(() => ({
     system_id: lockedSystem?.id || initial?.system_id || '',
     environment: lockedSystem?.environments?.[0] || initial?.environment || '',
     service: initial?.service || '',
     question: initial?.question || 'Something is wrong. What is the root cause?',
-    start_time: initial?.start_time || new Date(Date.now() - 3600000).toISOString().slice(0, 16),
-    end_time: initial?.end_time || new Date().toISOString().slice(0, 16),
-  });
+    start_time: initial?.start_time ? toInput(initial.start_time) : toInput(new Date(Date.now() - 3600000).toISOString()),
+    end_time: initial?.end_time ? toInput(initial.end_time) : toInput(new Date().toISOString()),
+  }));
 
   useEffect(() => {
     // If we are locked to a system and have environments, we don't necessarily need to fetch systems.
@@ -68,8 +70,8 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem, sub
       environment: form.environment,
       question: form.question,
       service_hint: form.service || undefined,
-      start_time: new Date(form.start_time).toISOString(),
-      end_time: new Date(form.end_time).toISOString(),
+      start_time: fromInput(form.start_time),
+      end_time: fromInput(form.end_time),
     });
   };
 

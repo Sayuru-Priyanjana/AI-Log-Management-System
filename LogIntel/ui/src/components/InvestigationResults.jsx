@@ -27,10 +27,29 @@ export default function InvestigationResults({ onFollowUp }) {
   const seconds = (elapsed / 1000).toFixed(1);
   const plan = stages.plan;
 
+  const parseQuestion = (q) => {
+    if (!q) return { goal: '', payload: null, rawPayload: null };
+    const marker = 'Detection payload:\n';
+    const idx = q.indexOf(marker);
+    if (idx === -1) return { goal: q, payload: null, rawPayload: null };
+    
+    const goal = q.substring(0, idx).trim();
+    const jsonStr = q.substring(idx + marker.length).trim();
+    let payload = null;
+    try {
+      payload = JSON.parse(jsonStr);
+    } catch (e) {
+      // ignore
+    }
+    return { goal, payload, rawPayload: jsonStr };
+  };
+
+  const { goal, payload, rawPayload } = parseQuestion(request.question);
+
   return (
     <div className="li-results">
       <div className="li-results-header">
-        <span className="li-goal">{request.question}</span>
+        <span className="li-goal">{goal}</span>
         {plan?.service && <span className="li-chip li-chip--service">{plan.service}</span>}
         <span className="spacer" />
         <div className="li-status-pill" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -56,6 +75,14 @@ export default function InvestigationResults({ onFollowUp }) {
         </div>
       </div>
       
+      {payload ? (
+        <DetectionPayloadCard payload={payload} />
+      ) : rawPayload ? (
+        <div className="glass-panel" style={{ marginTop: '16px', marginBottom: '24px' }}>
+          <pre style={{ margin: 0, overflowX: 'auto', fontSize: '12px', fontFamily: 'var(--mono)' }}>{rawPayload}</pre>
+        </div>
+      ) : null}
+
       {errorDetail && (
         <div className="glass-panel" style={{ color: 'var(--error)', borderLeft: '3px solid var(--error)' }}>
           <p style={{ margin: 0 }}><strong>Error:</strong> {errorDetail}</p>
@@ -89,6 +116,76 @@ export default function InvestigationResults({ onFollowUp }) {
       )}
 
       {result && <RunFooter result={result} />}
+    </div>
+  );
+}
+
+function DetectionPayloadCard({ payload }) {
+  const SEVERITY_TONE = { high: 'var(--error)', medium: 'var(--warning)', low: 'var(--text-2)' };
+  const tone = SEVERITY_TONE[payload.severity] || 'var(--accent-color)';
+  
+  return (
+    <div className="glass-panel" style={{ 
+      marginTop: '16px', 
+      marginBottom: '16px',
+      borderLeft: `3px solid ${tone}`,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '12px'
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <span style={{ 
+          background: `color-mix(in srgb, ${tone} 15%, transparent)`, 
+          color: tone, 
+          padding: '4px 8px', 
+          borderRadius: '4px', 
+          fontWeight: 600, 
+          fontSize: '11px', 
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px'
+        }}>
+          Alert Payload
+        </span>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: '13px', color: 'var(--text-1)', fontWeight: 500 }}>
+          {payload.rule || payload.title || 'Detection'}
+        </span>
+        <span className="spacer" />
+        <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>
+          {payload.detected_at || payload.timestamp}
+        </span>
+      </div>
+
+      {payload.summary && (
+        <div style={{ fontSize: '14px', lineHeight: 1.5, color: 'var(--text-1)' }}>
+          {payload.summary}
+        </div>
+      )}
+
+      <div style={{ 
+        display: 'flex', 
+        flexWrap: 'wrap', 
+        gap: '24px', 
+        marginTop: '4px',
+        paddingTop: '12px',
+        borderTop: '1px solid var(--border-color)'
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>System</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{payload.system_id || '—'}</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>Service</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{payload.service || '—'}</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>Severity</span>
+          <span style={{ fontSize: '13px', color: tone, fontWeight: 500 }}>{payload.severity || '—'}</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase', fontWeight: 600 }}>Window</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{payload.window || '—'}</span>
+        </div>
+      </div>
     </div>
   );
 }

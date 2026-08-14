@@ -9,6 +9,7 @@ import LoginPage from './components/LoginPage';
 import SystemsPage from './components/SystemsPage';
 import UsersPage from './components/UsersPage';
 import WorkstationPage from './components/WorkstationPage';
+import Scheduler from './components/Scheduler';
 import { usePreferences } from './preferences';
 import './index.css';
 
@@ -92,6 +93,7 @@ export default function App() {
       </header>
 
       <div className="pane">
+        <Scheduler />
         <Routes>
           <Route path="/" element={<WorkstationPage />} />
           <Route path="/agent" element={<AgentPage />} />
