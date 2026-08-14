@@ -322,7 +322,7 @@ spec:
             - name: DEFAULT_SYSTEM_ID
               value: "{{ .Values.auth.clusterId }}"
             - name: DEFAULT_SYSTEM_NAME
-              value: "{{ .Values.central.systemName }}"
+              value: "{{ .Values.auth.clusterId }}"
             - name: WATCH_NAMESPACES
               value: "default,kube-system,{{ .Values.namespace }}"
             - name: AUTH_TOKEN

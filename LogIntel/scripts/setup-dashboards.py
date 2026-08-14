@@ -114,7 +114,6 @@ def main() -> int:
     except RuntimeError as exc:
         print(f"Cannot reach OpenSearch Dashboards: {exc}")
         return 2
-
     print("Index patterns:")
     for title, object_id in INDEX_PATTERNS.items():
         index_pattern(object_id, title)

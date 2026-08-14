@@ -196,8 +196,6 @@ services:
     environment:
       OPENSEARCH_URL: http://opensearch:9200
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
-      NAMESPACE: ${TESTBED_NAMESPACE:-shopdemo}
-      SYSTEM_ID: friend-cluster-1
       POLL_SECONDS: ${MIRROR_POLL_SECONDS:-30}
     depends_on:
       opensearch:

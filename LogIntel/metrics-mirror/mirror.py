@@ -33,32 +33,38 @@ OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://opensearch:9200").rstrip("/
 INDEX_PREFIX = os.getenv("INDEX_PREFIX", "logintel-metrics-mirror")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 SYSTEM_ID = os.getenv("SYSTEM_ID", "")
-NAMESPACE = os.getenv("NAMESPACE", "shopdemo")
-SELECTOR = f'system_id="{SYSTEM_ID}"' if SYSTEM_ID else f'namespace="{NAMESPACE}"'
+NAMESPACE = os.getenv("NAMESPACE", "")
+
+# Build a safe prefix for PromQL selectors
+# e.g. 'system_id="foo",' or ''
+_filters = []
+if SYSTEM_ID: _filters.append(f'system_id="{SYSTEM_ID}"')
+if NAMESPACE: _filters.append(f'namespace="{NAMESPACE}"')
+SELECTOR = ",".join(_filters) + "," if _filters else ""
 
 # Deliberately the same shape of signal the agent's SignalEngine reads — see
 # agent/app/tools/metrics.py SPECS. Kept as a small, separate list rather than
 # imported, so this container has no dependency on the agent's package layout.
 QUERIES: tuple[tuple[str, str, str], ...] = (
     ("cpu_usage_cores", "cores",
-     f'sum by (system_id, namespace, pod, container) (rate(container_cpu_usage_seconds_total{{{SELECTOR}, container!=""}}[2m]))'),
+     f'sum by (system_id, namespace, pod, container) (rate(container_cpu_usage_seconds_total{{{SELECTOR} container!=""}}[2m]))'),
     ("cpu_throttle_ratio", "ratio",
-     f'sum by (system_id, namespace, pod, container) (rate(container_cpu_cfs_throttled_seconds_total{{{SELECTOR}, container!=""}}[2m])) '
-     f'/ clamp_min(sum by (system_id, namespace, pod, container) (rate(container_cpu_cfs_periods_total{{{SELECTOR}, container!=""}}[2m])), 0.001)'),
+     f'sum by (system_id, namespace, pod, container) (rate(container_cpu_cfs_throttled_seconds_total{{{SELECTOR} container!=""}}[2m])) '
+     f'/ clamp_min(sum by (system_id, namespace, pod, container) (rate(container_cpu_cfs_periods_total{{{SELECTOR} container!=""}}[2m])), 0.001)'),
     ("memory_working_set_bytes", "bytes",
-     f'max by (system_id, namespace, pod, container) (container_memory_working_set_bytes{{{SELECTOR}, container!=""}})'),
+     f'max by (system_id, namespace, pod, container) (container_memory_working_set_bytes{{{SELECTOR} container!=""}})'),
     ("pod_restarts_total", "count",
-     f'max by (system_id, namespace, pod, container) (kube_pod_container_status_restarts_total{{{SELECTOR}}})'),
+     f'max by (system_id, namespace, pod, container) (kube_pod_container_status_restarts_total{{{SELECTOR} job!=""}})'),
     ("pod_ready", "bool",
-     f'max by (system_id, namespace, pod) (kube_pod_status_ready{{{SELECTOR}, condition="true"}})'),
+     f'max by (system_id, namespace, pod) (kube_pod_status_ready{{{SELECTOR} condition="true"}})'),
     ("http_request_rate", "req/s",
-     f'sum by (system_id, namespace, service) (rate(http_requests_total{{{SELECTOR}}}[2m]))'),
+     f'sum by (system_id, namespace, service) (rate(http_requests_total{{{SELECTOR} job!=""}}[2m]))'),
     ("http_error_rate", "req/s",
-     f'sum by (system_id, namespace, service) (rate(http_requests_total{{{SELECTOR}, status=~"5.."}}[2m]))'),
+     f'sum by (system_id, namespace, service) (rate(http_requests_total{{{SELECTOR} status=~"5.."}}[2m]))'),
     ("http_latency_p95", "seconds",
-     f'histogram_quantile(0.95, sum by (system_id, namespace, service, le) (rate(http_request_duration_seconds_bucket{{{SELECTOR}}}[2m])))'),
+     f'histogram_quantile(0.95, sum by (system_id, namespace, service, le) (rate(http_request_duration_seconds_bucket{{{SELECTOR} job!=""}}[2m])))'),
     ("dependency_failure_rate", "req/s",
-     f'sum by (system_id, namespace, service, dependency) (rate(app_dependency_requests_total{{{SELECTOR}, outcome=~"failure|unreachable"}}[2m]))'),
+     f'sum by (system_id, namespace, service, dependency) (rate(app_dependency_requests_total{{{SELECTOR} outcome=~"failure|unreachable"}}[2m]))'),
 )
 
 INDEX_TEMPLATE = {

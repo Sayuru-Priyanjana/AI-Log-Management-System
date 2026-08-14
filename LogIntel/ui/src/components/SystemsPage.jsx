@@ -54,9 +54,14 @@ export default function SystemsPage() {
   };
 
   const helm = issued && [
-    'helm install logintel-agent logintel/agent \\',
+    'helm install logintel-agent \\',
+    '  oci://ghcr.io/sayuru-priyanjana/logintel-agent \\',
+    '  --version 0.1.3 \\',
+    '  -n logintel \\',
+    '  --create-namespace \\',
+    '  --set namespace=logintel \\',
     '  --set central.url="http://YOUR_CENTRAL_IP" \\',
-    '  --set central.prometheus_url="http://YOUR_CENTRAL_IP/api/v1/write" \\',
+    `  --set central.systemName="${issued.name}" \\`,
     `  --set auth.clusterId="${issued.id}" \\`,
     `  --set auth.token="${issued.token}"`,
   ].join('\n');
