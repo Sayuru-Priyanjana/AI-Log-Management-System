@@ -53,10 +53,14 @@ async def update_system_integrations(system_id: str, patch: SystemSettingsPatch,
 
 
 @router.post("/systems/{system_id}/integrations/test")
-async def test_system_integrations(system_id: str, request: Request) -> dict:
+async def test_system_integrations(system_id: str, payload: dict, request: Request) -> dict:
     container = deps(request)
     values = await container.system_settings.get(system_id)
-    return await ping_teams(values.get("teams_webhook_url", ""), values.get("teams_channel_name", ""))
+    target = payload.get("target") or "teams"
+    if target == "teams":
+        return await ping_teams(values.get("teams_webhook_url", ""), values.get("teams_channel_name", ""))
+    
+    return {"ok": False, "detail": f"Unknown target: {target}"}
 
 
 class NotifyPayload(BaseModel):

@@ -111,8 +111,7 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
 
       # External, and genuinely so.
-      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:30090}
-      INCIDENT_CONTROLLER_URL: ${INCIDENT_CONTROLLER_URL:-http://host.docker.internal:30099}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
 
       # The model. Local Ollama by default: nothing leaves the machine, and an
       # investigation that makes eight tool calls costs nothing to run. Set
@@ -200,14 +199,31 @@ services:
     restart: unless-stopped
     environment:
       OPENSEARCH_URL: http://opensearch:9200
-      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:30090}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
       NAMESPACE: ${TESTBED_NAMESPACE:-shopdemo}
+      SYSTEM_ID: friend-cluster-1
       POLL_SECONDS: ${MIRROR_POLL_SECONDS:-30}
     depends_on:
       opensearch:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: log-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
 
 volumes:
   # Defaults to the volume the standalone lab stack in ~/opensearch already
@@ -222,3 +238,6 @@ volumes:
 
   postgres-data:
     name: logintel-postgres-data
+
+  prometheus-data:
+    name: logintel-prometheus-data

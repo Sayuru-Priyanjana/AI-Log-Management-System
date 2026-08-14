@@ -7,7 +7,7 @@ import { usePreferences } from '../preferences';
 
 export default function InvestigationForm({ onSubmit, initial, lockedSystem, submitLabel = 'Analyse' }) {
   const toast = useToast();
-  const { toInput, fromInput } = usePreferences();
+  const { toInput, fromInput, defaultHours } = usePreferences();
   const [systems, setSystems] = useState([]);
   
   const [form, setForm] = useState(() => ({
@@ -15,7 +15,7 @@ export default function InvestigationForm({ onSubmit, initial, lockedSystem, sub
     environment: lockedSystem?.environments?.[0] || initial?.environment || '',
     service: initial?.service || '',
     question: initial?.question || 'Something is wrong. What is the root cause?',
-    start_time: initial?.start_time ? toInput(initial.start_time) : toInput(new Date(Date.now() - 3600000).toISOString()),
+    start_time: initial?.start_time ? toInput(initial.start_time) : toInput(new Date(Date.now() - (defaultHours || 24) * 3600000).toISOString()),
     end_time: initial?.end_time ? toInput(initial.end_time) : toInput(new Date().toISOString()),
   }));
 

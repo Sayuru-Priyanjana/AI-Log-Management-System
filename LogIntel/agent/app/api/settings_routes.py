@@ -30,15 +30,16 @@ router = APIRouter()
 GROUPS = [
     {"id": "opensearch", "label": "Log storage",
      "description": "Where logs, Kubernetes events and stored investigations live."},
-    {"id": "prometheus", "label": "Metrics and testbed",
-     "description": "Queried live for every investigation, never mirrored."},
     {"id": "model", "label": "Model",
      "description": "Local by default. A hosted model writes better prose; it does "
                     "not change what the evidence says."},
+    {"id": "prometheus", "label": "Metrics",
+     "description": "Central Prometheus server for metrics."},
+    {"id": "registry", "label": "Registry",
+     "description": "System registry and discovery settings."},
     {"id": "display", "label": "Display",
      "description": "Presentation only. Everything is stored and compared in UTC."},
 ]
-
 
 class SettingsPatch(BaseModel):
     # A null value clears the override and falls back to the environment, which
@@ -112,11 +113,6 @@ async def test_connection(payload: dict, request: Request) -> dict:
             return {"ok": True,
                     "detail": f"OpenSearch {version} at {container.opensearch.describe()}"}
 
-        if target == "prometheus":
-            ready = await container.prometheus.ready()
-            state = "answered" if ready else "did not report ready"
-            return {"ok": ready, "detail": f"{container.prometheus.base_url} {state}"}
-
         if target == "model":
             available = await container.llm.available()
             detail = (f"{describe_model(container.llm)} via "
@@ -126,9 +122,9 @@ async def test_connection(payload: dict, request: Request) -> dict:
                 detail += " - not reachable, or the model is absent from that endpoint"
             return {"ok": available, "detail": detail}
 
-        if target == "incidents":
-            reachable = await container.incidents.reachable()
-            return {"ok": reachable, "detail": container.incidents.base_url}
+        if target == "prometheus":
+            reachable = await container.prometheus.ready()
+            return {"ok": reachable, "detail": container.prometheus.base_url}
     except Exception as exc:                # noqa: BLE001 - the failure is the answer
         return {"ok": False, "detail": str(exc)[:400]}
 

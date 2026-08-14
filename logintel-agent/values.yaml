@@ -1,0 +1,45 @@
+central:
+  url: "http://192.168.56.1:3000"
+  prometheus_url: "http://192.168.56.1:3000/api/v1/write"
+
+auth:
+  clusterId: "cls-default"
+  token: "logintel_tok_default"
+
+namespace: "monitoring"
+
+fluentbit:
+  image: "fluent/fluent-bit:3.1.4"
+  resources:
+    limits:
+      memory: 250Mi
+    requests:
+      cpu: 10m
+      memory: 50Mi
+
+prometheus:
+  image: "prom/prometheus:v2.53.0"
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+nodeExporter:
+  image: "prom/node-exporter:v1.8.1"
+  resources:
+    limits:
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+kubeStateMetrics:
+  image: "registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.10.1"
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 48Mi

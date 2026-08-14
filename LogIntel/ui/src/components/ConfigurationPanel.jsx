@@ -9,7 +9,6 @@ const COMPONENT_LABEL = {
   opensearch: 'Log storage',
   prometheus: 'Metrics',
   model: 'Model',
-  incident_controller: 'Testbed injector',
   registry: 'Registry',
 };
 
@@ -33,7 +32,7 @@ const ZONES = [
  */
 export default function ConfigurationPanel() {
   const toast = useToast();
-  const { zone, setZone } = usePreferences();
+  const { zone, setZone, setDefaultHours } = usePreferences();
   const [fields, setFields] = useState(null);
   const [groups, setGroups] = useState([]);
   const [health, setHealth] = useState(null);
@@ -76,6 +75,7 @@ export default function ConfigurationPanel() {
       setFields(result.fields);
       setDraft({});
       if (result.timezone?.value) setZone(result.timezone.value);
+      if (result.default_investigation_hours?.value) setDefaultHours(result.default_investigation_hours.value);
       // The warning matters more than the success: a change that took effect
       // but was not written down reverts silently on the next restart.
       if (result.warning) toast.error('Applied, but not saved', { detail: result.warning });
@@ -170,7 +170,7 @@ function Status({ health, tests, onTest }) {
   return (
     <div className="cfg-status">
       {Object.entries(health.components || {}).map(([key, component]) => {
-        const target = key === 'incident_controller' ? 'incidents' : key;
+        const target = key;
         return (
           <div key={key} className="cfg-node">
             <div className="cfg-node-head">

@@ -626,7 +626,7 @@ pre.block {
 .wsx-top .input { max-width: 320px; }
 .wsx-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-.wsx-columns { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 10px; }
+.wsx-columns { flex: 1; min-height: 0; display: grid; grid-template-columns: 0.8fr 1.3fr 1fr; gap: 10px; }
 .wsx-col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .wsx-col .card { display: flex; flex-direction: column; min-height: 0; }
 .wsx-col .card-body { overflow: auto; min-height: 0; }

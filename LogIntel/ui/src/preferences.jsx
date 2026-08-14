@@ -33,6 +33,7 @@ export function PreferencesProvider({ children }) {
   // Seeded from the last known value so the first paint is not in the wrong
   // zone while /api/settings is in flight.
   const [zone, setZoneState] = useState(() => localStorage.getItem(ZONE_KEY) || DEFAULT_ZONE);
+  const [defaultHours, setDefaultHoursState] = useState(() => Number(localStorage.getItem('ui.default_hours')) || 24);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -45,10 +46,16 @@ export function PreferencesProvider({ children }) {
 
     getSettings()
       .then((data) => {
+        if (!mounted) return;
         const value = data?.timezone?.value;
-        if (mounted && value) {
+        if (value) {
           setZoneState(value);
           localStorage.setItem(ZONE_KEY, value);
+        }
+        const hours = data?.default_investigation_hours?.value;
+        if (hours) {
+          setDefaultHoursState(hours);
+          localStorage.setItem('ui.default_hours', hours);
         }
       })
       .catch(() => { /* the agent may be down; the cached zone still formats */ });
@@ -65,14 +72,21 @@ export function PreferencesProvider({ children }) {
     localStorage.setItem(ZONE_KEY, next);
   }, []);
 
+  const setDefaultHours = useCallback((next) => {
+    setDefaultHoursState(next);
+    localStorage.setItem('ui.default_hours', next);
+  }, []);
+
   const value = useMemo(() => ({
     theme,
     setTheme,
     toggleTheme: () => setTheme(theme === 'dark' ? 'light' : 'dark'),
     zone,
     setZone,
+    defaultHours,
+    setDefaultHours,
     ...formatters(zone),
-  }), [theme, setTheme, zone, setZone]);
+  }), [theme, setTheme, zone, setZone, defaultHours, setDefaultHours]);
 
   return (
     <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>

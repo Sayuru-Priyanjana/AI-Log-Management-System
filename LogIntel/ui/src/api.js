@@ -142,13 +142,14 @@ export const getClusters = () => getJSON('/api/clusters');
 export const updateSettings = (values) => putJSON('/api/settings', { values });
 export const testConnection = (target) => postJSON('/api/settings/test', { target });
 export const refreshSystems = () => postJSON('/api/systems/refresh');
+export const getSystemMetricsRequests = (id, start, end) => getJSON(`/api/systems/${id}/metrics/requests?start=${start}&end=${end}`);
 
 // Per-system integrations (Teams channel, automation) — unlike /api/settings,
 // scoped to one cluster's id, because a webhook and a scan cadence belong to
 // that cluster, not to the agent process.
 export const getSystemIntegrations = (id) => getJSON(`/api/systems/${id}/integrations`);
 export const updateSystemIntegrations = (id, values) => putJSON(`/api/systems/${id}/integrations`, { values });
-export const testSystemIntegrations = (id) => postJSON(`/api/systems/${id}/integrations/test`);
+export const testSystemIntegrations = (id, target = 'teams') => postJSON(`/api/systems/${id}/integrations/test`, { target });
 export const notifyIntegrations = (id, payload) => postJSON(`/api/systems/${id}/integrations/notify`, { payload });
 
 // Auth endpoints

@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
-import { getSystemIntegrations, testSystemIntegrations, updateSystemIntegrations } from '../api';
+import { getSystemIntegrations, testSystemIntegrations, updateSystemIntegrations, getClusters } from '../api';
 import { useToast } from '../toast';
 
 const COMPONENT_LABEL = {
   opensearch: 'OpenSearch', prometheus: 'Prometheus', model: 'Agent model',
-  incident_controller: 'Fluent Bit source',
 };
 
 /**
@@ -21,13 +20,18 @@ const COMPONENT_LABEL = {
 export default function SystemIntegrationsModal({ system, health, tests, onTest, onClose }) {
   const toast = useToast();
   const [values, setValues] = useState(null);
+  const [ingestInfo, setIngestInfo] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const [testing, setTesting] = useState(null);
 
   useEffect(() => {
     getSystemIntegrations(system.id)
       .then((res) => setValues(res.values))
       .catch((err) => toast.error('Could not load integration settings', { detail: err.message }));
+    
+    getClusters()
+      .then((res) => setIngestInfo(res.ingest))
+      .catch((err) => toast.error('Could not load ingest settings', { detail: err.message }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [system.id]);
 
@@ -47,22 +51,22 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
     }
   };
 
-  const ping = async () => {
-    setTesting(true);
+  const ping = async (target) => {
+    setTesting(target);
     try {
-      const res = await testSystemIntegrations(system.id);
-      if (res.ok) toast.success('Message sent to Teams', { detail: res.detail });
-      else toast.error('Could not send to Teams', { detail: res.detail });
+      const res = await testSystemIntegrations(system.id, target);
+      if (res.ok) toast.success(`Ping ${target} successful`, { detail: res.detail });
+      else toast.error(`Ping ${target} failed`, { detail: res.detail });
     } catch (err) {
-      toast.error('Ping failed', { detail: err.message });
+      toast.error(`Ping ${target} failed`, { detail: err.message });
     } finally {
-      setTesting(false);
+      setTesting(null);
     }
   };
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal modal--wide" role="dialog" aria-modal="true">
+      <div className="modal modal--wide" role="dialog" aria-modal="true" style={{ width: 680 }}>
         <header>
           <h3>Configuration — {system.name}</h3>
           <button type="button" className="iconbtn" onClick={onClose} aria-label="Close">×</button>
@@ -73,7 +77,7 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
             <span className="hint">External services</span>
             <div className="wsx-status">
               {Object.entries(health.components).filter(([key]) => key !== 'registry').map(([key, component]) => {
-                const target = key === 'incident_controller' ? 'incidents' : key;
+                const target = key;
                 return (
                   <span key={key} className="status-chip" title={component.url || component.error || ''}>
                     <span className={`dot dot--${tone(component.status)}`} />
@@ -92,8 +96,8 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
         {!values ? (
           <div className="modal-body"><div className="empty">Loading…</div></div>
         ) : (
-          <div className="modal-body">
-            <span className="hint">Integrations — this system only</span>
+          <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+            <span className="hint">Alerts & Notifications (Microsoft Teams)</span>
             <div className="cfg-fields">
               <div className="field">
                 <label>Channel name</label>
@@ -111,12 +115,40 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
             </div>
 
             <div className="row" style={{ marginTop: 4 }}>
-              <button type="button" className="btn btn--sm" disabled={testing} onClick={ping}>
-                {testing ? 'Sending…' : 'Ping'}
+              <button type="button" className="btn btn--sm" disabled={testing === 'teams'} onClick={() => ping('teams')}>
+                {testing === 'teams' ? 'Sending…' : 'Ping Teams'}
               </button>
             </div>
+            
+            <span className="hint" style={{ marginTop: 24, display: 'block' }}>Logs (Fluent Bit)</span>
+            <div className="cfg-fields">
+              <p className="hint" style={{ marginBottom: 8, fontSize: 13 }}>
+                Configure Fluent Bit in this system's network to send logs directly to OpenSearch.
+                Make sure to set the <strong>system.id</strong> exactly as <code>{system.id}</code>.
+              </p>
+              <pre className="mono" style={{ padding: 12, background: 'var(--bg-inset)', borderRadius: 4, fontSize: 11, overflowX: 'auto' }}>
+{`[OUTPUT]
+    Name            opensearch
+    Match           *
+    Host            ${ingestInfo ? new URL(ingestInfo.opensearch_url).hostname : 'localhost'}
+    Port            ${ingestInfo ? new URL(ingestInfo.opensearch_url).port || 9200 : 9200}
+    Index           ${ingestInfo ? ingestInfo.log_index : 'logintel-system-logs'}
+    # If TLS is required:
+    # TLS             On
+    # TLS.Verify      Off
+    
+[FILTER]
+    Name            modify
+    Match           *
+    Add             system.id ${system.id}
+    # Optional fields:
+    # Add           environment production
+    # Add           service.name my-service
+    # Add           level INFO`}
+              </pre>
+            </div>
 
-            <span className="hint" style={{ marginTop: 10, display: 'block' }}>Automation — this system only</span>
+            <span className="hint" style={{ marginTop: 24, display: 'block' }}>Automation — this system only</span>
             <div className="field" style={{ marginTop: 4 }}>
               <label className="row" style={{ gap: 6, fontSize: 12.5 }}>
                 <input type="checkbox" checked={values.auto_scan_enabled}

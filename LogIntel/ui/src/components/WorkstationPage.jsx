@@ -5,12 +5,13 @@ import { useToast } from '../toast';
 import ActivitiesPanel from './ActivitiesPanel';
 import AlertsPanel from './AlertsPanel';
 import SystemIntegrationsModal from './SystemIntegrationsModal';
+import { MetricsPanel } from './MetricsPanel';
 
 import { useInvestigation } from '../InvestigationContext';
 
 const COMPONENT_LABEL = {
   opensearch: 'OpenSearch', prometheus: 'Prometheus', model: 'Agent model',
-  incident_controller: 'Fluent Bit source', registry: 'Registry',
+  registry: 'Registry',
 };
 
 /**
@@ -125,7 +126,7 @@ export default function WorkstationPage() {
       {health && (
         <div className="wsx-status">
           {Object.entries(health.components).filter(([key]) => key !== 'registry').map(([key, component]) => {
-            const target = key === 'incident_controller' ? 'incidents' : key;
+            const target = key;
             return (
               <span key={key} className="status-chip" title={component.url || component.error || ''}>
                 <span className={`dot dot--${tone(component.status)}`} />
@@ -160,10 +161,13 @@ export default function WorkstationPage() {
                       {(selected.environments || []).map((e) => <span key={e} className="chip">{e}</span>)}
                     </div></dd>
                   </div>
-                  <div className="kv-row"><dt>Status</dt>
-                    <dd className="row" style={{ gap: 5 }}>
-                      <span className={`dot dot--${health ? tone(health.status) : 'warn'}`} />
-                      {health?.status || 'unknown'}
+                  <div className="kv-row"><dt>Agent (Fluent Bit)</dt>
+                    <dd>
+                      {selected.services?.some(s => s.name === 'logintel-agent' || s.name === 'fluent-bit') ? (
+                        <><span className="dot dot--ok" /> Active</>
+                      ) : (
+                        <><span className="dot dot--degraded" /> Degraded</>
+                      )}
                     </dd>
                   </div>
                   <div className="kv-row"><dt>Notify via</dt>
@@ -213,8 +217,13 @@ export default function WorkstationPage() {
             </div>
           </div>
 
-          <div className="wsx-col">
-            <ActivitiesPanel systemId={selected.id} investigations={investigations} />
+          <div className="wsx-col" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
+              <ActivitiesPanel systemId={selected.id} investigations={investigations} />
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
+              <MetricsPanel systemId={selected.id} />
+            </div>
           </div>
 
           <div className="wsx-col">

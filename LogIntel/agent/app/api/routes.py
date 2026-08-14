@@ -13,6 +13,8 @@ from app.config import settings
 from app.llm.factory import (
     describe_endpoint, describe_model, describe_provider,
 )
+from datetime import datetime, timezone
+from app.models.domain import TimeWindow
 from app.models.analysis import InvestigationResult, InvestigationWindows
 from app.models.plan import InvestigationPlan, InvestigationRequest
 from app.pipeline.signals import SignalEngine
@@ -45,15 +47,6 @@ async def check_opensearch(container, report):
             "status": "unreachable", "url": container.opensearch.describe(), "error": str(exc)
         }
 
-async def check_prometheus(container, report):
-    try:
-        ready = await asyncio.wait_for(container.prometheus.ready(), timeout=3.0)
-        report["components"]["prometheus"] = {
-            "status": "ok" if ready else "unreachable",
-            "url": container.prometheus.base_url,
-        }
-    except Exception as exc:
-        report["components"]["prometheus"] = {"status": "unreachable", "error": str(exc)}
 
 async def check_model(container, report):
     try:
@@ -83,20 +76,20 @@ async def check_model(container, report):
     except Exception as exc:
         report["components"]["model"] = {"status": "unreachable", "error": str(exc)}
 
-async def check_incidents(container, report):
+async def check_prometheus(container, report):
     try:
-        reachable = await asyncio.wait_for(container.incidents.reachable(), timeout=3.0)
-        report["components"]["incident_controller"] = {
+        reachable = await asyncio.wait_for(container.prometheus.ready(), timeout=3.0)
+        report["components"]["prometheus"] = {
             "status": "ok" if reachable else "unreachable",
-            "url": container.incidents.base_url,
+            "url": container.prometheus.base_url,
         }
         if not reachable:
-            report["components"]["incident_controller"]["hint"] = (
-                "the testbed VM's incident injector is not answering — "
-                "check 'vagrant status' in testbed/"
+            report["components"]["prometheus"]["hint"] = (
+                "the central Prometheus server is not answering — "
+                "check its status or update the URL in configuration."
             )
     except Exception as exc:
-        report["components"]["incident_controller"] = {"status": "unreachable", "error": str(exc)}
+        report["components"]["prometheus"] = {"status": "unreachable", "error": str(exc)}
 
 async def check_registry(container, report):
     try:
@@ -120,9 +113,8 @@ async def health(request: Request) -> dict:
 
     await asyncio.gather(
         check_opensearch(container, report),
-        check_prometheus(container, report),
         check_model(container, report),
-        check_incidents(container, report),
+        check_prometheus(container, report),
         check_registry(container, report)
     )
 
@@ -150,47 +142,6 @@ async def refresh_systems(request: Request) -> dict:
     discovered = await container.registry.refresh()
     return {"refreshed": len(discovered), "systems": sorted(discovered)}
 
-
-@router.get("/incidents")
-async def list_incidents(request: Request) -> dict:
-    """Proxies the testbed's incident catalogue.
-
-    The browser never talks to the VM directly — the agent already has network
-    access to it, so this keeps the UI to a single origin and means the incident
-    controller's reachability shows up in /api/health like everything else.
-    """
-    container = deps(request)
-    try:
-        return await container.incidents.catalogue()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@router.post("/incidents/{scenario_id}/start")
-async def start_incident(scenario_id: str, request: Request) -> dict:
-    container = deps(request)
-    try:
-        return await container.incidents.start(scenario_id)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@router.post("/incidents/{scenario_id}/stop")
-async def stop_incident(scenario_id: str, request: Request) -> dict:
-    container = deps(request)
-    try:
-        return await container.incidents.stop(scenario_id)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@router.post("/incidents/reset-all")
-async def reset_incidents(request: Request) -> dict:
-    container = deps(request)
-    try:
-        return await container.incidents.reset_all()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/investigations")
@@ -331,3 +282,24 @@ async def effective_config() -> dict:
             "max_prompt_events": settings.max_prompt_events,
         },
     }
+
+@router.get("/systems/{system_id}/metrics/requests")
+async def get_system_metrics_requests(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
+    step = container.prometheus.step_for(window)
+    expression = f'sum by (container) (rate(container_cpu_usage_seconds_total{{system_id="{system_id}", container!="", container!="POD"}}[2m]))'
+    raw_series = await container.prometheus.query_range(expression, window, step)
+    
+    data_by_time = {}
+    for series in raw_series:
+        svc = series.get("metric", {}).get("container", "unknown")
+        points = container.prometheus.to_points(series)
+        for pt_time, val in points:
+            ts = int(pt_time.timestamp()) * 1000
+            if ts not in data_by_time:
+                data_by_time[ts] = {"time": ts}
+            data_by_time[ts][svc] = round(val, 2)
+            
+    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+    return sorted_data
