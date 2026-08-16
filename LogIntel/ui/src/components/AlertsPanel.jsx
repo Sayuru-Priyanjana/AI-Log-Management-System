@@ -117,7 +117,13 @@ export default function AlertsPanel({ system }) {
       </header>
       <div className="card-body">
         {alerts.length === 0 && (
-          <div className="empty">No detections yet. Scan checks OpenSearch for new ones.</div>
+          <div className="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            <div className="empty-state-title">No active alerts</div>
+            <div className="empty-state-desc">No detections yet. Scan checks OpenSearch for new ones.</div>
+          </div>
         )}
         {alerts.map((alert) => (
           <div key={alert.id} className="alert-card" role="button" tabIndex={0} onClick={() => setOpen(alert)} onKeyDown={(e) => { if(e.key==='Enter') setOpen(alert); }}>

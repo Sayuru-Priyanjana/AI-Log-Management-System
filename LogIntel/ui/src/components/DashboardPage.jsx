@@ -135,9 +135,23 @@ export default function DashboardPage() {
       </header>
       <div className="card-body" style={{ flex: 1, minHeight: 0, padding: '16px 24px 16px 0', overflow: 'visible' }}>
         {loading && data.length === 0 ? (
-          <div className="empty" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading metrics...</div>
+          <div className="empty-state" style={{ height: '100%' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+            </svg>
+            <div className="empty-state-title">Loading metrics</div>
+            <div className="empty-state-desc">Please wait while data is retrieved...</div>
+          </div>
         ) : data.length === 0 ? (
-          <div className="empty" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>No data recorded in this window.</div>
+          <div className="empty-state" style={{ height: '100%' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="3" y1="9" x2="21" y2="9"></line>
+              <line x1="9" y1="21" x2="9" y2="9"></line>
+            </svg>
+            <div className="empty-state-title">No metrics recorded</div>
+            <div className="empty-state-desc">No data was found in this window.</div>
+          </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%" style={{ overflow: 'visible' }}>
             <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} style={{ overflow: 'visible' }}>
@@ -215,8 +229,14 @@ export default function DashboardPage() {
       </div>
 
       {!selectedId ? (
-        <div className="empty" style={{ marginTop: 40 }}>
-          {loading ? 'Loading…' : 'No systems have shipped logs yet.'}
+        <div className="empty-state" style={{ marginTop: 40 }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <div className="empty-state-title">{loading ? 'Loading...' : 'No systems found'}</div>
+          <div className="empty-state-desc">{loading ? 'Discovering available systems.' : 'No systems have shipped logs yet.'}</div>
         </div>
       ) : (
         <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto', minHeight: 0 }}>
@@ -251,9 +271,23 @@ export default function DashboardPage() {
             </header>
             <div style={{ padding: '16px' }}>
             {loading ? (
-              <div className="empty">Loading errors...</div>
+              <div className="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+                </svg>
+                <div className="empty-state-title">Loading errors</div>
+                <div className="empty-state-desc">Please wait while data is retrieved...</div>
+              </div>
             ) : topErrors.length === 0 ? (
-              <div className="empty">No errors detected in this window.</div>
+              <div className="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <div className="empty-state-title">No errors detected</div>
+                <div className="empty-state-desc">No errors were found in this time window.</div>
+              </div>
             ) : (
               <table className="table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
                 <thead>
