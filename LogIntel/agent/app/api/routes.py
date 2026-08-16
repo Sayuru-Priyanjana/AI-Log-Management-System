@@ -595,3 +595,72 @@ async def get_logs_context(system_id: str, timestamp: int, service: str, request
     except Exception as exc:
         logger.error(f"Failed to fetch context logs: {exc}")
         return []
+
+@router.get("/systems/{system_id}/logs")
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100):
+    container = deps(request)
+    
+    filter_clauses = [{"term": {"system.id": system_id}}]
+    if service:
+        filter_clauses.append({"term": {"service.name": service}})
+    if level:
+        # Check both top-level and nested level fields, upper and lower case
+        lvl_up = level.upper()
+        lvl_low = level.lower()
+        filter_clauses.append({
+            "bool": {
+                "should": [
+                    {"match": {"level": lvl_low}},
+                    {"match": {"level": lvl_up}},
+                    {"match": {"log.level": lvl_low}},
+                    {"match": {"log.level": lvl_up}},
+                    {"match": {"status": lvl_up}}
+                ],
+                "minimum_should_match": 1
+            }
+        })
+    
+    must_clauses = []
+    if query:
+        must_clauses.append({"query_string": {"query": query}})
+    
+    es_query = {
+        "size": limit,
+        "sort": [{"@timestamp": {"order": "desc"}}],
+        "query": {
+            "bool": {
+                "filter": filter_clauses,
+            }
+        }
+    }
+    if must_clauses:
+        es_query["query"]["bool"]["must"] = must_clauses
+        
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, es_query)
+        hits = result.get("hits", {}).get("hits", [])
+        
+        logs = []
+        for hit in hits:
+            src = hit.get("_source", {})
+            msg = src.get("message") or src.get("log", "No message")
+            if isinstance(msg, dict):
+                msg = msg.get("message") or msg.get("log") or json.dumps(msg)
+                
+            lvl = src.get("level") or src.get("log", {}).get("level", "INFO")
+            if isinstance(lvl, dict):
+                lvl = lvl.get("level", "INFO")
+                
+            logs.append({
+                "id": hit.get("_id"),
+                "timestamp": src.get("@timestamp"),
+                "service": src.get("service", {}).get("name") or src.get("container_name") or "unknown",
+                "level": str(lvl),
+                "message": str(msg)
+            })
+            
+        return logs
+    except Exception as exc:
+        logger.error(f"Failed to fetch raw logs: {exc}")
+        return []
+

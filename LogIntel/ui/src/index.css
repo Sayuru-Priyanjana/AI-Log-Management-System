@@ -14,7 +14,7 @@
      gutters either side of a table that wanted the width.
    - 13px base, 4px spacing grid, 4px radii. Generous padding is space taken
      from the data.
-   - One accent. Colour means status — ok, warn, error — and marks the one
+   - One accent. Colour means status â€” ok, warn, error â€” and marks the one
      interactive thing. Everything else is greyscale.
    - No gradients, no glass, no glow, no entrance animation on content that
      streams in. Depth comes from a 1px border.
@@ -27,27 +27,27 @@
 :root {
   color-scheme: light;
 
-  /* Premium Light Mode Palette */
-  --bg: #F0F4F8; /* Soft blue-gray background */
-  --surface: rgba(255, 255, 255, 0.7); /* Glassmorphism base */
-  --surface-2: rgba(255, 255, 255, 0.9);
-  --surface-3: #FFFFFF;
+  /* Professional Light Mode Palette */
+  --bg: #F8FAFC; 
+  --surface: #FFFFFF; 
+  --surface-2: #F1F5F9;
+  --surface-3: #E2E8F0;
 
-  --border: rgba(226, 232, 240, 0.8);
+  --border: #E2E8F0;
   --border-strong: #CBD5E1;
 
   --text: #0F172A;
-  --text-2: #475569;
+  --text-2: #334155;
   --text-3: #64748B;
 
-  /* Vibrant Accents */
-  --accent: #2563EB; /* Premium Tech Blue */
+  /* Enterprise Primary Actions */
+  --accent: #2563EB; 
   --accent-hover: #1D4ED8;
   --accent-soft: rgba(37, 99, 235, 0.1);
   --accent-border: rgba(37, 99, 235, 0.2);
   --on-accent: #FFFFFF;
 
-  /* Semantic Colors - Curated */
+  /* Semantic Colors - Strictly meaning-based */
   --ok: #10B981;
   --ok-soft: rgba(16, 185, 129, 0.1);
   --ok-border: rgba(16, 185, 129, 0.2);
@@ -57,23 +57,23 @@
   --err: #EF4444;
   --err-soft: rgba(239, 68, 68, 0.1);
   --err-border: rgba(239, 68, 68, 0.2);
-  --alt: #8B5CF6; /* Purple/Indigo accent */
-  --alt-soft: rgba(139, 92, 246, 0.1);
-  --alt-border: rgba(139, 92, 246, 0.2);
+  --alt: #6366F1; 
+  --alt-soft: rgba(99, 102, 241, 0.1);
+  --alt-border: rgba(99, 102, 241, 0.2);
 
-  /* Modern Radii */
-  --r: 8px;
-  --r-lg: 12px;
-  --r-xl: 16px;
+  /* Professional Radii */
+  --r: 4px;
+  --r-lg: 6px;
+  --r-xl: 8px;
   --r-full: 9999px;
 
-  /* Soft, deep shadows */
+  /* Professional Shadows */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --shadow-glass: 0 8px 32px 0 rgba(31, 38, 135, 0.07);
+  --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-glass: none;
 
-  --topbar-h: 60px; /* Taller, more elegant topbar */
+  --topbar-h: 56px; 
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   
   /* Compatibility aliases */
@@ -108,13 +108,13 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Premium Dark Mode Palette (Deep Blue/Slate) */
-  --bg: #0B1120; 
-  --surface: rgba(30, 41, 59, 0.6); 
-  --surface-2: rgba(30, 41, 59, 0.8);
-  --surface-3: #1E293B;
+  /* Professional Dark Mode Palette (Datadog/AWS style) */
+  --bg: #0F172A; 
+  --surface: #1E293B; 
+  --surface-2: #334155;
+  --surface-3: #475569;
 
-  --border: rgba(51, 65, 85, 0.7);
+  --border: #334155;
   --border-strong: #475569;
 
   --text: #F8FAFC;
@@ -127,20 +127,23 @@
   --accent-border: rgba(59, 130, 246, 0.3);
   --on-accent: #FFFFFF;
 
-  --ok: #34D399;
-  --ok-soft: rgba(52, 211, 153, 0.15);
-  --ok-border: rgba(52, 211, 153, 0.3);
-  --warn: #FBBF24;
-  --warn-soft: rgba(251, 191, 36, 0.15);
-  --warn-border: rgba(251, 191, 36, 0.3);
-  --err: #F87171;
-  --err-soft: rgba(248, 113, 113, 0.15);
-  --err-border: rgba(248, 113, 113, 0.3);
-  --alt: #A78BFA;
-  --alt-soft: rgba(167, 139, 250, 0.15);
-  --alt-border: rgba(167, 139, 250, 0.3);
+  --ok: #10B981;
+  --ok-soft: rgba(16, 185, 129, 0.15);
+  --ok-border: rgba(16, 185, 129, 0.3);
+  --warn: #F59E0B;
+  --warn-soft: rgba(245, 158, 11, 0.15);
+  --warn-border: rgba(245, 158, 11, 0.3);
+  --err: #EF4444;
+  --err-soft: rgba(239, 68, 68, 0.15);
+  --err-border: rgba(239, 68, 68, 0.3);
+  --alt: #6366F1;
+  --alt-soft: rgba(99, 102, 241, 0.15);
+  --alt-border: rgba(99, 102, 241, 0.3);
 
-  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+  --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4), 0 1px 2px -1px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.4);
+  --shadow-glass: none;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -182,7 +185,7 @@ a { color: var(--accent); transition: color 0.2s ease; }
 a:hover { color: var(--accent-hover); }
 
 /* ==========================================================================
-   Shell — the viewport is the frame
+   Shell â€” the viewport is the frame
    ========================================================================== */
 .app { 
   display: grid; 
@@ -332,6 +335,7 @@ select.input, select.glass-input { cursor: pointer; padding-right: 24px; appeara
   vertical-align: middle; color: var(--text);
 }
 .table tbody tr:hover, .li-table tbody tr:hover { background: var(--surface-2); }
+.table-row-hover:hover { background: var(--surface-2) !important; }
 .table tbody tr:last-child td, .li-table tbody tr:last-child td { border-bottom: none; }
 .table td.num { text-align: right; font-family: var(--mono); }
 .table td.actions { text-align: right; white-space: nowrap; }
@@ -445,7 +449,7 @@ pre.block {
 .signin-brand svg { color: var(--accent); }
 
 /* ==========================================================================
-   Workstation — two panes, both full height
+   Workstation â€” two panes, both full height
    ========================================================================== */
 .ws { display: grid; grid-template-columns: 240px 1fr; height: 100%; min-height: 0; }
 .ws-side {
@@ -635,7 +639,7 @@ pre.block {
 .li-healthbar-sub { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ==========================================================================
-   Workstation dashboard — system picker, status row, three columns
+   Workstation dashboard â€” system picker, status row, three columns
    ========================================================================== */
 .wsx { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px 12px; gap: 8px; }
 .wsx-top { display: flex; align-items: center; gap: 8px; }
@@ -643,6 +647,7 @@ pre.block {
 .wsx-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .wsx-columns { flex: 1; min-height: 0; display: grid; grid-template-columns: 0.8fr 1.3fr 1fr; gap: 10px; }
+
 .wsx-col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .wsx-col .card { display: flex; flex-direction: column; min-height: 0; }
 .wsx-col .card-body { overflow: auto; min-height: 0; }
@@ -671,11 +676,13 @@ pre.block {
 /* -- activities ------------------------------------------------------------ */
 .activity-row {
   display: flex; gap: 8px; align-items: flex-start;
-  padding: 7px 4px; border-bottom: 1px solid var(--border);
+  padding: 8px; border-bottom: 1px solid var(--border);
+  transition: background 0.2s ease;
 }
 .activity-row:last-child { border-bottom: none; }
+.activity-row.is-clickable:hover { background: var(--surface-2); cursor: pointer; }
 .activity-tag {
-  flex-shrink: 0; margin-top: 2px; width: 6px; height: 6px; border-radius: 50%;
+  flex-shrink: 0; margin-top: 5px; width: 6px; height: 6px; border-radius: 50%;
 }
 .activity-tag--done { background: var(--ok); }
 .activity-tag--failed { background: var(--err); }
@@ -780,21 +787,19 @@ pre.block {
   .topbar { gap: 8px; overflow-x: auto; }
 }
 /* ==========================================================================
-   Premium Dashboard & Timeline Enhancements
+   Enterprise Dashboard Enhancements
    ========================================================================== */
 .premium-glass {
-  background: rgba(30, 35, 45, 0.4);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
   border-radius: var(--r-lg);
   overflow: hidden;
 }
 :root[data-theme='light'] .premium-glass {
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.05);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
 }
 
 .anomaly-timeline {
@@ -922,18 +927,18 @@ pre.block {
    Chart Tooltip Styles
    ========================================================================== */
 .chart-tooltip {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
   padding: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-lg);
   min-width: 200px;
   z-index: 9999;
   animation: tooltipFadeIn 0.2s ease-out;
-  backdrop-filter: blur(10px);
 }
 :root[data-theme='light'] .chart-tooltip {
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+  background: #FFFFFF;
+  border: 1px solid var(--border-strong);
 }
 @keyframes tooltipFadeIn {
   from { opacity: 0; transform: translateY(5px); }

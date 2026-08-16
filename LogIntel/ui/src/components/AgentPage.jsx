@@ -60,7 +60,13 @@ export default function AgentPage() {
   // button. Guarded so a later re-render (or the effect re-running after
   // systems load) does not fire it a second time.
   useEffect(() => {
-    if (autoStarted.current || !nav.question || !systemId) return;
+    if (autoStarted.current || !systemId) return;
+    if (nav.investigation_id) {
+      autoStarted.current = true;
+      loadInvestigation(nav.investigation_id);
+      return;
+    }
+    if (!nav.question) return;
     autoStarted.current = true;
     startInvestigation({
       system_id: systemId, environment: nav.environment, question: nav.question,

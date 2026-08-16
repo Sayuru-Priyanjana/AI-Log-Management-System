@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { usePreferences } from '../preferences';
 import { getAutomatedActivities } from '../mockData';
 
@@ -20,6 +21,7 @@ const WINDOWS = [
  * column — and they carry an `auto` tag rather than pretending otherwise.
  */
 export default function ActivitiesPanel({ systemId, investigations }) {
+  const navigate = useNavigate();
   const { formatClock, formatDay } = usePreferences();
   const [windowHours, setWindowHours] = useState(24);
 
@@ -42,6 +44,12 @@ export default function ActivitiesPanel({ systemId, investigations }) {
     return [...user, ...automated].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   }, [investigations, systemId, windowHours]);
 
+  const handleRowClick = (row) => {
+    if (row.kind === 'user') {
+      navigate('/agent', { state: { system_id: systemId, investigation_id: row.id } });
+    }
+  };
+
   return (
     <div className="card card--fill">
       <header>
@@ -55,7 +63,12 @@ export default function ActivitiesPanel({ systemId, investigations }) {
       <div className="card-body">
         {rows.length === 0 && <div className="empty">Nothing in this window.</div>}
         {rows.map((row) => (
-          <div key={row.id} className="activity-row">
+          <div 
+            key={row.id} 
+            className={`activity-row ${row.kind === 'user' ? 'is-clickable' : ''}`}
+            onClick={() => handleRowClick(row)}
+            style={row.kind === 'user' ? { cursor: 'pointer' } : {}}
+          >
             <span className={`activity-tag activity-tag--${row.status}`} title={row.status} />
             <div className="activity-body">
               <div className="activity-label">{row.label}</div>

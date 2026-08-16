@@ -5,10 +5,11 @@ import {
 import { getSystems, getSystemMetricsRequests, getSystemMetricsRam, getSystemMetricsLogs, getSystemAlerts, getTopErrors } from '../api';
 import { useToast } from '../toast';
 import AnomalyTimeline from './AnomalyTimeline';
+import LogExplorer from './LogExplorer';
 
 const COLORS = [
-  '#4F46E5', '#0EA5E9', '#10B981', '#F59E0B', '#8B5CF6', 
-  '#EC4899', '#F43F5E', '#14B8A6', '#6366F1', '#3B82F6'
+  '#2E72D2', '#00A78F', '#632CA6', '#E24D42', '#F39B00',
+  '#00875A', '#D9B300', '#D34836', '#9B59B6', '#34495E'
 ];
 
 const CustomTooltip = ({ active, payload, label, unit }) => {
@@ -128,31 +129,32 @@ export default function DashboardPage() {
   };
 
   const renderChart = (title, data, services, loading, unit) => (
-    <div className="card card--fill premium-glass" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '4px', overflow: 'visible' }}>
-      <header style={{ background: 'transparent', borderBottom: '1px solid var(--border)' }}>
-        <h3 style={{ margin: 0, color: 'var(--text)' }}>{title}</h3>
+    <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '0', overflow: 'visible' }}>
+      <header style={{ padding: '12px 16px', background: 'transparent', borderBottom: '1px solid var(--border)' }}>
+        <h3 style={{ margin: 0, color: 'var(--text-2)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{title}</h3>
       </header>
-      <div className="card-body" style={{ flex: 1, minHeight: 0, padding: '16px 16px 16px 0', overflow: 'visible' }}>
+      <div className="card-body" style={{ flex: 1, minHeight: 0, padding: '16px 24px 16px 0', overflow: 'visible' }}>
         {loading && data.length === 0 ? (
           <div className="empty" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading metrics...</div>
         ) : data.length === 0 ? (
           <div className="empty" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>No data recorded in this window.</div>
         ) : (
           <ResponsiveContainer width="100%" height="100%" style={{ overflow: 'visible' }}>
-            <AreaChart data={data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }} style={{ overflow: 'visible' }}>
+            <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} style={{ overflow: 'visible' }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
               <XAxis 
                 dataKey="time" 
                 tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 stroke="var(--text-3)" 
-                fontSize={12} 
-                tickMargin={8}
+                fontSize={11} 
+                tickMargin={12}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis 
                 stroke="var(--text-3)" 
-                fontSize={12} 
-                tickMargin={8} 
+                fontSize={11} 
+                tickMargin={12} 
                 tickFormatter={(val) => `${val}${unit}`}
                 axisLine={false}
                 tickLine={false}
@@ -162,17 +164,25 @@ export default function DashboardPage() {
                 cursor={{ stroke: 'var(--text-2)', strokeWidth: 1, strokeDasharray: '3 3' }}
                 isAnimationActive={false}
               />
+              <defs>
+                {services.map((svc, i) => (
+                  <linearGradient key={svc} id={`grad-${i}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={COLORS[i % COLORS.length]} stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor={COLORS[i % COLORS.length]} stopOpacity={0.2}/>
+                  </linearGradient>
+                ))}
+              </defs>
               {services.map((svc, i) => {
                 const color = COLORS[i % COLORS.length];
                 return (
                   <Area 
                     key={svc} 
-                    type="linear" 
+                    type="monotone" 
                     dataKey={svc} 
                     stackId="1"
                     stroke={color}
-                    fill={color}
-                    strokeWidth={1}
+                    fill={`url(#grad-${i})`}
+                    strokeWidth={2}
                     fillOpacity={1}
                     isAnimationActive={true}
                     animationDuration={1000}
@@ -209,30 +219,37 @@ export default function DashboardPage() {
           {loading ? 'Loading…' : 'No systems have shipped logs yet.'}
         </div>
       ) : (
-        <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', minHeight: 0 }}>
-          <div className="card card--fill premium-glass" style={{ padding: '16px', flexShrink: 0, overflow: 'visible' }}>
-            <h3 style={{ margin: '0 0 10px 0', color: 'var(--text)' }}>Detections & Anomalies</h3>
-            <AnomalyTimeline 
-              alerts={alerts} 
-              start={Math.floor(Date.now() / 1000) - (hours * 3600)} 
-              end={Math.floor(Date.now() / 1000)} 
-            />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))', gap: '20px', flex: 1, minHeight: 0 }}>
-            <div style={{ minHeight: '300px' }}>
-              {renderChart('CPU Usage (cores)', cpuData, cpuServices, loading, 'c')}
-            </div>
-            <div style={{ minHeight: '300px' }}>
-              {renderChart('RAM Usage', ramData, ramServices, loading, 'MB')}
-            </div>
-            <div style={{ minHeight: '300px' }}>
-              {renderChart('Log Ingestion Rate', logsData, logsServices, loading, '')}
+        <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto', minHeight: 0 }}>
+          <div className="card card--fill" style={{ padding: '0', flexShrink: 0, overflow: 'visible' }}>
+            <header style={{ padding: '12px 16px', background: 'transparent', borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ margin: 0, color: 'var(--text-2)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Detections & Anomalies</h3>
+            </header>
+            <div style={{ padding: '16px' }}>
+              <AnomalyTimeline 
+                alerts={alerts} 
+                start={Math.floor(Date.now() / 1000) - (hours * 3600)} 
+                end={Math.floor(Date.now() / 1000)} 
+              />
             </div>
           </div>
 
-          <div className="card card--fill premium-glass" style={{ padding: '16px', overflow: 'visible', flexShrink: 0 }}>
-            <h3 style={{ margin: '0 0 10px 0', color: 'var(--text)' }}>Top Error Patterns</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '20px', flexShrink: 0 }}>
+            <div style={{ minHeight: '300px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>{renderChart('CPU Usage (cores)', cpuData, cpuServices, loading, 'c')}</div>
+            </div>
+            <div style={{ minHeight: '300px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>{renderChart('RAM Usage', ramData, ramServices, loading, 'MB')}</div>
+            </div>
+            <div style={{ minHeight: '300px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>{renderChart('Log Ingestion Rate', logsData, logsServices, loading, '')}</div>
+            </div>
+          </div>
+
+          <div className="card card--fill" style={{ padding: '0', overflow: 'visible', flexShrink: 0 }}>
+            <header style={{ padding: '12px 16px', background: 'transparent', borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ margin: 0, color: 'var(--text-2)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Top Error Patterns</h3>
+            </header>
+            <div style={{ padding: '16px' }}>
             {loading ? (
               <div className="empty">Loading errors...</div>
             ) : topErrors.length === 0 ? (
@@ -255,7 +272,10 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             )}
+            </div>
           </div>
+
+          <LogExplorer systemId={selectedId} services={logsServices} />
         </div>
       )}
     </div>

@@ -44,6 +44,13 @@ export default function AlertsPanel({ system }) {
 
   useEffect(() => { 
     fetchAlerts(); 
+    
+    // Auto-refresh alerts every 15 seconds
+    const interval = setInterval(() => {
+      fetchAlerts();
+    }, 15000);
+    
+    return () => clearInterval(interval);
   }, [system.id]);
 
   const formatPayload = (payload) => {

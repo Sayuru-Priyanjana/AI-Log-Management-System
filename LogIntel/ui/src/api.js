@@ -153,6 +153,17 @@ export const getSystemMetricsRam = (id, start, end) => getJSON(`/api/systems/${i
 export const getSystemMetricsLogs = (id, start, end) => getJSON(`/api/systems/${id}/metrics/logs?start=${start}&end=${end}`);
 export const getTopErrors = (id, start, end) => getJSON(`/api/systems/${id}/errors/top?start=${start}&end=${end}`);
 export const getLogsContext = (id, timestamp, service) => getJSON(`/api/systems/${id}/logs/context?timestamp=${timestamp}&service=${encodeURIComponent(service)}`);
+
+export async function getSystemLogs(systemId, params = {}) {
+  const queryParams = new URLSearchParams();
+  if (params.query) queryParams.append('query', params.query);
+  if (params.service) queryParams.append('service', params.service);
+  if (params.level) queryParams.append('level', params.level);
+  if (params.limit) queryParams.append('limit', params.limit);
+  
+  return await getJSON(`/api/systems/${systemId}/logs?${queryParams.toString()}`);
+}
+
 // Per-system integrations (Teams channel, automation) — unlike /api/settings,
 // scoped to one cluster's id, because a webhook and a scan cadence belong to
 // that cluster, not to the agent process.
