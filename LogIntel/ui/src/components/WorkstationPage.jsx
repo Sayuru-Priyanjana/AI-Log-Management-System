@@ -4,8 +4,8 @@ import { getHealth, getRecentInvestigations, getSystemIntegrations, getSystems, 
 import { useToast } from '../toast';
 import ActivitiesPanel from './ActivitiesPanel';
 import AlertsPanel from './AlertsPanel';
+import SystemHealthPanel from './SystemHealthPanel';
 import SystemIntegrationsModal from './SystemIntegrationsModal';
-import { MetricsPanel } from './MetricsPanel';
 
 import { useInvestigation } from '../InvestigationContext';
 
@@ -107,6 +107,9 @@ export default function WorkstationPage() {
           </span>
         )}
 
+        <button type="button" className="btn" disabled={!selected} onClick={() => navigate('/dashboard')}>
+          Dashboard
+        </button>
         <button type="button" className="btn btn--primary" disabled={!selected}
           onClick={() => navigate('/agent', { state: { system_id: selectedId } })}>
           AI Agent
@@ -221,8 +224,8 @@ export default function WorkstationPage() {
             <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
               <ActivitiesPanel systemId={selected.id} investigations={investigations} />
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
-              <MetricsPanel systemId={selected.id} />
+            <div>
+              <SystemHealthPanel systemId={selected.id} />
             </div>
           </div>
 

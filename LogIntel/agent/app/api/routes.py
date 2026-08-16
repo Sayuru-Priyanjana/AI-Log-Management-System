@@ -303,3 +303,364 @@ async def get_system_metrics_requests(system_id: str, start: int, end: int, requ
             
     sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
     return sorted_data
+
+@router.get("/systems/{system_id}/metrics/ram")
+async def get_system_metrics_ram(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
+    step = container.prometheus.step_for(window)
+    expression = f'sum by (container) (container_memory_working_set_bytes{{system_id="{system_id}", container!="", container!="POD"}})'
+    raw_series = await container.prometheus.query_range(expression, window, step)
+    
+    data_by_time = {}
+    for series in raw_series:
+        svc = series.get("metric", {}).get("container", "unknown")
+        points = container.prometheus.to_points(series)
+        for pt_time, val in points:
+            ts = int(pt_time.timestamp()) * 1000
+            if ts not in data_by_time:
+                data_by_time[ts] = {"time": ts}
+            # Convert bytes to MB for easier reading on the chart
+            data_by_time[ts][svc] = round(val / (1024 * 1024), 2)
+            
+    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+    return sorted_data
+
+@router.get("/systems/{system_id}/metrics/logs")
+async def get_system_metrics_logs(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    
+    query = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ]
+            }
+        },
+        "aggs": {
+            "services": {
+                "terms": {"field": "service.name"},
+                "aggs": {
+                    "logs_over_time": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": "15m",
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start * 1000, "max": end * 1000}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, query)
+        
+        data_by_time = {}
+        buckets = result.get("aggregations", {}).get("services", {}).get("buckets", [])
+        for bucket in buckets:
+            svc = bucket.get("key", "unknown")
+            time_buckets = bucket.get("logs_over_time", {}).get("buckets", [])
+            for tb in time_buckets:
+                ts = tb.get("key")
+                val = tb.get("doc_count", 0)
+                if ts not in data_by_time:
+                    data_by_time[ts] = {"time": ts}
+                data_by_time[ts][svc] = val
+                
+        sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+        return sorted_data
+    except Exception as exc:
+        logger.error(f"Failed to fetch log metrics: {exc}")
+        return []
+
+@router.get("/systems/{system_id}/snapshot")
+async def get_system_snapshot(system_id: str, request: Request) -> dict:
+    container = deps(request)
+    end = int(datetime.now(timezone.utc).timestamp())
+    start = end - 86400
+    
+    count_query = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ]
+            }
+        }
+    }
+    
+    uptime_query = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}}
+                ]
+            }
+        },
+        "aggs": {
+            "first_seen": {
+                "min": {"field": "@timestamp"}
+            }
+        }
+    }
+
+    try:
+        count_res = await container.opensearch.search(settings.opensearch_log_index, count_query)
+        total_logs_24h = count_res.get("hits", {}).get("total", {}).get("value", 0)
+    except Exception as exc:
+        logger.error(f"Count query failed: {exc}")
+        total_logs_24h = 0
+        
+    try:
+        uptime_res = await container.opensearch.search(settings.opensearch_log_index, uptime_query)
+        first_seen_ms = uptime_res.get("aggregations", {}).get("first_seen", {}).get("value")
+        first_seen = int(first_seen_ms / 1000) if first_seen_ms else end
+    except Exception as exc:
+        logger.error(f"Uptime query failed: {exc}")
+        first_seen = end
+
+    try:
+        cpu_exp = f'sum by (container) (rate(container_cpu_usage_seconds_total{{system_id="{system_id}", container!="", container!="POD"}}[5m]))'
+        cpu_data = await container.prometheus.query(cpu_exp)
+        
+        top_cpu_svc = None
+        top_cpu_val = 0.0
+        for res in cpu_data:
+            svc = res.get("metric", {}).get("container")
+            val = float(res.get("value", [0, 0])[1])
+            if val > top_cpu_val:
+                top_cpu_val = val
+                top_cpu_svc = svc
+    except Exception as exc:
+        logger.error(f"CPU query failed: {exc}")
+        top_cpu_svc = None
+        top_cpu_val = 0.0
+
+    try:
+        ram_exp = f'sum by (container) (container_memory_usage_bytes{{system_id="{system_id}", container!="", container!="POD"}})'
+        ram_data = await container.prometheus.query(ram_exp)
+        
+        top_ram_svc = None
+        top_ram_val = 0.0
+        for res in ram_data:
+            svc = res.get("metric", {}).get("container")
+            val = float(res.get("value", [0, 0])[1])
+            if val > top_ram_val:
+                top_ram_val = val
+                top_ram_svc = svc
+        if top_ram_val > 0:
+            top_ram_val = top_ram_val / (1024 * 1024)
+    except Exception as exc:
+        logger.error(f"RAM query failed: {exc}")
+        top_ram_svc = None
+        top_ram_val = 0.0
+        
+    return {
+        "total_logs_24h": total_logs_24h,
+        "first_seen": first_seen,
+        "top_cpu_service": top_cpu_svc,
+        "top_cpu_value": round(top_cpu_val, 3),
+        "top_ram_service": top_ram_svc,
+        "top_ram_value": round(top_ram_val, 1)
+    }
+
+@router.get("/systems/{system_id}/alerts")
+async def get_system_alerts(system_id: str, request: Request):
+    container = deps(request)
+    
+    query = {
+        "size": 50,
+        "sort": [{"start_time": {"order": "desc"}}],
+        "query": {
+            "match_all": {}
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(".opendistro-alerting-alerts*", query)
+        hits = result.get("hits", {}).get("hits", [])
+        
+        alerts = []
+        for hit in hits:
+            src = hit.get("_source", {})
+            alerts.append({
+                "id": hit.get("_id"),
+                "monitor_name": src.get("monitor_name", "Unknown Monitor"),
+                "trigger_name": src.get("trigger_name", "Unknown Trigger"),
+                "state": src.get("state", "ACTIVE"),
+                "severity": src.get("severity", "1"),
+                "start_time": src.get("start_time"),
+                "end_time": src.get("end_time"),
+                "error_message": src.get("error_message")
+            })
+            
+        return alerts
+    except Exception as exc:
+        logger.error(f"Failed to fetch alerts: {exc}")
+        # If the index doesn't exist yet because no alerts fired, just return empty list
+        return []
+
+@router.get("/systems/{system_id}/errors/top")
+async def get_top_errors(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    
+    query = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ],
+                "should": [
+                    {"match": {"level": "error"}},
+                    {"match": {"level": "ERROR"}},
+                    {"match": {"log.level": "error"}},
+                    {"match": {"status": "ERROR"}}
+                ],
+                "minimum_should_match": 1
+            }
+        },
+        "aggs": {
+            "top_errors": {
+                "terms": {
+                    "field": "message.keyword",
+                    "size": 5
+                }
+            }
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, query)
+        buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
+        
+        # If message.keyword is empty, fallback to log.keyword
+        if not buckets:
+            query["aggs"]["top_errors"]["terms"]["field"] = "log.keyword"
+            result = await container.opensearch.search(settings.opensearch_log_index, query)
+            buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
+
+        errors = [{"message": b.get("key"), "count": b.get("doc_count")} for b in buckets]
+        return errors
+    except Exception as exc:
+        logger.error(f"Failed to fetch top errors: {exc}")
+        return []
+
+@router.get("/systems/{system_id}/logs/context")
+async def get_logs_context(system_id: str, timestamp: int, service: str, request: Request):
+    container = deps(request)
+    
+    # 5 seconds before and 5 seconds after
+    start = timestamp - 5
+    end = timestamp + 5
+    
+    query = {
+        "size": 20,
+        "sort": [{"@timestamp": {"order": "asc"}}],
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {"term": {"service.name": service}},
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ]
+            }
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, query)
+        hits = result.get("hits", {}).get("hits", [])
+        
+        logs = []
+        for hit in hits:
+            src = hit.get("_source", {})
+            logs.append({
+                "id": hit.get("_id"),
+                "timestamp": src.get("@timestamp"),
+                "level": src.get("level") or src.get("log", {}).get("level", "INFO"),
+                "message": src.get("message") or src.get("log", "No message")
+            })
+            
+        return logs
+    except Exception as exc:
+        logger.error(f"Failed to fetch context logs: {exc}")
+        return []
+
+@router.get("/systems/{system_id}/logs")
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100):
+    container = deps(request)
+    
+    filter_clauses = [{"term": {"system.id": system_id}}]
+    if service:
+        filter_clauses.append({"term": {"service.name": service}})
+    if level:
+        # Check both top-level and nested level fields, upper and lower case
+        lvl_up = level.upper()
+        lvl_low = level.lower()
+        filter_clauses.append({
+            "bool": {
+                "should": [
+                    {"match": {"level": lvl_low}},
+                    {"match": {"level": lvl_up}},
+                    {"match": {"log.level": lvl_low}},
+                    {"match": {"log.level": lvl_up}},
+                    {"match": {"status": lvl_up}}
+                ],
+                "minimum_should_match": 1
+            }
+        })
+    
+    must_clauses = []
+    if query:
+        must_clauses.append({"query_string": {"query": query}})
+    
+    es_query = {
+        "size": limit,
+        "sort": [{"@timestamp": {"order": "desc"}}],
+        "query": {
+            "bool": {
+                "filter": filter_clauses,
+            }
+        }
+    }
+    if must_clauses:
+        es_query["query"]["bool"]["must"] = must_clauses
+        
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, es_query)
+        hits = result.get("hits", {}).get("hits", [])
+        
+        logs = []
+        for hit in hits:
+            src = hit.get("_source", {})
+            msg = src.get("message") or src.get("log", "No message")
+            if isinstance(msg, dict):
+                msg = msg.get("message") or msg.get("log") or json.dumps(msg)
+                
+            lvl = src.get("level") or src.get("log", {}).get("level", "INFO")
+            if isinstance(lvl, dict):
+                lvl = lvl.get("level", "INFO")
+                
+            logs.append({
+                "id": hit.get("_id"),
+                "timestamp": src.get("@timestamp"),
+                "service": src.get("service", {}).get("name") or src.get("container_name") or "unknown",
+                "level": str(lvl),
+                "message": str(msg)
+            })
+            
+        return logs
+    except Exception as exc:
+        logger.error(f"Failed to fetch raw logs: {exc}")
+        return []
+

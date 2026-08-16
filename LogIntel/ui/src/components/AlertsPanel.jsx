@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePreferences } from '../preferences';
 import { useToast } from '../toast';
-import { getAlerts, scanForAlerts, setAlertStatus, deleteAlert } from '../mockData';
-import { getSystemIntegrations, notifyIntegrations } from '../api';
+import { getSystemIntegrations, notifyIntegrations, getSystemAlerts } from '../api';
 import { useInvestigation } from '../InvestigationContext';
 
 const STATUSES = ['pending', 'investigating', 'handled'];
@@ -11,10 +10,6 @@ const SEVERITY_TONE = { high: 'err', medium: 'warn', low: '' };
 
 /**
  * OpenSearch alerts and detections, as cards.
- *
- * Standing behind a real detection engine — see mockData.js for why there
- * isn't one yet. What is real: clicking through to the agent starts an actual
- * investigation, seeded with this card's payload, against the real pipeline.
  */
 export default function AlertsPanel({ system }) {
   const navigate = useNavigate();
@@ -25,7 +20,38 @@ export default function AlertsPanel({ system }) {
   const [scanning, setScanning] = useState(false);
   const { startInvestigation, setRequest, setMeta, setStatus } = useInvestigation();
 
-  useEffect(() => { setAlerts(getAlerts(system.id)); }, [system.id]);
+  const fetchAlerts = async () => {
+    try {
+      const data = await getSystemAlerts(system.id);
+      const mappedAlerts = data.map(a => ({
+        id: a.id,
+        title: a.monitor_name,
+        service: 'cluster-wide',
+        severity: a.severity === "1" ? 'high' : 'medium',
+        timestamp: a.start_time || new Date().getTime(),
+        status: 'pending',
+        payload: {
+          trigger: a.trigger_name,
+          state: a.state,
+          details: a.error_message || "Anomaly Detected"
+        }
+      }));
+      setAlerts(mappedAlerts);
+    } catch (err) {
+      console.error("Failed to fetch alerts", err);
+    }
+  };
+
+  useEffect(() => { 
+    fetchAlerts(); 
+    
+    // Auto-refresh alerts every 15 seconds
+    const interval = setInterval(() => {
+      fetchAlerts();
+    }, 15000);
+    
+    return () => clearInterval(interval);
+  }, [system.id]);
 
   const formatPayload = (payload) => {
     if (!payload) return payload;
@@ -37,47 +63,21 @@ export default function AlertsPanel({ system }) {
 
   const scan = () => {
     setScanning(true);
-    // A moment of latency reads as a real check having happened, rather than a
-    // card materialising the instant the button is pressed.
     setTimeout(async () => {
-      const alert = scanForAlerts(system.id, system.services);
-      setAlerts(getAlerts(system.id));
+      await fetchAlerts();
       setScanning(false);
-      toast.info(`New detection: ${alert.title}`, { detail: alert.service });
-      
-      // Automation
-      try {
-        const { values } = await getSystemIntegrations(system.id);
-        if (values.notify_on_alert_enabled) {
-          const payload = {
-            "@type": "MessageCard",
-            "@context": "http://schema.org/extensions",
-            "themeColor": SEVERITY_TONE[alert.severity] === 'err' ? 'FF0000' : 'FFA500',
-            "summary": "New Alert",
-            "title": `Alert: ${alert.title}`,
-            "text": `**Service:** ${alert.service}\n\n**Severity:** ${alert.severity}\n\n${alert.payload.summary}`,
-          };
-          notifyIntegrations(system.id, payload).catch(err => console.error("Teams notification failed", err));
-        }
-        if (values.auto_investigate_alerts_enabled) {
-          investigate(alert, true);
-        }
-      } catch (err) {
-        console.error("Could not fetch integrations for automation", err);
-      }
+      toast.info(`Scanned OpenSearch for new alerts`);
     }, 500);
   };
 
   const changeStatus = (id, status) => {
-    setAlertStatus(id, status);
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
     setOpen((prev) => (prev?.id === id ? { ...prev, status } : prev));
   };
 
   const removeAlert = (id, e) => {
     if (e) e.stopPropagation();
-    deleteAlert(id);
-    setAlerts(getAlerts(system.id));
+    setAlerts((prev) => prev.filter(a => a.id !== id));
     if (open && open.id === id) setOpen(null);
   };
 
@@ -117,7 +117,13 @@ export default function AlertsPanel({ system }) {
       </header>
       <div className="card-body">
         {alerts.length === 0 && (
-          <div className="empty">No detections yet. Scan checks OpenSearch for new ones.</div>
+          <div className="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            <div className="empty-state-title">No active alerts</div>
+            <div className="empty-state-desc">No detections yet. Scan checks OpenSearch for new ones.</div>
+          </div>
         )}
         {alerts.map((alert) => (
           <div key={alert.id} className="alert-card" role="button" tabIndex={0} onClick={() => setOpen(alert)} onKeyDown={(e) => { if(e.key==='Enter') setOpen(alert); }}>

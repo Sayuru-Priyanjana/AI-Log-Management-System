@@ -11,19 +11,6 @@
 const ALERTS_KEY = 'logintel.mock.alerts';
 const ACTIVITIES_KEY = 'logintel.mock.activities';
 
-const TEMPLATES = [
-  { title: 'Error rate spike', severity: 'high',
-    summary: (svc) => `${svc} error rate rose sharply above its baseline.` },
-  { title: 'Latency degradation', severity: 'medium',
-    summary: (svc) => `${svc} p95 latency has been elevated for several consecutive buckets.` },
-  { title: 'Pod restart loop', severity: 'high',
-    summary: (svc) => `A pod backing ${svc} has restarted repeatedly in the last 15 minutes.` },
-  { title: 'Traffic surge', severity: 'low',
-    summary: (svc) => `${svc} request rate is several times its usual level.` },
-  { title: 'Dependency unavailable', severity: 'high',
-    summary: (svc) => `${svc} is failing to reach a downstream dependency.` },
-];
-
 let seq = 0;
 const nextId = (prefix) => { seq += 1; return `${prefix}-${Date.now().toString(36)}-${seq}`; };
 
@@ -35,52 +22,8 @@ function writeAll(key, list) {
 }
 
 // -- alerts / detections -----------------------------------------------------
-export function getAlerts(systemId) {
-  return readAll(ALERTS_KEY)
-    .filter((a) => a.system_id === systemId)
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-}
+// Alert generation logic was replaced by OpenSearch anomaly detection integration.
 
-export function scanForAlerts(systemId, services) {
-  const names = services?.length ? services.map((s) => s.name) : ['the system'];
-  const template = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
-  const service = names[Math.floor(Math.random() * names.length)];
-  const now = new Date().toISOString();
-  const alert = {
-    id: nextId('alert'),
-    system_id: systemId,
-    title: template.title,
-    service,
-    severity: template.severity,
-    timestamp: now,
-    status: 'pending',
-    payload: {
-      source: 'opensearch-detection (simulated — no alerting engine wired up yet)',
-      rule: template.title.toLowerCase().replace(/ /g, '_'),
-      system_id: systemId,
-      service,
-      severity: template.severity,
-      window: '15m',
-      detected_at: now,
-      summary: template.summary(service),
-    },
-  };
-  writeAll(ALERTS_KEY, [alert, ...readAll(ALERTS_KEY)]);
-  logActivity(systemId, {
-    kind: 'automated',
-    label: `Scan detected: ${template.title} — ${service}`,
-    status: 'done',
-  });
-  return alert;
-}
-
-export function setAlertStatus(id, status) {
-  writeAll(ALERTS_KEY, readAll(ALERTS_KEY).map((a) => (a.id === id ? { ...a, status } : a)));
-}
-
-export function deleteAlert(id) {
-  writeAll(ALERTS_KEY, readAll(ALERTS_KEY).filter((a) => a.id !== id));
-}
 
 // -- activities ---------------------------------------------------------------
 export function getAutomatedActivities(systemId, sinceMs) {
