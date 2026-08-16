@@ -1,5 +1,8 @@
 import { useState } from 'react';
 import { usePreferences } from '../preferences';
+import { useInvestigation } from '../InvestigationContext';
+import { getLogsContext } from '../api';
+import { useToast } from '../toast';
 
 /**
  * Everything the investigation looked at, in order.
@@ -17,9 +20,11 @@ const KIND_LABEL = { log: 'log', event: 'k8s', metric: 'metric', marker: '' };
 
 export default function EvidenceTimeline({ data }) {
   const { formatClock, zoneLabel } = usePreferences();
+  const { request } = useInvestigation();
   const [onlyNotable, setOnlyNotable] = useState(false);
   const [kinds, setKinds] = useState({ log: true, event: true, metric: true });
   const [collapsed, setCollapsed] = useState(false);
+  const systemId = request?.system_id;
 
   const entries = data?.entries || [];
   if (!entries.length) return null;
@@ -72,7 +77,7 @@ export default function EvidenceTimeline({ data }) {
           </div>
 
           <ol className="li-evtl-list">
-            {visible.map((entry) => <Row key={entry.id} entry={entry} short={formatClock} />)}
+            {visible.map((entry) => <Row key={entry.id} entry={entry} short={formatClock} systemId={systemId} />)}
           </ol>
 
           {visible.length === 0 && (
@@ -86,9 +91,30 @@ export default function EvidenceTimeline({ data }) {
   );
 }
 
-function Row({ entry, short }) {
+function Row({ entry, short, systemId }) {
   const [open, setOpen] = useState(false);
+  const [contextLogs, setContextLogs] = useState(null);
+  const [loadingContext, setLoadingContext] = useState(false);
+  const toast = useToast();
   const level = (entry.level || '').toLowerCase();
+
+  const handleLoadContext = async () => {
+    if (contextLogs) {
+       setContextLogs(null);
+       return;
+    }
+    setLoadingContext(true);
+    try {
+      const ts = Math.floor(new Date(entry.first_seen).getTime() / 1000);
+      const logs = await getLogsContext(systemId, ts, entry.service);
+      setContextLogs(logs);
+      setOpen(true);
+    } catch (err) {
+      toast.error('Could not load context logs', { detail: err.message });
+    } finally {
+      setLoadingContext(false);
+    }
+  };
 
   return (
     <li className={`li-evtl-row li-evtl-row--${entry.kind}`
@@ -121,6 +147,11 @@ function Row({ entry, short }) {
                 : `×${entry.baseline_occurrences.toLocaleString()}`}
             </span>
           )}
+          {entry.kind === 'log' && systemId && (
+            <button type="button" className="btn btn--ghost btn--sm" style={{ padding: '0 6px', fontSize: '11px', height: '20px' }} onClick={handleLoadContext} disabled={loadingContext}>
+              {loadingContext ? '...' : contextLogs ? 'Hide context' : 'View surrounding context'}
+            </button>
+          )}
           <button type="button" className="li-evtl-id" onClick={() => setOpen(!open)}>
             {entry.id}
           </button>
@@ -130,6 +161,20 @@ function Row({ entry, short }) {
           <div className="li-evtl-why">{entry.notable_reason}</div>
         )}
         {open && entry.detail && <pre className="li-raw-pre">{entry.detail}</pre>}
+        {contextLogs && (
+          <div className="context-logs" style={{ marginTop: '10px', padding: '12px', background: 'var(--bg-inset)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+            <h4 style={{ margin: '0 0 12px 0', fontSize: '12px', color: 'var(--text-3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Surrounding Logs</h4>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--text-2)' }}>
+              {contextLogs.length === 0 ? 'No surrounding logs found.' : contextLogs.map((log) => (
+                <div key={log.id} style={{ display: 'flex', gap: '12px', borderBottom: '1px solid var(--border-soft)', padding: '6px 0', wordBreak: 'break-all' }}>
+                  <span style={{ color: 'var(--text-4)', flexShrink: 0 }}>{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                  <span className={`li-evtl-badge li-evtl-badge--${(log.level||'').toLowerCase()}`} style={{ flexShrink: 0, width: '50px', textAlign: 'center' }}>{log.level || 'INFO'}</span>
+                  <span style={{ flex: 1 }}>{log.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </li>
   );

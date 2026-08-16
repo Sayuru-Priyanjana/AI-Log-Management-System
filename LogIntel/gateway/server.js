@@ -117,6 +117,7 @@ const requireAdmin = (req, res, next) => {
 
 const requireIngestAuth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
+  console.log('Received Ingest Auth Header:', authHeader);
   if (!authHeader) {
     return res.status(401).json({ detail: 'Missing authorization header' });
   }
@@ -140,9 +141,11 @@ const requireIngestAuth = async (req, res, next) => {
   }
   
   token = token.trim();
+  console.log('Token after trim: "' + token + '"');
 
   try {
     const result = await pool.query('SELECT id FROM systems WHERE token = $1', [token]);
+    console.log('Query result rows:', result.rows.length);
     if (result.rows.length === 0) {
       return res.status(401).json({ detail: 'Invalid ingestion token' });
     }

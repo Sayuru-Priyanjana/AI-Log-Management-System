@@ -22,6 +22,12 @@ function handleAuthError(response) {
   }
 }
 
+export async function getSystemSnapshot(systemId) {
+  return getJSON(`/api/systems/${encodeURIComponent(systemId)}/snapshot`);
+}
+
+export const getSystemAlerts = (id) => getJSON(`/api/systems/${id}/alerts`);
+
 async function getJSON(path) {
   const response = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
   handleAuthError(response);
@@ -143,7 +149,10 @@ export const updateSettings = (values) => putJSON('/api/settings', { values });
 export const testConnection = (target) => postJSON('/api/settings/test', { target });
 export const refreshSystems = () => postJSON('/api/systems/refresh');
 export const getSystemMetricsRequests = (id, start, end) => getJSON(`/api/systems/${id}/metrics/requests?start=${start}&end=${end}`);
-
+export const getSystemMetricsRam = (id, start, end) => getJSON(`/api/systems/${id}/metrics/ram?start=${start}&end=${end}`);
+export const getSystemMetricsLogs = (id, start, end) => getJSON(`/api/systems/${id}/metrics/logs?start=${start}&end=${end}`);
+export const getTopErrors = (id, start, end) => getJSON(`/api/systems/${id}/errors/top?start=${start}&end=${end}`);
+export const getLogsContext = (id, timestamp, service) => getJSON(`/api/systems/${id}/logs/context?timestamp=${timestamp}&service=${encodeURIComponent(service)}`);
 // Per-system integrations (Teams channel, automation) — unlike /api/settings,
 // scoped to one cluster's id, because a webhook and a scan cadence belong to
 // that cluster, not to the agent process.

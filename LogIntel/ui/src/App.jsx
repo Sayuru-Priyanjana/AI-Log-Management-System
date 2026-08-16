@@ -10,6 +10,7 @@ import SystemsPage from './components/SystemsPage';
 import UsersPage from './components/UsersPage';
 import WorkstationPage from './components/WorkstationPage';
 import Scheduler from './components/Scheduler';
+import DashboardPage from './components/DashboardPage';
 import { usePreferences } from './preferences';
 import './index.css';
 
@@ -96,6 +97,7 @@ export default function App() {
         <Scheduler />
         <Routes>
           <Route path="/" element={<WorkstationPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/agent" element={<AgentPage />} />
           {isAdmin && <Route path="/systems" element={<SystemsPage />} />}
           {isAdmin && <Route path="/users" element={<UsersPage />} />}
