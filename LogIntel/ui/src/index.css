@@ -996,3 +996,79 @@ pre.block {
   font-weight: 600;
   font-family: var(--mono);
 }
+
+/* ==========================================================================
+   TimeRangeSlider Styles
+   ========================================================================== */
+.thumb,
+.thumb::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.thumb {
+  pointer-events: none;
+  position: absolute;
+  height: 0;
+  width: 100%;
+  outline: none;
+}
+
+.thumb--left {
+  z-index: 3;
+}
+
+.thumb--right {
+  z-index: 4;
+}
+
+/* For Chrome browsers */
+.thumb::-webkit-slider-thumb {
+  background-color: var(--accent);
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 0 1px 1px #ced4da;
+  cursor: pointer;
+  height: 14px;
+  width: 14px;
+  margin-top: 4px;
+  pointer-events: all;
+  position: relative;
+}
+
+/* For Firefox browsers */
+.thumb::-moz-range-thumb {
+  background-color: var(--accent);
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 0 1px 1px #ced4da;
+  cursor: pointer;
+  height: 14px;
+  width: 14px;
+  margin-top: 4px;
+  pointer-events: all;
+  position: relative;
+}
+
+.slider {
+  position: relative;
+  width: 100%;
+}
+
+.slider__track,
+.slider__range {
+  position: absolute;
+  border-radius: 3px;
+  height: 4px;
+}
+
+.slider__track {
+  background-color: var(--surface-3);
+  width: 100%;
+  z-index: 1;
+}
+
+.slider__range {
+  background-color: var(--accent);
+  z-index: 2;
+}

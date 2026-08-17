@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { getSystemLogs } from '../api';
 import { useToast } from '../toast';
 
-export default function LogExplorer({ systemId, services = [] }) {
+export default function LogExplorer({ systemId, services = [], start, end }) {
   const toast = useToast();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -16,7 +16,7 @@ export default function LogExplorer({ systemId, services = [] }) {
     if (!systemId) return;
     if (showLoading) setLoading(true);
     try {
-      const result = await getSystemLogs(systemId, { query, service, level, limit: 100 });
+      const result = await getSystemLogs(systemId, { query, service, level, limit: 100, start, end });
       setLogs(result || []);
     } catch (err) {
       toast.error('Failed to fetch logs', { detail: err.message });
@@ -29,7 +29,7 @@ export default function LogExplorer({ systemId, services = [] }) {
   useEffect(() => {
     fetchLogs(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [systemId]);
+  }, [systemId, start, end]);
 
   useEffect(() => {
     let interval;
@@ -41,6 +41,14 @@ export default function LogExplorer({ systemId, services = [] }) {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveTail, systemId, query, service, level]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchLogs(true);
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, service, level]);
 
   const handleSearch = (e) => {
     e.preventDefault();

@@ -17,7 +17,7 @@ data:
         Name              tail
         Tag               kube.*
         Path              /var/log/containers/*.log
-        Parser            docker
+        Parser            cri
         DB                /var/log/flb_kube.db
         Mem_Buf_Limit     5MB
         Skip_Long_Lines   On
@@ -77,6 +77,14 @@ data:
         Time_Format %Y-%m-%dT%H:%M:%S.%L
         Time_Keep   On
 
+    [PARSER]
+        Name cri
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep   On
+
   normalize.lua: |
     local function iso_to_epoch(value)
       if type(value) ~= "string" then return nil, nil end
@@ -113,18 +121,27 @@ data:
       }
 
       local body = record["log"]
+      local parsed = record["log_processed"]
       local record_ts, record_ns = nil, nil
 
-      if type(body) == "table" then
-        for key, value in pairs(record) do
-          if key ~= "kubernetes" and key ~= "stream" and key ~= "time" and key ~= "logtag" then
-            out[key] = value
+      if type(parsed) == "table" then
+        if parsed["log"] ~= nil then
+          body = parsed["log"]
+        else
+          body = parsed
+        end
+        for k, v in pairs(parsed) do
+          if k ~= "log" and k ~= "kubernetes" and k ~= "@timestamp" then
+            out[k] = v
           end
         end
+        record_ts, record_ns = iso_to_epoch(parsed["@timestamp"])
+      end
+
+      if type(body) == "table" then
         out["log"] = body
         if body["level"] == nil then out["log"]["level"] = "UNKNOWN" end
         if body["message"] == nil then out["log"]["message"] = "" end
-        record_ts, record_ns = iso_to_epoch(record["@timestamp"])
       else
         out["log"] = { level = "UNKNOWN", message = tostring(body or "") }
       end

@@ -56,7 +56,7 @@ export default function SystemsPage() {
   const helm = issued && [
     'helm install logintel-agent \\',
     '  oci://ghcr.io/sayuru-priyanjana/logintel-agent \\',
-    '  --version 0.1.3 \\',
+    '  --version 0.1.4 \\',
     '  -n logintel \\',
     '  --create-namespace \\',
     '  --set namespace=logintel \\',
