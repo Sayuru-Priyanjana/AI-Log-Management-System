@@ -227,13 +227,18 @@ async def run_tool(investigation_id: str, payload: RunToolRequest,
         raise HTTPException(status_code=422,
                             detail=f"stored investigation is not replayable: {exc}") from exc
 
-    pipeline = container.pipeline
-    evidence = await pipeline._collect(plan, windows, [])       # noqa: SLF001
-    signals = SignalEngine(known_services=[]).detect(plan, windows, evidence)
-    candidates = pipeline.hypotheses.generate(plan, windows, signals, evidence)
+    from app.tools.metrics import MetricTool
+    try:
+        pipeline = container.pipeline
+        evidence = await pipeline._collect(plan, windows, [], MetricTool(pipeline.prometheus_client))       # noqa: SLF001
+        signals = SignalEngine(known_services=[]).detect(plan, windows, evidence)
+        candidates = pipeline.hypotheses.generate(plan, windows, signals, evidence)
 
-    bindings = ToolBindings(plan, windows, evidence, signals, candidates)
-    result = bindings.execute(payload.tool, payload.tool_input)
+        bindings = ToolBindings(plan, windows, evidence, signals, candidates)
+        result = bindings.execute(payload.tool, payload.tool_input)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
     return {
         "investigation_id": investigation_id,
@@ -330,6 +335,18 @@ async def get_system_metrics_ram(system_id: str, start: int, end: int, request: 
 async def get_system_metrics_logs(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     
+    range_hours = (end - start) / 3600
+    if range_hours <= 1:
+        interval = "1m"
+    elif range_hours <= 6:
+        interval = "5m"
+    elif range_hours <= 24:
+        interval = "15m"
+    elif range_hours <= 72:
+        interval = "1h"
+    else:
+        interval = "4h"
+
     query = {
         "size": 0,
         "query": {
@@ -347,7 +364,7 @@ async def get_system_metrics_logs(system_id: str, start: int, end: int, request:
                     "logs_over_time": {
                         "date_histogram": {
                             "field": "@timestamp",
-                            "fixed_interval": "15m",
+                            "fixed_interval": interval,
                             "min_doc_count": 0,
                             "extended_bounds": {"min": start * 1000, "max": end * 1000}
                         }
@@ -377,6 +394,74 @@ async def get_system_metrics_logs(system_id: str, start: int, end: int, request:
     except Exception as exc:
         logger.error(f"Failed to fetch log metrics: {exc}")
         return []
+
+@router.get("/systems/{system_id}/metrics/http_requests")
+async def get_system_metrics_http_requests(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
+    step = container.prometheus.step_for(window)
+    expression = f'sum by (service) (rate(http_requests_total{{system_id="{system_id}"}}[2m]))'
+    raw_series = await container.prometheus.query_range(expression, window, step)
+    
+    data_by_time = {}
+    for series in raw_series:
+        svc = series.get("metric", {}).get("service", "unknown")
+        points = container.prometheus.to_points(series)
+        for pt_time, val in points:
+            ts = int(pt_time.timestamp()) * 1000
+            if ts not in data_by_time:
+                data_by_time[ts] = {"time": ts}
+            data_by_time[ts][svc] = round(val, 2)
+            
+    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+    return sorted_data
+
+@router.get("/systems/{system_id}/metrics/http_latency")
+async def get_system_metrics_http_latency(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
+    step = container.prometheus.step_for(window)
+    expression = f'histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{{system_id="{system_id}"}}[2m])))'
+    raw_series = await container.prometheus.query_range(expression, window, step)
+    
+    data_by_time = {}
+    for series in raw_series:
+        svc = series.get("metric", {}).get("service", "unknown")
+        points = container.prometheus.to_points(series)
+        for pt_time, val in points:
+            ts = int(pt_time.timestamp()) * 1000
+            if ts not in data_by_time:
+                data_by_time[ts] = {"time": ts}
+            # Only include valid numbers (ignore NaNs from Prometheus histogram calculation when no requests)
+            if val == val and val != float('inf') and val != float('-inf'):
+                data_by_time[ts][svc] = round(val, 3)
+            else:
+                data_by_time[ts][svc] = 0
+            
+    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+    return sorted_data
+
+@router.get("/systems/{system_id}/metrics/http_errors")
+async def get_system_metrics_http_errors(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
+    step = container.prometheus.step_for(window)
+    expression = f'sum by (service) (rate(http_requests_total{{system_id="{system_id}", status=~"5.."}}[2m]))'
+    raw_series = await container.prometheus.query_range(expression, window, step)
+    
+    data_by_time = {}
+    for series in raw_series:
+        svc = series.get("metric", {}).get("service", "unknown")
+        points = container.prometheus.to_points(series)
+        for pt_time, val in points:
+            ts = int(pt_time.timestamp()) * 1000
+            if ts not in data_by_time:
+                data_by_time[ts] = {"time": ts}
+            data_by_time[ts][svc] = round(val, 2)
+            
+    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+    return sorted_data
+
 
 @router.get("/systems/{system_id}/snapshot")
 async def get_system_snapshot(system_id: str, request: Request) -> dict:
@@ -597,7 +682,7 @@ async def get_logs_context(system_id: str, timestamp: int, service: str, request
         return []
 
 @router.get("/systems/{system_id}/logs")
-async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100):
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, start: int = None, end: int = None):
     container = deps(request)
     
     filter_clauses = [{"term": {"system.id": system_id}}]
@@ -619,6 +704,15 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                 "minimum_should_match": 1
             }
         })
+        
+    if start or end:
+        range_clause = {}
+        if start:
+            range_clause["gte"] = start * 1000
+        if end:
+            range_clause["lte"] = end * 1000
+        range_clause["format"] = "epoch_millis"
+        filter_clauses.append({"range": {"@timestamp": range_clause}})
     
     must_clauses = []
     if query:
@@ -647,9 +741,34 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
             if isinstance(msg, dict):
                 msg = msg.get("message") or msg.get("log") or json.dumps(msg)
                 
-            lvl = src.get("level") or src.get("log", {}).get("level", "INFO")
+            lvl = src.get("level")
+            if not lvl and isinstance(src.get("log"), dict):
+                lvl = src.get("log").get("level")
+            if not lvl:
+                lvl = "UNKNOWN"
+                
             if isinstance(lvl, dict):
-                lvl = lvl.get("level", "INFO")
+                lvl = lvl.get("level", "UNKNOWN")
+                
+            # Attempt to parse CRI format containing JSON: "timestamp stdout F {...}"
+            if isinstance(msg, str):
+                import re
+                match = re.search(r'^[^\s]+\s+(?:stdout|stderr)\s+[FP]\s+(\{.*\})$', msg.strip())
+                if match:
+                    try:
+                        import json
+                        parsed = json.loads(match.group(1))
+                        if "log" in parsed and isinstance(parsed["log"], dict):
+                            inner_log = parsed["log"]
+                            msg = inner_log.get("message", msg)
+                            if lvl == "UNKNOWN" and "level" in inner_log:
+                                lvl = inner_log["level"]
+                        elif "message" in parsed:
+                            msg = parsed["message"]
+                            if lvl == "UNKNOWN" and "level" in parsed:
+                                lvl = parsed["level"]
+                    except Exception:
+                        pass
                 
             logs.append({
                 "id": hit.get("_id"),

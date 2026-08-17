@@ -2,7 +2,11 @@ import React, { useState, useEffect } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
-import { getSystems, getSystemMetricsRequests, getSystemMetricsRam, getSystemMetricsLogs, getSystemAlerts, getTopErrors } from '../api';
+import { 
+  getSystems, getSystemMetricsRequests, getSystemMetricsRam, getSystemMetricsLogs, 
+  getSystemMetricsHttpRequests, getSystemMetricsHttpLatency, getSystemMetricsHttpErrors,
+  getSystemAlerts, getTopErrors 
+} from '../api';
 import { useToast } from '../toast';
 import AnomalyTimeline from './AnomalyTimeline';
 import LogExplorer from './LogExplorer';
@@ -38,11 +42,16 @@ export default function DashboardPage() {
   const toast = useToast();
   const [systems, setSystems] = useState([]);
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem('lastSystemId') || null);
-  const [hours, setHours] = useState(24);
+  const [hours, setHours] = useState(() => Number(localStorage.getItem('timeRangeHours')) || 24);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   
   const [cpuData, setCpuData] = useState([]);
   const [ramData, setRamData] = useState([]);
   const [logsData, setLogsData] = useState([]);
+  const [httpReqData, setHttpReqData] = useState([]);
+  const [httpLatencyData, setHttpLatencyData] = useState([]);
+  const [httpErrorsData, setHttpErrorsData] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [topErrors, setTopErrors] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -50,6 +59,12 @@ export default function DashboardPage() {
   const [cpuServices, setCpuServices] = useState([]);
   const [ramServices, setRamServices] = useState([]);
   const [logsServices, setLogsServices] = useState([]);
+  const [httpReqServices, setHttpReqServices] = useState([]);
+  const [httpLatencyServices, setHttpLatencyServices] = useState([]);
+  const [httpErrorsServices, setHttpErrorsServices] = useState([]);
+
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - (hours * 3600);
 
   useEffect(() => {
     let mounted = true;
@@ -66,7 +81,7 @@ export default function DashboardPage() {
       })
       .catch((err) => mounted && toast.error('Could not load systems', { detail: err.message }));
     return () => { mounted = false; };
-  }, [toast]);
+  }, [toast, refreshTrigger]);
 
   useEffect(() => {
     let canceled = false;
@@ -78,14 +93,14 @@ export default function DashboardPage() {
       }
       setLoading(true);
       
-      const end = Math.floor(Date.now() / 1000);
-      const start = end - (hours * 3600);
-      
       try {
-        const [cpuRes, ramRes, logsRes, alertsRes, errorsRes] = await Promise.all([
+        const [cpuRes, ramRes, logsRes, httpReqRes, httpLatencyRes, httpErrorsRes, alertsRes, errorsRes] = await Promise.all([
           getSystemMetricsRequests(selectedId, start, end).catch(() => []),
           getSystemMetricsRam(selectedId, start, end).catch(() => []),
           getSystemMetricsLogs(selectedId, start, end).catch(() => []),
+          getSystemMetricsHttpRequests(selectedId, start, end).catch(() => []),
+          getSystemMetricsHttpLatency(selectedId, start, end).catch(() => []),
+          getSystemMetricsHttpErrors(selectedId, start, end).catch(() => []),
           getSystemAlerts(selectedId).catch(() => []),
           getTopErrors(selectedId, start, end).catch(() => [])
         ]);
@@ -94,6 +109,9 @@ export default function DashboardPage() {
           setCpuData(cpuRes);
           setRamData(ramRes);
           setLogsData(logsRes);
+          setHttpReqData(httpReqRes);
+          setHttpLatencyData(httpLatencyRes);
+          setHttpErrorsData(httpErrorsRes);
           setTopErrors(errorsRes || []);
           
           setAlerts(alertsRes || []);
@@ -111,6 +129,9 @@ export default function DashboardPage() {
           setCpuServices(extractServices(cpuRes));
           setRamServices(extractServices(ramRes));
           setLogsServices(extractServices(logsRes));
+          setHttpReqServices(extractServices(httpReqRes));
+          setHttpLatencyServices(extractServices(httpLatencyRes));
+          setHttpErrorsServices(extractServices(httpErrorsRes));
         }
       } catch (err) {
         console.error(err);
@@ -121,7 +142,17 @@ export default function DashboardPage() {
     
     loadAllMetrics();
     return () => { canceled = true; };
-  }, [selectedId, hours]);
+  }, [selectedId, hours, refreshTrigger]);
+
+  useEffect(() => {
+    let interval;
+    if (autoRefresh) {
+      interval = setInterval(() => {
+        setRefreshTrigger(prev => prev + 1);
+      }, 10000);
+    }
+    return () => clearInterval(interval);
+  }, [autoRefresh]);
 
   const selectSystem = (id) => {
     setSelectedId(id);
@@ -221,11 +252,32 @@ export default function DashboardPage() {
         
         <span className="spacer" />
         
-        <select value={hours} onChange={e => setHours(Number(e.target.value))} className="input input--sm" style={{ width: 'auto', padding: '2px 8px' }}>
-          <option value={1}>Last 1 hour</option>
-          <option value={6}>Last 6 hours</option>
-          <option value={24}>Last 24 hours</option>
-        </select>
+        <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+          <select value={hours} onChange={e => {
+            const h = Number(e.target.value);
+            setHours(h);
+            localStorage.setItem('timeRangeHours', h);
+          }} className="input input--sm" style={{ width: 'auto', padding: '2px 8px' }}>
+            <option value={1}>Last 1 hour</option>
+            <option value={6}>Last 6 hours</option>
+            <option value={24}>Last 24 hours</option>
+            <option value={168}>Last 7 days</option>
+          </select>
+          
+          <button type="button" className="btn btn--sm" onClick={() => setRefreshTrigger(prev => prev + 1)}>
+            Refresh
+          </button>
+          
+          <button 
+            type="button" 
+            className={`btn btn--sm ${autoRefresh ? 'btn--primary' : ''}`}
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+          >
+            {autoRefresh && <span className="dot dot--ok" style={{ animation: 'toast-in 1s infinite alternate' }} />}
+            Auto Reload {autoRefresh ? 'ON' : 'OFF'}
+          </button>
+        </div>
       </div>
 
       {!selectedId ? (
@@ -247,13 +299,13 @@ export default function DashboardPage() {
             <div style={{ padding: '16px' }}>
               <AnomalyTimeline 
                 alerts={alerts} 
-                start={Math.floor(Date.now() / 1000) - (hours * 3600)} 
-                end={Math.floor(Date.now() / 1000)} 
+                start={start} 
+                end={end} 
               />
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '20px', flexShrink: 0 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', flexShrink: 0 }}>
             <div style={{ minHeight: '300px', display: 'flex' }}>
               <div style={{ flex: 1 }}>{renderChart('CPU Usage (cores)', cpuData, cpuServices, loading, 'c')}</div>
             </div>
@@ -262,6 +314,15 @@ export default function DashboardPage() {
             </div>
             <div style={{ minHeight: '300px', display: 'flex' }}>
               <div style={{ flex: 1 }}>{renderChart('Log Ingestion Rate', logsData, logsServices, loading, '')}</div>
+            </div>
+            <div style={{ minHeight: '300px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>{renderChart('HTTP Request Rate', httpReqData, httpReqServices, loading, ' req/s')}</div>
+            </div>
+            <div style={{ minHeight: '300px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>{renderChart('HTTP Latency (p95)', httpLatencyData, httpLatencyServices, loading, 's')}</div>
+            </div>
+            <div style={{ minHeight: '300px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>{renderChart('HTTP Error Rate', httpErrorsData, httpErrorsServices, loading, ' err/s')}</div>
             </div>
           </div>
 
@@ -309,7 +370,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <LogExplorer systemId={selectedId} services={logsServices} />
+          <LogExplorer systemId={selectedId} services={logsServices} start={start} end={end} />
         </div>
       )}
     </div>
