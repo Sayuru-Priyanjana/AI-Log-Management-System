@@ -5,4 +5,5 @@ kubernetes-event-collector/
 metrics-collector/
 Vagrantfile
 incidentfox/
-pat.txtLogIntel/manual-testbed/
+pat.txt
+LogIntel/manual-testbed/
