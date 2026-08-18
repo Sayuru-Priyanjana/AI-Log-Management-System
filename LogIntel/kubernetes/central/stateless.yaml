@@ -1,0 +1,206 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboards
+spec:
+  ports:
+  - port: 5601
+    name: http
+    targetPort: 5601
+  selector:
+    app: dashboards
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboards
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboards
+  template:
+    metadata:
+      labels:
+        app: dashboards
+    spec:
+      containers:
+      - name: dashboards
+        image: opensearchproject/opensearch-dashboards:2.19.0
+        env:
+        - name: OPENSEARCH_HOSTS
+          value: '["http://opensearch:9200"]'
+        - name: DISABLE_SECURITY_DASHBOARDS_PLUGIN
+          value: "true"
+        - name: SERVER_BASEPATH
+          value: "/osd"
+        - name: SERVER_REWRITEBASEPATH
+          value: "true"
+        ports:
+        - containerPort: 5601
+          name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logintel-agent
+spec:
+  ports:
+  - port: 8000
+    name: http
+    targetPort: 8000
+  selector:
+    app: logintel-agent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-agent
+  template:
+    metadata:
+      labels:
+        app: logintel-agent
+    spec:
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: agent
+        image: ghcr.io/sayuru-priyanjana/logintel-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: OPENSEARCH_URL
+          value: "http://opensearch:9200"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus:9090"
+        - name: LLM_PROVIDER
+          value: "ollama"
+        # ⚠️ IMPORTANT: Replace this placeholder with your PC's actual VPN IP address! ⚠️
+        - name: OLLAMA_BASE_URL
+          value: "http://10.125.224.8:11434"
+        - name: OLLAMA_MODEL
+          value: "qwen2.5-coder"
+        - name: LOG_LEVEL
+          value: "INFO"
+        ports:
+        - containerPort: 8000
+          name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+spec:
+  ports:
+  - port: 3000
+    name: http
+    targetPort: 3000
+  selector:
+    app: logintel-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-gateway
+  template:
+    metadata:
+      labels:
+        app: logintel-gateway
+    spec:
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: gateway
+        image: ghcr.io/sayuru-priyanjana/logintel-gateway:latest
+        imagePullPolicy: Always
+        env:
+        - name: AGENT_URL
+          value: "http://logintel-agent:8000"
+        - name: JWT_SECRET
+          value: "super-secret-jwt-key"
+        - name: PGHOST
+          value: "postgres"
+        - name: PGPORT
+          value: "5432"
+        - name: PGUSER
+          value: "postgres"
+        - name: PGPASSWORD
+          value: "postgres"
+        - name: PGDATABASE
+          value: "logintel"
+        ports:
+        - containerPort: 3000
+          name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logintel-ui
+spec:
+  ports:
+  - port: 80
+    name: http
+    targetPort: 80
+  selector:
+    app: logintel-ui
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-ui
+  template:
+    metadata:
+      labels:
+        app: logintel-ui
+    spec:
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: ui
+        image: ghcr.io/sayuru-priyanjana/logintel-ui:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+          name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-metrics-mirror
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-metrics-mirror
+  template:
+    metadata:
+      labels:
+        app: logintel-metrics-mirror
+    spec:
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: metrics-mirror
+        image: ghcr.io/sayuru-priyanjana/logintel-metrics-mirror:latest
+        imagePullPolicy: Always
+        env:
+        - name: OPENSEARCH_URL
+          value: "http://opensearch:9200"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus:9090"
+        - name: POLL_SECONDS
+          value: "30"

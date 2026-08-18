@@ -1,1 +1,1 @@
-{"virtualbox":{"/vagrant":{"disabled":false,"guestpath":"/vagrant","hostpath":"D:/Projects/AI-Log-Management-System/LogIntel/friend-testbed","__vagrantfile":true},"/logintel-agent":{"disabled":false,"guestpath":"/logintel-agent","hostpath":"D:/Projects/AI-Log-Management-System/logintel-agent","__vagrantfile":true}}}
+{"virtualbox":{"/vagrant":{"disabled":false,"guestpath":"/vagrant","hostpath":"D:/Projects/AI-Log-Management-System/testbed-vm","__vagrantfile":true}}}

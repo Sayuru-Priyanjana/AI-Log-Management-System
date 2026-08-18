@@ -516,6 +516,70 @@ const prometheusProxy = createProxyMiddleware({
 app.post('/_bulk', requireIngestAuth, opensearchProxy);
 app.post('/api/v1/write', requireIngestAuth, prometheusProxy);
 
+// Graceful fallback endpoints for critical UI routes when AI Agent is down
+app.get('/api/health', requireAuth, async (req, res) => {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    const agentRes = await fetch(`${AGENT_URL}/api/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (agentRes.ok) {
+      const data = await agentRes.json();
+      return res.json(data);
+    }
+  } catch (err) {
+    console.warn("Agent health check timed out or failed:", err.message);
+  }
+  // Fallback health
+  res.json({
+    status: 'degraded',
+    components: {
+      agent: { status: 'unreachable', error: 'AI Agent is down or taking too long to respond' },
+      opensearch: { status: 'ok', url: process.env.OPENSEARCH_URL || 'http://opensearch:9200' },
+      prometheus: { status: 'ok', url: process.env.PROMETHEUS_URL || 'http://prometheus:9090' }
+    }
+  });
+});
+
+app.get('/api/systems', requireAuth, async (req, res) => {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    // Note: We don't forward auth headers to agent, it trusts gateway
+    const agentRes = await fetch(`${AGENT_URL}/api/systems`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (agentRes.ok) {
+      let data = await agentRes.json();
+      // RBAC filtering (same as proxy interceptor)
+      if (req.user.role === 'developer') {
+        if (data.systems) {
+          data.systems = data.systems.filter(s => req.user.systems.includes(s.id));
+        }
+      }
+      return res.json(data);
+    }
+  } catch (err) {
+    console.warn("Agent systems check timed out or failed:", err.message);
+  }
+  
+  // Fallback: load basic list from DB so UI doesn't break
+  try {
+    let query = 'SELECT id, name FROM systems';
+    let params = [];
+    if (req.user.role === 'developer') {
+      if (req.user.systems.length === 0) return res.json({ systems: [] });
+      query += ' WHERE id = ANY($1)';
+      params = [req.user.systems];
+    }
+    const sRes = await pool.query(query, params);
+    // Return empty services/environments arrays to satisfy UI map functions
+    res.json({ systems: sRes.rows.map(s => ({ id: s.id, name: s.name, services: [], environments: [] })) });
+  } catch (dbErr) {
+    console.error("DB error in fallback systems route:", dbErr);
+    res.status(500).json({ detail: 'Internal Error' });
+  }
+});
+
 // All other API routes go through the intercepting proxy (which filters JSON)
 app.use('/api', requireAuth, agentProxy);
 

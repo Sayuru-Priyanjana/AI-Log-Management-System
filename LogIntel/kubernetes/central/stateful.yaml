@@ -1,0 +1,190 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch
+  labels:
+    app: opensearch
+spec:
+  ports:
+  - port: 9200
+    name: http
+    targetPort: 9200
+  selector:
+    app: opensearch
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: opensearch
+spec:
+  serviceName: opensearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opensearch
+  template:
+    metadata:
+      labels:
+        app: opensearch
+    spec:
+      containers:
+      - name: opensearch
+        image: opensearchproject/opensearch:2.19.0
+        env:
+        - name: discovery.type
+          value: single-node
+        - name: DISABLE_SECURITY_PLUGIN
+          value: "true"
+        - name: DISABLE_INSTALL_DEMO_CONFIG
+          value: "true"
+        - name: bootstrap.memory_lock
+          value: "true"
+        - name: OPENSEARCH_JAVA_OPTS
+          value: "-Xms2g -Xmx2g"
+        ports:
+        - containerPort: 9200
+          name: http
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: opensearch-data
+          mountPath: /usr/share/opensearch/data
+  volumeClaimTemplates:
+  - metadata:
+      name: opensearch-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+    targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        - name: POSTGRES_DB
+          value: logintel
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+      # Remote Agent endpoints would be scraped here or remote-written
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  ports:
+  - port: 9090
+    name: http
+    targetPort: 9090
+  selector:
+    app: prometheus
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.53.1
+        args:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--storage.tsdb.path=/prometheus"
+        - "--web.enable-remote-write-receiver"
+        ports:
+        - containerPort: 9090
+          name: http
+        volumeMounts:
+        - name: prometheus-config
+          mountPath: /etc/prometheus/prometheus.yml
+          subPath: prometheus.yml
+        - name: prometheus-data
+          mountPath: /prometheus
+      volumes:
+      - name: prometheus-config
+        configMap:
+          name: prometheus-config
+  volumeClaimTemplates:
+  - metadata:
+      name: prometheus-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
