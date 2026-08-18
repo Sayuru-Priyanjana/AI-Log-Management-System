@@ -280,6 +280,78 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =
 // ---------------------------------------------------------
 // ADMIN SYSTEM MANAGEMENT
 // ---------------------------------------------------------
+
+async function provisionSystem(clusterId) {
+  const osUrl = process.env.OPENSEARCH_URL || 'http://opensearch:9200';
+  const dashboardsUrl = process.env.DASHBOARDS_URL || 'http://dashboards:5601/osd';
+
+  const makeReq = async (url, options) => {
+    try {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        const text = await res.text();
+        console.error(`Provisioning request failed: ${url} - Status ${res.status}: ${text}`);
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      console.error(`Provisioning network error for ${url}:`, err);
+      return null;
+    }
+  };
+
+  // 1. Create global Index Pattern in Dashboards
+  await makeReq(`${dashboardsUrl}/api/saved_objects/index-pattern/ip-logintel-logs?overwrite=true`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'osd-xsrf': 'true' },
+    body: JSON.stringify({
+      attributes: { title: `logintel-logs-*`, timeFieldName: '@timestamp' }
+    })
+  });
+
+  // 2. Create Anomaly Detector for this cluster
+  const detectorPayload = {
+    name: `detector-${clusterId}`,
+    description: `Anomaly detector for ${clusterId}`,
+    time_field: "@timestamp",
+    indices: [`logintel-logs-*`],
+    filter_query: {
+      bool: {
+        filter: [
+          { term: { "system.id": clusterId } },
+          { terms: { "log.level": ["ERROR", "FATAL", "CRITICAL"] } }
+        ]
+      }
+    },
+    feature_attributes: [{
+      feature_name: "error_count",
+      feature_enabled: true,
+      aggregation_query: {
+        error_count: {
+          value_count: { field: "system.id" }
+        }
+      }
+    }],
+    detection_interval: { period: { interval: 1, unit: "Minutes" } },
+    window_delay: { period: { interval: 1, unit: "Minutes" } }
+  };
+  
+  const createRes = await makeReq(`${osUrl}/_plugins/_anomaly_detection/detectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(detectorPayload)
+  });
+
+  if (createRes && createRes._id) {
+    console.log(`Detector created with ID ${createRes._id}. Starting it now...`);
+    await makeReq(`${osUrl}/_plugins/_anomaly_detection/detectors/${createRes._id}/_start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  console.log(`Successfully initiated auto-provisioning for system ${clusterId}`);
+}
 app.get('/api/admin/systems', requireAuth, requireAdmin, async (req, res) => {
   try {
     const sRes = await pool.query('SELECT id, name, token FROM systems');
@@ -302,6 +374,10 @@ app.post('/api/admin/systems', requireAuth, requireAdmin, async (req, res) => {
       'INSERT INTO systems (id, name, token) VALUES ($1, $2, $3)',
       [clusterId, name, token]
     );
+
+    // Auto-provision OpenSearch resources asynchronously
+    provisionSystem(clusterId);
+
     res.json({ success: true, system: { id: clusterId, name, token } });
   } catch (err) {
     console.error(err);
