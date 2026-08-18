@@ -1,9 +1,18 @@
-.vagrant/
-shared/
-fluent-bit-k3s-test/
-kubernetes-event-collector/
-metrics-collector/
-Vagrantfile
-incidentfox/
+# agent
+agent/venv/
+agent/.env
+agent/.env.bak
+agent/eval-report.json
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# vagrant
+testbed/.vagrant/
+
+# ui
+ui/node_modules/
+ui/dist/
+ui/.env
+
 pat.txt
-LogIntel/manual-testbed/

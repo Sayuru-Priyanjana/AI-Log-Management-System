@@ -1,0 +1,27 @@
+# Friend's LogIntel Agent testbed: single-node k3s cluster deploying the Helm chart.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.box_check_update = false
+
+  config.vm.define "friend-testbed" do |node|
+    node.vm.hostname = "friend-testbed"
+
+    node.vm.network "private_network", ip: "192.168.56.30"
+
+    node.vm.provider "virtualbox" do |vb|
+      vb.name   = "logintel-friend-testbed-vm"
+      vb.memory = 3072
+      vb.cpus   = 2
+      # cgroup accounting must be reliable for container CPU/memory metrics.
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+    end
+
+    node.vm.synced_folder ".", "/vagrant", disabled: false
+    node.vm.synced_folder "../../logintel-agent", "/logintel-agent", disabled: false
+
+    node.vm.provision "base", type: "shell", path: "provision/00-base.sh"
+    node.vm.provision "k3s-helm",  type: "shell", path: "provision/10-k3s-helm.sh"
+    node.vm.provision "deploy", type: "shell", path: "provision/20-deploy.sh"
+  end
+end
