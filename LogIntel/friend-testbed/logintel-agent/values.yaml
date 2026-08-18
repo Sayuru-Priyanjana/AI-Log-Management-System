@@ -1,10 +1,10 @@
 central:
-  url: "http://192.168.56.1:3000"
+  url: "http://192.168.56.1:80"
   systemName: "default-cluster"
 
 auth:
-  clusterId: "cls-default"
-  token: "logintel_tok_default"
+  clusterId: "cls-ed316702"
+  token: "logintel_tok_2d1e547353e0bb9805445569cac397a2"
 
 namespace: "monitoring"
 

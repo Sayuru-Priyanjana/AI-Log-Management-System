@@ -2,9 +2,13 @@
 set -euo pipefail
 
 echo "==> Base packages"
+echo "==> Waiting for apt locks..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq curl jq gettext-base ca-certificates >/dev/null
+until apt-get update -y; do
+  echo "apt locked, waiting 5 seconds..."
+  sleep 5
+done
+apt-get install -y curl jq gettext-base ca-certificates
 
 # k3s stores container logs under /var/log/pods with symlinks in
 # /var/log/containers; Fluent Bit tails the latter. Nothing to configure, but we

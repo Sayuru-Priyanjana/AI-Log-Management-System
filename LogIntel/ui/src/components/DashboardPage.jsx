@@ -159,7 +159,7 @@ export default function DashboardPage() {
     localStorage.setItem('lastSystemId', id);
   };
 
-  const renderChart = (title, data, services, loading, unit) => (
+  const renderChart = (title, data, services, loading, unit, isStacked = true) => (
     <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '0', overflow: 'visible' }}>
       <header style={{ padding: '12px 16px', background: 'transparent', borderBottom: '1px solid var(--border)' }}>
         <h3 style={{ margin: 0, color: 'var(--text-2)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{title}</h3>
@@ -224,11 +224,11 @@ export default function DashboardPage() {
                     key={svc} 
                     type="monotone" 
                     dataKey={svc} 
-                    stackId="1"
+                    stackId={isStacked ? "1" : undefined}
                     stroke={color}
                     fill={`url(#grad-${i})`}
                     strokeWidth={2}
-                    fillOpacity={1}
+                    fillOpacity={isStacked ? 1 : 0.5}
                     isAnimationActive={true}
                     animationDuration={1000}
                   />
@@ -319,7 +319,7 @@ export default function DashboardPage() {
               <div style={{ flex: 1 }}>{renderChart('HTTP Request Rate', httpReqData, httpReqServices, loading, ' req/s')}</div>
             </div>
             <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('HTTP Latency (p95)', httpLatencyData, httpLatencyServices, loading, 's')}</div>
+              <div style={{ flex: 1 }}>{renderChart('HTTP Latency (p95)', httpLatencyData, httpLatencyServices, loading, 's', false)}</div>
             </div>
             <div style={{ minHeight: '300px', display: 'flex' }}>
               <div style={{ flex: 1 }}>{renderChart('HTTP Error Rate', httpErrorsData, httpErrorsServices, loading, ' err/s')}</div>

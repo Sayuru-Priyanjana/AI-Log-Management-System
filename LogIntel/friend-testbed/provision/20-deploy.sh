@@ -8,14 +8,14 @@ echo "Deploying logintel-agent via Helm..."
 # The host IP from Vagrant is 192.168.56.1
 # Port 9200 for OpenSearch, Port 9090 for Central Prometheus
 
-helm upgrade --install logintel-agent /logintel-agent \
+helm upgrade --install logintel-agent /vagrant/logintel-agent \
   --namespace logintel \
   --create-namespace \
   --set namespace="logintel" \
-  --set auth.clusterId="friend-cluster-1" \
-  --set auth.token="logintel_tok_1234567890" \
-  --set central.url="http://192.168.56.1:3000" \
-  --set central.prometheus_url="http://192.168.56.1:3000/api/v1/write"
+  --set auth.clusterId="cls-ed316702" \
+  --set auth.token="logintel_tok_2d1e547353e0bb9805445569cac397a2" \
+  --set central.url="http://192.168.56.1:80" \
+  --set central.prometheus_url="http://192.168.56.1:80/api/v1/write"
 
 echo "Waiting for pods to be ready..."
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=logintel-agent -n logintel --timeout=120s || true
