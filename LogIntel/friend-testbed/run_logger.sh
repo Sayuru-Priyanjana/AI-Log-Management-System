@@ -1,0 +1,2 @@
+sudo kubectl delete pod error-logger --ignore-not-found
+sudo kubectl run error-logger --image=busybox --restart=Never -- /bin/sh -c 'while true; do echo "{\"@timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"log\":{\"level\":\"ERROR\",\"message\":\"checkout-api request failed\"},\"service\":{\"name\":\"checkout-api\",\"version\":\"1.0.0\",\"tier\":\"frontend\"},\"event\":{\"category\":\"http\",\"action\":\"checkout-api.request\",\"outcome\":\"failure\"}}"; sleep 1; done'

@@ -12,6 +12,7 @@ export default function SystemsPage() {
   // the table because it is not a property of the system — it is a secret the
   // server will not repeat, and the row is the wrong place to imply otherwise.
   const [issued, setIssued] = useState(null);
+  const [copied, setCopied] = useState(false);
 
   const load = async () => {
     try {
@@ -56,7 +57,7 @@ export default function SystemsPage() {
   const helm = issued && [
     'helm install logintel-agent \\',
     '  oci://ghcr.io/sayuru-priyanjana/logintel-agent \\',
-    '  --version 0.1.4 \\',
+    '  --version 0.1.6 \\',
     '  -n logintel \\',
     '  --create-namespace \\',
     '  --set namespace=logintel \\',
@@ -94,10 +95,31 @@ export default function SystemsPage() {
               <h4 style={{ color: 'var(--ok)' }}>Token for {issued.id}</h4>
               <span className="spacer" />
               <button type="button" className="btn btn--sm" onClick={() => {
-                navigator.clipboard.writeText(helm)
-                  .then(() => toast.success('Command copied'))
-                  .catch(() => toast.error('Clipboard not available'));
-              }}>Copy command</button>
+                const text = helm;
+                const done = () => {
+                  setCopied(true);
+                  toast.success('Command copied');
+                  setTimeout(() => setCopied(false), 2000);
+                };
+                if (navigator.clipboard && window.isSecureContext) {
+                  navigator.clipboard.writeText(text).then(done).catch(() => toast.error('Clipboard failed'));
+                } else {
+                  const textArea = document.createElement("textarea");
+                  textArea.value = text;
+                  textArea.style.position = "fixed";
+                  textArea.style.left = "-999999px";
+                  document.body.appendChild(textArea);
+                  textArea.focus();
+                  textArea.select();
+                  try {
+                    document.execCommand('copy');
+                    done();
+                  } catch (err) {
+                    toast.error('Clipboard not available');
+                  }
+                  textArea.remove();
+                }
+              }}>{copied ? '✓ Copied!' : 'Copy command'}</button>
               <button type="button" className="btn btn--sm btn--ghost" onClick={() => setIssued(null)}>
                 Dismiss
               </button>

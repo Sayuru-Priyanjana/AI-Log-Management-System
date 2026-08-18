@@ -281,7 +281,7 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =
 // ADMIN SYSTEM MANAGEMENT
 // ---------------------------------------------------------
 
-async function provisionSystem(clusterId) {
+async function provisionSystem(clusterId, systemName) {
   const osUrl = process.env.OPENSEARCH_URL || 'http://opensearch:9200';
   const dashboardsUrl = process.env.DASHBOARDS_URL || 'http://dashboards:5601/osd';
 
@@ -310,9 +310,10 @@ async function provisionSystem(clusterId) {
   });
 
   // 2. Create Anomaly Detector for this cluster
+  const safeName = systemName.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
   const detectorPayload = {
-    name: `detector-${clusterId}`,
-    description: `Anomaly detector for ${clusterId}`,
+    name: `detector-${safeName}`,
+    description: `Anomaly detector for ${systemName}`,
     time_field: "@timestamp",
     indices: [`logintel-logs-*`],
     filter_query: {
@@ -376,7 +377,7 @@ app.post('/api/admin/systems', requireAuth, requireAdmin, async (req, res) => {
     );
 
     // Auto-provision OpenSearch resources asynchronously
-    provisionSystem(clusterId);
+    provisionSystem(clusterId, name);
 
     res.json({ success: true, system: { id: clusterId, name, token } });
   } catch (err) {
