@@ -309,6 +309,18 @@ async function provisionSystem(clusterId, systemName) {
     })
   });
 
+  // 1.5 Ensure at least one document exists in the index pattern so detector creation doesn't fail
+  await makeReq(`${osUrl}/logintel-logs-init/_doc/1?refresh=true`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      "@timestamp": new Date().toISOString(),
+      "message": "Index initialization",
+      "system": { "id": "init" }
+    })
+  });
+
+
   // 2. Create Anomaly Detector for this cluster
   const safeName = systemName.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
   const detectorPayload = {

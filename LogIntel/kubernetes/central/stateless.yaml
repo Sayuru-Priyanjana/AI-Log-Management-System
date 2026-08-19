@@ -79,9 +79,9 @@ spec:
           value: "http://prometheus:9090"
         - name: LLM_PROVIDER
           value: "ollama"
-        # ⚠️ IMPORTANT: Replace this placeholder with your PC's actual VPN IP address! ⚠️
+        # Ollama is now running inside the cluster!
         - name: OLLAMA_BASE_URL
-          value: "http://10.125.224.8:11434"
+          value: "http://ollama:11434"
         - name: OLLAMA_MODEL
           value: "qwen2.5-coder"
         - name: LOG_LEVEL

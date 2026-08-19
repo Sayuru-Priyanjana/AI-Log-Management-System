@@ -59,6 +59,7 @@ spec:
       name: opensearch-data
     spec:
       accessModes: [ "ReadWriteOnce" ]
+      storageClassName: nfs-client
       resources:
         requests:
           storage: 10Gi
@@ -113,6 +114,7 @@ spec:
       name: postgres-data
     spec:
       accessModes: [ "ReadWriteOnce" ]
+      storageClassName: nfs-client
       resources:
         requests:
           storage: 1Gi
@@ -185,6 +187,7 @@ spec:
       name: prometheus-data
     spec:
       accessModes: [ "ReadWriteOnce" ]
+      storageClassName: nfs-client
       resources:
         requests:
           storage: 5Gi
