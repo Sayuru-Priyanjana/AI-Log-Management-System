@@ -146,9 +146,12 @@ data:
         out["log"] = { level = "UNKNOWN", message = tostring(body or "") }
       end
 
-      if out["service"] == nil and labels["app"] ~= nil then
-        out["service"] = { name = labels["app"] }
-      end
+        if out["service"] == nil then
+          local svc_name = labels["app.kubernetes.io/name"] or labels["app"] or labels["name"] or labels["k8s-app"]
+          if svc_name ~= nil then
+            out["service"] = { name = svc_name }
+          end
+        end
 
       out["@timestamp"] = nil
 
