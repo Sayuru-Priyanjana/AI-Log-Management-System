@@ -18,7 +18,7 @@ metadata:
   name: ollama
 spec:
   serviceName: ollama
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app: ollama
@@ -30,18 +30,21 @@ spec:
       containers:
       - name: ollama
         image: ollama/ollama:latest
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1000m"
+          limits:
+            memory: "6Gi"
+            cpu: "3000m"
         ports:
         - containerPort: 11434
           name: http
         volumeMounts:
         - name: ollama-data
           mountPath: /root/.ollama
-  volumeClaimTemplates:
-  - metadata:
-      name: ollama-data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      storageClassName: nfs-client
-      resources:
-        requests:
-          storage: 20Gi
+      volumes:
+      - name: ollama-data
+        hostPath:
+          path: /mnt/data/ollama
+          type: DirectoryOrCreate

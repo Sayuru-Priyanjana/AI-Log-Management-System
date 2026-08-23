@@ -103,6 +103,13 @@ spec:
           value: postgres
         - name: POSTGRES_DB
           value: logintel
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
         ports:
         - containerPort: 5432
           name: postgres
@@ -169,6 +176,13 @@ spec:
         - "--config.file=/etc/prometheus/prometheus.yml"
         - "--storage.tsdb.path=/prometheus"
         - "--web.enable-remote-write-receiver"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
         ports:
         - containerPort: 9090
           name: http

@@ -36,6 +36,13 @@ spec:
           value: "/osd"
         - name: SERVER_REWRITEBASEPATH
           value: "true"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "800m"
         ports:
         - containerPort: 5601
           name: http
@@ -43,34 +50,34 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: logintel-agent
+  name: logintel-ai-agent
 spec:
   ports:
   - port: 8000
     name: http
     targetPort: 8000
   selector:
-    app: logintel-agent
+    app: logintel-ai-agent
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: logintel-agent
+  name: logintel-ai-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: logintel-agent
+      app: logintel-ai-agent
   template:
     metadata:
       labels:
-        app: logintel-agent
+        app: logintel-ai-agent
     spec:
       imagePullSecrets:
       - name: ghcr-secret
       containers:
       - name: agent
-        image: ghcr.io/sayuru-priyanjana/logintel-agent:latest
+        image: ghcr.io/sayuru-priyanjana/logintel-ai-agent:latest
         imagePullPolicy: Always
         env:
         - name: OPENSEARCH_URL
@@ -83,9 +90,18 @@ spec:
         - name: OLLAMA_BASE_URL
           value: "http://ollama:11434"
         - name: OLLAMA_MODEL
-          value: "qwen2.5-coder"
+          value: "qwen2.5-coder:3b"
         - name: LOG_LEVEL
           value: "INFO"
+        - name: OLLAMA_TIMEOUT
+          value: "600"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
         ports:
         - containerPort: 8000
           name: http
@@ -124,7 +140,7 @@ spec:
         imagePullPolicy: Always
         env:
         - name: AGENT_URL
-          value: "http://logintel-agent:8000"
+          value: "http://logintel-ai-agent:8000"
         - name: JWT_SECRET
           value: "super-secret-jwt-key"
         - name: PGHOST
@@ -137,6 +153,13 @@ spec:
           value: "postgres"
         - name: PGDATABASE
           value: "logintel"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "700m"
         ports:
         - containerPort: 3000
           name: http
@@ -173,6 +196,13 @@ spec:
       - name: ui
         image: ghcr.io/sayuru-priyanjana/logintel-ui:latest
         imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "500m"
         ports:
         - containerPort: 80
           name: http
@@ -204,3 +234,10 @@ spec:
           value: "http://prometheus:9090"
         - name: POLL_SECONDS
           value: "30"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"

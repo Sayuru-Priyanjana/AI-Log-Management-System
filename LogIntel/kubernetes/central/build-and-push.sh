@@ -14,8 +14,8 @@ docker buildx create --use --name multi-arch-builder || true
 # Change to the root directory where the source code actually lives
 cd ../../../
 
-echo "Building and pushing logintel-agent (ARM64)..."
-docker buildx build --platform linux/arm64 -t $REGISTRY/logintel-agent:$TAG --push ./agent
+echo "Building and pushing logintel-ai-agent (ARM64)..."
+docker buildx build --platform linux/arm64 -t $REGISTRY/logintel-ai-agent:$TAG --push ./agent
 
 echo "Building and pushing logintel-gateway (ARM64)..."
 docker buildx build --platform linux/arm64 -t $REGISTRY/logintel-gateway:$TAG --push ./gateway
