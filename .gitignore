@@ -1,4 +1,4 @@
-# agent
+﻿# agent
 agent/venv/
 agent/.env
 agent/.env.bak
@@ -9,10 +9,16 @@ __pycache__/
 
 # vagrant
 testbed/.vagrant/
+LogIntel/manual-testbed/.vagrant/
+LogIntel/testbed/.vagrant/
 
 # ui
 ui/node_modules/
 ui/dist/
 ui/.env
+LogIntel/ui/node_modules/
+LogIntel/ui/dist/
+LogIntel/ui/.env
+LogIntel/ui/.next/
 
 pat.txt

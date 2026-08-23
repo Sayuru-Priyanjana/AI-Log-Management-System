@@ -57,11 +57,11 @@ export default function SystemsPage() {
   const helm = issued && [
     'helm install logintel-agent \\',
     '  oci://ghcr.io/sayuru-priyanjana/logintel-agent \\',
-    '  --version 0.1.6 \\',
+    '  --version 0.1.8 \\',
     '  -n logintel \\',
     '  --create-namespace \\',
     '  --set namespace=logintel \\',
-    '  --set central.url="http://YOUR_CENTRAL_IP" \\',
+    '  --set central.url="https://YOUR_CENTRAL_DOMAIN" \\',
     `  --set central.systemName="${issued.name}" \\`,
     `  --set auth.clusterId="${issued.id}" \\`,
     `  --set auth.token="${issued.token}"`,

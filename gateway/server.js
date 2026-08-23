@@ -58,6 +58,56 @@ async function initDB() {
 }
 initDB().catch(console.error);
 
+// ---------------------------------------------------------
+// INGESTION PROXY (WITH TOKEN ENFORCEMENT)
+// ---------------------------------------------------------
+const opensearchProxy = createProxyMiddleware({
+  target: process.env.OPENSEARCH_URL || 'http://opensearch:9200',
+  changeOrigin: true
+});
+
+const prometheusProxy = createProxyMiddleware({
+  target: process.env.PROMETHEUS_URL || 'http://prometheus:9090',
+  changeOrigin: true
+});
+
+const requireIngestAuth = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ detail: 'Missing authorization header' });
+  }
+  
+  let token = null;
+  if (authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (authHeader.startsWith('Basic ')) {
+    const b64 = authHeader.split(' ')[1];
+    const decoded = Buffer.from(b64, 'base64').toString('utf8');
+    const parts = decoded.split(':');
+    token = parts[1];
+  } else {
+    return res.status(401).json({ detail: 'Invalid authorization format' });
+  }
+
+  if (!token) return res.status(401).json({ detail: 'Missing token' });
+  
+  token = token.trim();
+  try {
+    const result = await pool.query('SELECT id FROM systems WHERE token = $1', [token]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ detail: 'Invalid ingestion token' });
+    }
+    req.systemId = result.rows[0].id;
+    next();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ detail: 'Internal Error during auth' });
+  }
+};
+
+app.post('/_bulk', requireIngestAuth, opensearchProxy);
+app.post('/api/v1/write', requireIngestAuth, prometheusProxy);
+
 app.use(express.json());
 
 // ---------------------------------------------------------
@@ -115,48 +165,6 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
-const requireIngestAuth = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  console.log('Received Ingest Auth Header:', authHeader);
-  if (!authHeader) {
-    return res.status(401).json({ detail: 'Missing authorization header' });
-  }
-  
-  let token = null;
-  if (authHeader.startsWith('Bearer ')) {
-    token = authHeader.split(' ')[1];
-  } else if (authHeader.startsWith('Basic ')) {
-    // Fluent Bit's HTTP_User / HTTP_Passwd sends Basic Auth.
-    // The token is sent in the password field.
-    const b64 = authHeader.split(' ')[1];
-    const decoded = Buffer.from(b64, 'base64').toString('utf8');
-    const parts = decoded.split(':');
-    token = parts[1]; // password field
-  } else {
-    return res.status(401).json({ detail: 'Invalid authorization format' });
-  }
-
-  if (!token) {
-    return res.status(401).json({ detail: 'Missing token' });
-  }
-  
-  token = token.trim();
-  console.log('Token after trim: "' + token + '"');
-
-  try {
-    const result = await pool.query('SELECT id FROM systems WHERE token = $1', [token]);
-    console.log('Query result rows:', result.rows.length);
-    if (result.rows.length === 0) {
-      return res.status(401).json({ detail: 'Invalid ingestion token' });
-    }
-    // Inject system ID for any downstream needs
-    req.systemId = result.rows[0].id;
-    next();
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ detail: 'Internal Error during auth' });
-  }
-};
 
 app.put('/api/auth/password', requireAuth, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
@@ -510,23 +518,6 @@ app.put('/api/settings', requireAuth, requireAdmin, agentProxy);
 app.post('/api/settings/test', requireAuth, requireAdmin, agentProxy);
 app.get('/api/clusters', requireAuth, requireAdmin, agentProxy);
 
-// ---------------------------------------------------------
-// INGESTION PROXY (WITH TOKEN ENFORCEMENT)
-// ---------------------------------------------------------
-
-const opensearchProxy = createProxyMiddleware({
-  target: process.env.OPENSEARCH_URL || 'http://opensearch:9200',
-  changeOrigin: true
-});
-
-const prometheusProxy = createProxyMiddleware({
-  target: process.env.PROMETHEUS_URL || 'http://prometheus:9090',
-  changeOrigin: true
-});
-
-// Expose these endpoints securely
-app.post('/_bulk', requireIngestAuth, opensearchProxy);
-app.post('/api/v1/write', requireIngestAuth, prometheusProxy);
 
 // Graceful fallback endpoints for critical UI routes when AI Agent is down
 app.get('/api/health', requireAuth, async (req, res) => {

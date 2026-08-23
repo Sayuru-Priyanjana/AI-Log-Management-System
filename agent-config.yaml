@@ -1,0 +1,120 @@
+apiVersion: v1
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+
+    # --- INPUTS ---
+    # 1. Container Logs
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            cri
+        DB                /var/log/flb_kube.db
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+
+
+
+    # 3. Kubernetes Events (Removed - now handled by dedicated event_collector deployment)
+
+    # --- FILTERS ---
+    # Add Kubernetes metadata to logs
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+
+    # Transform logs into exact LogIntel schema
+    [FILTER]
+        Name                lua
+        Match               kube.*
+        script              /fluent-bit/etc/normalize.lua
+        call                normalize
+        time_as_table       true
+
+    # Send application logs to central OpenSearch
+    [OUTPUT]
+        Name            opensearch
+        Match           kube.*
+        Host            logintel.inova.lk
+        Port            443
+        HTTP_User       logintel
+        HTTP_Passwd     logintel_tok_b5a8f9f98267b94dbcba932235300ee4
+        TLS             On
+        TLS.Verify      Off
+        Logstash_Format On
+        Logstash_Prefix logintel-logs
+        Time_Key        @timestamp
+        Time_Key_Format %Y-%m-%dT%H:%M:%S
+        Time_Key_Nanos  On
+        Suppress_Type_Name On
+        Replace_Dots    On
+        Generate_ID     On
+  normalize.lua: "local function iso_to_epoch(value)\n  if type(value) ~= \"string\"
+    then return nil, nil end\n  local y, mo, d, h, mi, s, frac = value:match(\"^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)\")\n
+    \ if not y then return nil, nil end\n  local epoch = os.time({\n    year = tonumber(y),
+    month = tonumber(mo), day = tonumber(d),\n    hour = tonumber(h), min = tonumber(mi),
+    sec = tonumber(s), isdst = false\n  })\n  local nanos = 0\n  if frac ~= \"\" then
+    nanos = tonumber((frac .. \"000000000\"):sub(1, 9)) or 0 end\n  return epoch,
+    nanos\nend\n\nfunction normalize(tag, timestamp, record)\n  local kube = record[\"kubernetes\"]\n
+    \ if kube == nil then return -1, 0, 0 end\n\n  local labels = kube[\"labels\"]
+    or {}\n  local out = {}\n\n  out[\"system\"] = {\n    id   = \"cls-7a2c1f83\",\n
+    \   name = \"shared-env\"\n  }\n  out[\"environment\"] = \"testbed\"\n  out[\"source\"]
+    = { type = \"kubernetes\", collector = \"fluent-bit\" }\n  out[\"kubernetes\"]
+    = {\n    cluster   = \"cls-7a2c1f83\",\n    namespace = kube[\"namespace_name\"],\n
+    \   pod       = { name = kube[\"pod_name\"], uid = kube[\"pod_id\"] },\n    container
+    = { name = kube[\"container_name\"], image = kube[\"container_image\"] },\n    node
+    \     = { name = kube[\"host\"] }\n  }\n\n  local body = record[\"log\"]\n  local
+    record_ts, record_ns = nil, nil\n\n  if type(body) == \"table\" then\n    for
+    key, value in pairs(record) do\n      if key ~= \"kubernetes\" and key ~= \"stream\"
+    and key ~= \"time\" and key ~= \"logtag\" then\n        out[key] = value\n      end\n
+    \   end\n    out[\"log\"] = body\n    if body[\"level\"] == nil then out[\"log\"][\"level\"]
+    = \"UNKNOWN\" end\n    if body[\"message\"] == nil then out[\"log\"][\"message\"]
+    = \"\" end\n    record_ts, record_ns = iso_to_epoch(record[\"@timestamp\"])\n
+    \ else\n    out[\"log\"] = { level = \"UNKNOWN\", message = tostring(body or \"\")
+    }\n  end\n\n  if out[\"service\"] == nil then\n    local svc_name = labels[\"app.kubernetes.io/name\"]
+    or labels[\"app\"] or labels[\"name\"] or labels[\"k8s-app\"]\n    \n    -- ULTIMATE
+    FALLBACK: If labels are completely missing, use the container name\n    if svc_name
+    == nil and kube[\"container_name\"] ~= nil then\n      svc_name = kube[\"container_name\"]\n
+    \   end\n\n    if svc_name ~= nil then\n      out[\"service\"] = { name = svc_name
+    }\n    end\n  end\n\n  out[\"@timestamp\"] = nil\n\n  if record_ts ~= nil then\n
+    \   return 2, { sec = record_ts, nsec = record_ns }, out\n  end\n  return 2, timestamp,
+    out\nend\n\n"
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+
+    [PARSER]
+        Name        cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep   On
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"fluent-bit.conf":"[SERVICE]\n    Flush         1\n    Log_Level     info\n    Daemon        off\n    Parsers_File  parsers.conf\n\n# --- INPUTS ---\n# 1. Container Logs\n[INPUT]\n    Name              tail\n    Tag               kube.*\n    Path              /var/log/containers/*.log\n    Parser            cri\n    DB                /var/log/flb_kube.db\n    Mem_Buf_Limit     5MB\n    Skip_Long_Lines   On\n\n\n\n# 3. Kubernetes Events (Removed - now handled by dedicated event_collector deployment)\n\n# --- FILTERS ---\n# Add Kubernetes metadata to logs\n[FILTER]\n    Name                kubernetes\n    Match               kube.*\n    Kube_URL            https://kubernetes.default.svc:443\n    Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token\n    Kube_Tag_Prefix     kube.var.log.containers.\n    Merge_Log           On\n\n# Transform logs into exact LogIntel schema\n[FILTER]\n    Name                lua\n    Match               kube.*\n    script              /fluent-bit/etc/normalize.lua\n    call                normalize\n    time_as_table       true\n\n# Send application logs to central OpenSearch\n[OUTPUT]\n    Name            opensearch\n    Match           kube.*\n    Host            logintel.inova.lk\n    Port            443\n    HTTP_User       logintel\n    HTTP_Passwd     logintel_tok_b5a8f9f98267b94dbcba932235300ee4\n    TLS             On\n    TLS.Verify      Off\n    Logstash_Format On\n    Logstash_Prefix logintel-logs\n    Time_Key        @timestamp\n    Time_Key_Format %Y-%m-%dT%H:%M:%S\n    Time_Key_Nanos  On\n    Suppress_Type_Name On\n    Replace_Dots    On\n    Generate_ID     On\n","normalize.lua":"local function iso_to_epoch(value)\n  if type(value) ~= \"string\" then return nil, nil end\n  local y, mo, d, h, mi, s, frac = value:match(\"^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)\")\n  if not y then return nil, nil end\n  local epoch = os.time({\n    year = tonumber(y), month = tonumber(mo), day = tonumber(d),\n    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false\n  })\n  local nanos = 0\n  if frac ~= \"\" then nanos = tonumber((frac .. \"000000000\"):sub(1, 9)) or 0 end\n  return epoch, nanos\nend\n\nfunction normalize(tag, timestamp, record)\n  local kube = record[\"kubernetes\"]\n  if kube == nil then return -1, 0, 0 end\n\n  local labels = kube[\"labels\"] or {}\n  local out = {}\n\n  out[\"system\"] = {\n    id   = \"cls-7a2c1f83\",\n    name = \"shared-env\"\n  }\n  out[\"environment\"] = \"testbed\"\n  out[\"source\"] = { type = \"kubernetes\", collector = \"fluent-bit\" }\n  out[\"kubernetes\"] = {\n    cluster   = \"cls-7a2c1f83\",\n    namespace = kube[\"namespace_name\"],\n    pod       = { name = kube[\"pod_name\"], uid = kube[\"pod_id\"] },\n    container = { name = kube[\"container_name\"], image = kube[\"container_image\"] },\n    node      = { name = kube[\"host\"] }\n  }\n\n  local body = record[\"log\"]\n  local record_ts, record_ns = nil, nil\n\n  if type(body) == \"table\" then\n    for key, value in pairs(record) do\n      if key ~= \"kubernetes\" and key ~= \"stream\" and key ~= \"time\" and key ~= \"logtag\" then\n        out[key] = value\n      end\n    end\n    out[\"log\"] = body\n    if body[\"level\"] == nil then out[\"log\"][\"level\"] = \"UNKNOWN\" end\n    if body[\"message\"] == nil then out[\"log\"][\"message\"] = \"\" end\n    record_ts, record_ns = iso_to_epoch(record[\"@timestamp\"])\n  else\n    out[\"log\"] = { level = \"UNKNOWN\", message = tostring(body or \"\") }\n  end\n\n    if out[\"service\"] == nil then\n      local svc_name = labels[\"app.kubernetes.io/name\"] or labels[\"app\"] or labels[\"name\"] or labels[\"k8s-app\"]\n      if svc_name ~= nil then\n        out[\"service\"] = { name = svc_name }\n      end\n    end\n\n  out[\"@timestamp\"] = nil\n\n  if record_ts ~= nil then\n    return 2, { sec = record_ts, nsec = record_ns }, out\n  end\n  return 2, timestamp, out\nend\n","parsers.conf":"[PARSER]\n    Name        docker\n    Format      json\n    Time_Key    time\n    Time_Format %Y-%m-%dT%H:%M:%S.%L\n    Time_Keep   On\n\n[PARSER]\n    Name        cri\n    Format      regex\n    Regex       ^(?\u003ctime\u003e[^ ]+) (?\u003cstream\u003estdout|stderr) (?\u003clogtag\u003e[^ ]*) (?\u003clog\u003e.*)$\n    Time_Key    time\n    Time_Format %Y-%m-%dT%H:%M:%S.%L%z\n    Time_Keep   On\n"},"kind":"ConfigMap","metadata":{"annotations":{"meta.helm.sh/release-name":"logintel-agent","meta.helm.sh/release-namespace":"logintel"},"creationTimestamp":"2026-08-19T09:55:14Z","labels":{"app.kubernetes.io/managed-by":"Helm"},"name":"logintel-agent-config","namespace":"logintel","resourceVersion":"4002870","uid":"275c437c-fc38-4065-9588-96763c8366f2"}}
+    meta.helm.sh/release-name: logintel-agent
+    meta.helm.sh/release-namespace: logintel
+  creationTimestamp: "2026-08-19T09:55:14Z"
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  name: logintel-agent-config
+  namespace: logintel
+  resourceVersion: "4647435"
+  uid: 275c437c-fc38-4065-9588-96763c8366f2

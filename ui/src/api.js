@@ -163,6 +163,7 @@ export async function getSystemLogs(systemId, params = {}) {
   if (params.service) queryParams.append('service', params.service);
   if (params.level) queryParams.append('level', params.level);
   if (params.limit) queryParams.append('limit', params.limit);
+  if (params.offset !== undefined) queryParams.append('offset', params.offset);
   if (params.start) queryParams.append('start', params.start);
   if (params.end) queryParams.append('end', params.end);
   
