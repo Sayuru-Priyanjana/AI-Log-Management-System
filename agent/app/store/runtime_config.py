@@ -75,7 +75,7 @@ FIELDS: tuple[Field, ...] = (
 
     # -- which model -------------------------------------------------------
     Field("llm_provider", "model", "Provider", kind="select",
-          options=("ollama", "openai", "anthropic"),
+          options=("ollama", "openai", "anthropic", "groq"),
           help="ollama runs locally and costs nothing; the others are hosted APIs."),
     Field("llm_model", "model", "Model",
           help="Leave empty on Ollama to use the Ollama model below."),

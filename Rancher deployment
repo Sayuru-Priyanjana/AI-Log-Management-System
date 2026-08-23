@@ -1,0 +1,56 @@
+# Kubernetes Deployment Walkthrough
+
+I have successfully generated all the files needed to deploy the central LogIntel system to your Rancher cluster!
+
+All files are located in `LogIntel/kubernetes/central/` on your local machine.
+
+## 1. Building the ARM64 Images
+Before applying anything to Kubernetes, you must run the build script to compile your local Docker images for the Rancher cluster's ARM64 architecture and push them to your GitHub Container Registry.
+
+Run this script from a bash terminal (e.g., WSL, Git Bash) in your `LogIntel` folder:
+```bash
+cd LogIntel/kubernetes/central
+bash build-and-push.sh
+```
+> [!IMPORTANT]
+> Make sure you are logged into Docker with your GHCR Personal Access Token before running this script, or the `docker push` commands will fail!
+
+## 2. Setting up the Namespace
+In the **Rancher UI**:
+1. Navigate to your Project.
+2. Create a new namespace called `logintel-central`.
+
+## 3. Applying the Manifests
+Once the images are pushed and the namespace exists, you can apply all the files in one go using your `kubectl` (configured for your Rancher cluster over the VPN):
+
+```bash
+kubectl apply -f LogIntel/kubernetes/central/ -n logintel-central
+```
+
+## 4. Configuring the AI Agent (Ollama)
+Because you chose Option A, the AI agent in the cluster will reach out to your local PC for Ollama.
+
+**Before applying `stateless.yaml`**, you must open `LogIntel/kubernetes/central/stateless.yaml` and update line 46:
+```yaml
+- name: OLLAMA_BASE_URL
+  value: "http://INSERT_YOUR_VPN_IP_HERE:11434"
+```
+Replace the placeholder with your actual local VPN IP address. Ensure your Windows Firewall allows inbound connections on port 11434.
+
+## 5. Getting your Public URLs (TryCloudflare)
+Instead of Ingress or NodePorts, we deployed two `cloudflared` pods. They will each generate a secure, temporary public URL for you.
+
+To get the URL for the **LogIntel UI**, run:
+```bash
+kubectl logs deploy/cloudflared-ui -n logintel-central | grep -o "https://.*\.trycloudflare.com"
+```
+*(Open this URL in your browser to view the dashboards!)*
+
+To get the URL for the **Gateway**, run:
+```bash
+kubectl logs deploy/cloudflared-gateway -n logintel-central | grep -o "https://.*\.trycloudflare.com"
+```
+*(Copy this URL and use it as `global.endpoint` when you reinstall the `logintel-agent` Helm chart in your Vagrant VM!)*
+
+> [!TIP]
+> If a `cloudflared` pod restarts, its URL will change. You can re-run the log commands above to get the new URLs.
