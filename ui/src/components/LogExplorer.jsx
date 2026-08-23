@@ -11,13 +11,18 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
   const [query, setQuery] = useState('');
   const [service, setService] = useState('');
   const [level, setLevel] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const limit = 100;
   
   const fetchLogs = async (showLoading = true) => {
     if (!systemId) return;
     if (showLoading) setLoading(true);
     try {
-      const result = await getSystemLogs(systemId, { query, service, level, limit: 100, start, end });
-      setLogs(result || []);
+      const offset = (page - 1) * limit;
+      const result = await getSystemLogs(systemId, { query, service, level, limit, offset, start, end });
+      setLogs(result?.logs || []);
+      setTotal(result?.total || 0);
     } catch (err) {
       toast.error('Failed to fetch logs', { detail: err.message });
       setLiveTail(false);
@@ -27,9 +32,15 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
   };
 
   useEffect(() => {
+    setPage(1);
     fetchLogs(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [systemId, start, end]);
+  }, [systemId, start, end, query, service, level]);
+
+  useEffect(() => {
+    fetchLogs(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   useEffect(() => {
     let interval;
@@ -40,18 +51,11 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
     }
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveTail, systemId, query, service, level]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchLogs(true);
-    }, 300);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, service, level]);
+  }, [liveTail, systemId, query, service, level, page]);
 
   const handleSearch = (e) => {
     e.preventDefault();
+    setPage(1);
     fetchLogs(true);
   };
 
@@ -64,7 +68,7 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
   };
 
   return (
-    <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '500px', flexShrink: 0 }}>
+    <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0 }}>
       <header style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: '16px', backgroundColor: 'var(--surface-2)' }}>
         <h3 style={{ margin: 0, color: 'var(--text)' }}>Log Explorer</h3>
         <span className="spacer" />
@@ -82,7 +86,7 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
             <option value="">All Services</option>
             {services.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select className="input input--sm" value={level} onChange={(e) => setLevel(e.target.value)} style={{ width: 'auto', backgroundColor: 'var(--surface)' }}>
+          <select className="input input--sm" value={level} onChange={(e) => { setLevel(e.target.value); setPage(1); }} style={{ width: 'auto', backgroundColor: 'var(--surface)' }}>
             <option value="">All Levels</option>
             <option value="error">ERROR</option>
             <option value="warn">WARN</option>
@@ -139,6 +143,33 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
           </table>
         )}
       </div>
+
+      {total > limit && (
+        <footer style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'var(--surface)' }}>
+          <div style={{ color: 'var(--text-2)', fontSize: '13px' }}>
+            Showing {((page - 1) * limit) + 1} to {Math.min(page * limit, total)} of {total} logs
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button 
+              className="btn btn--sm" 
+              disabled={page === 1}
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+            >
+              Previous
+            </button>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: '13px', color: 'var(--text)' }}>
+              Page {page} of {Math.ceil(total / limit)}
+            </span>
+            <button 
+              className="btn btn--sm" 
+              disabled={page >= Math.ceil(total / limit)}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Next
+            </button>
+          </div>
+        </footer>
+      )}
     </div>
   );
 }

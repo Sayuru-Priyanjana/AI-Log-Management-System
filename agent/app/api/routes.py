@@ -359,7 +359,7 @@ async def get_system_metrics_logs(system_id: str, start: int, end: int, request:
         },
         "aggs": {
             "services": {
-                "terms": {"field": "service.name"},
+                "terms": {"field": "service.name", "size": 1000},
                 "aggs": {
                     "logs_over_time": {
                         "date_histogram": {
@@ -682,7 +682,7 @@ async def get_logs_context(system_id: str, timestamp: int, service: str, request
         return []
 
 @router.get("/systems/{system_id}/logs")
-async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, start: int = None, end: int = None):
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, offset: int = 0, start: int = None, end: int = None):
     container = deps(request)
     
     filter_clauses = [{"term": {"system.id": system_id}}]
@@ -720,6 +720,7 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
     
     es_query = {
         "size": limit,
+        "from": offset,
         "sort": [{"@timestamp": {"order": "desc"}}],
         "query": {
             "bool": {
@@ -770,6 +771,22 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                     except Exception:
                         pass
                 
+            if lvl == "UNKNOWN" and isinstance(msg, str):
+                import re
+                prefix = msg[:200].upper()
+                if re.search(r'\b(ERROR|FATAL|CRITICAL|ERR)\b', prefix):
+                    lvl = "ERROR"
+                elif re.search(r'\b(WARN|WARNING)\b', prefix):
+                    lvl = "WARN"
+                elif re.search(r'\b(INFO|NOTICE)\b', prefix):
+                    lvl = "INFO"
+                elif re.search(r'\b(DEBUG|TRACE)\b', prefix):
+                    lvl = "DEBUG"
+                elif re.search(r'HTTP/1\.[01]"\s+[23]\d{2}\b', prefix):
+                    lvl = "INFO"
+                elif re.search(r'HTTP/1\.[01]"\s+[45]\d{2}\b', prefix):
+                    lvl = "ERROR"
+                    
             logs.append({
                 "id": hit.get("_id"),
                 "timestamp": src.get("@timestamp"),
@@ -778,8 +795,11 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                 "message": str(msg)
             })
             
-        return logs
+        return {
+            "total": result.get("hits", {}).get("total", {}).get("value", 0),
+            "logs": logs
+        }
     except Exception as exc:
         logger.error(f"Failed to fetch raw logs: {exc}")
-        return []
+        return {"total": 0, "logs": []}
 

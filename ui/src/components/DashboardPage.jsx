@@ -9,7 +9,6 @@ import {
 } from '../api';
 import { useToast } from '../toast';
 import AnomalyTimeline from './AnomalyTimeline';
-import LogExplorer from './LogExplorer';
 
 const COLORS = [
   '#2E72D2', '#00A78F', '#632CA6', '#E24D42', '#F39B00',
@@ -369,8 +368,6 @@ export default function DashboardPage() {
             )}
             </div>
           </div>
-
-          <LogExplorer systemId={selectedId} services={logsServices} start={start} end={end} />
         </div>
       )}
     </div>
