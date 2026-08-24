@@ -27,12 +27,12 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
     };
   }, [isOpen]);
 
-  const applyTimeframe = (label, startUnix, endUnix, close = true) => {
+  const applyTimeframe = (label, startUnix, endUnix, close = true, isRelative = false, relativeType = null) => {
     setCurrentLabel(label);
     setCurrentStart(startUnix);
     setCurrentEnd(endUnix);
     if (close) setIsOpen(false);
-    onChange({ start: startUnix, end: endUnix, label });
+    onChange({ start: startUnix, end: endUnix, label, isRelative, relativeType });
   };
 
   const handleStepBack = () => {
@@ -40,7 +40,7 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
     const newStart = currentStart - windowSize;
     const newEnd = currentEnd - windowSize;
     const label = `${new Date(newStart * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })} to ${new Date(newEnd * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`;
-    applyTimeframe(label, newStart, newEnd, false);
+    applyTimeframe(label, newStart, newEnd, false, false);
   };
 
   const handleStepForward = () => {
@@ -48,20 +48,20 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
     const newStart = currentStart + windowSize;
     const newEnd = currentEnd + windowSize;
     const label = `${new Date(newStart * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })} to ${new Date(newEnd * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`;
-    applyTimeframe(label, newStart, newEnd, false);
+    applyTimeframe(label, newStart, newEnd, false, false);
   };
 
   const handleCommonClick = (label, seconds) => {
     const end = Math.floor(Date.now() / 1000);
     const start = end - seconds;
-    applyTimeframe(label, start, end);
+    applyTimeframe(label, start, end, true, true, { type: 'seconds', value: seconds });
   };
 
   const handleToday = () => {
     const now = new Date();
     const end = Math.floor(now.getTime() / 1000);
     const start = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
-    applyTimeframe('Today', start, end);
+    applyTimeframe('Today', start, end, true, true, { type: 'today' });
   };
 
   const handleThisWeek = () => {
@@ -70,7 +70,7 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
     const day = now.getDay() || 7; // Get current day number, converting Sun. to 7
     if (day !== 1) now.setHours(-24 * (day - 1)); // Set to Monday
     const start = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
-    applyTimeframe('This week', start, end);
+    applyTimeframe('This week', start, end, true, true, { type: 'thisWeek' });
   };
 
   const handleQuickApply = () => {
