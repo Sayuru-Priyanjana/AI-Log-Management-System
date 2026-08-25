@@ -140,19 +140,50 @@ data:
 
       if type(body) == "table" then
         out["log"] = body
-        if body["level"] == nil then out["log"]["level"] = "UNKNOWN" end
+        local lvl = body["level"]
+        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
+          local http_code = body["status"] or body["status_code"] or body["http_status"] or body["http.status_code"]
+          local resolved_lvl = "INFO"
+          if http_code ~= nil then
+            local code = tonumber(http_code)
+            if code ~= nil then
+              if code >= 500 then resolved_lvl = "ERROR"
+              elseif code >= 400 then resolved_lvl = "WARN"
+              elseif code >= 200 then resolved_lvl = "INFO"
+              end
+            end
+          end
+          out["log"]["level"] = resolved_lvl
+        end
         if body["message"] == nil then out["log"]["message"] = "" end
       else
         local str_body = tostring(body or "")
-        local lvl = "UNKNOWN"
+        local lvl = nil
         -- Attempt to parse common Spring Boot log format
         local ts, parsed_lvl, rest = str_body:match("^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)")
         if ts ~= nil then
           lvl = parsed_lvl
           str_body = rest
         else
-          local fallback_lvl = str_body:match("%s+(ERROR)%s+") or str_body:match("%s+(WARN)%s+") or str_body:match("%s+(INFO)%s+") or str_body:match("%s+(DEBUG)%s+")
-          if fallback_lvl ~= nil then lvl = fallback_lvl end
+          lvl = str_body:match("%s+(ERROR)%s+") or str_body:match("%s+(WARN)%s+") or str_body:match("%s+(INFO)%s+") or str_body:match("%s+(DEBUG)%s+")
+        end
+
+        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
+          -- Try to find HTTP status code
+          local http_code = str_body:match("HTTP/%d%.%d\"?%s+(%d%d%d)")
+          if http_code == nil then http_code = str_body:match("status=(%d%d%d)") end
+          if http_code == nil then http_code = str_body:match("\"status\":%s*(%d%d%d)") end
+          
+          lvl = "INFO" -- default fallback
+          if http_code ~= nil then
+            local code = tonumber(http_code)
+            if code ~= nil then
+              if code >= 500 then lvl = "ERROR"
+              elseif code >= 400 then lvl = "WARN"
+              elseif code >= 200 then lvl = "INFO"
+              end
+            end
+          end
         end
         out["log"] = { level = lvl, message = str_body }
       end
