@@ -143,7 +143,18 @@ data:
         if body["level"] == nil then out["log"]["level"] = "UNKNOWN" end
         if body["message"] == nil then out["log"]["message"] = "" end
       else
-        out["log"] = { level = "UNKNOWN", message = tostring(body or "") }
+        local str_body = tostring(body or "")
+        local lvl = "UNKNOWN"
+        -- Attempt to parse common Spring Boot log format
+        local ts, parsed_lvl, rest = str_body:match("^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)")
+        if ts ~= nil then
+          lvl = parsed_lvl
+          str_body = rest
+        else
+          local fallback_lvl = str_body:match("%s+(ERROR)%s+") or str_body:match("%s+(WARN)%s+") or str_body:match("%s+(INFO)%s+") or str_body:match("%s+(DEBUG)%s+")
+          if fallback_lvl ~= nil then lvl = fallback_lvl end
+        end
+        out["log"] = { level = lvl, message = str_body }
       end
 
         if out["service"] == nil then

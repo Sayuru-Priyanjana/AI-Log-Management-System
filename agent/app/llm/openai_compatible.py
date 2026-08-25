@@ -47,6 +47,19 @@ class OpenAICompatibleClient(LLMClient):
     async def available(self) -> bool:
         if not self._api_key and "localhost" not in self.base_url:
             return False
+            
+        # Gemini's OpenAI wrapper does not support the /models discovery endpoint
+        if "generativelanguage" in self.base_url:
+            try:
+                # Send a tiny ping to verify the key and model exist
+                response = await self._client.post(
+                    "/chat/completions",
+                    json={"model": self.model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+                )
+                return response.status_code == 200
+            except httpx.HTTPError:
+                return False
+
         try:
             response = await self._client.get("/models")
         except httpx.HTTPError:

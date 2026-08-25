@@ -24,7 +24,7 @@ from app.llm.openai_compatible import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
 
-PROVIDERS = ("ollama", "openai", "anthropic", "groq")
+PROVIDERS = ("ollama", "openai", "anthropic", "groq", "gemini")
 
 
 def build_llm() -> LLMClient:
@@ -45,6 +45,9 @@ def build_llm() -> LLMClient:
     elif provider == "groq":
         client = OpenAICompatibleClient(base_url=settings.llm_base_url or "https://api.groq.com/openai/v1")
         client.provider = "groq"
+    elif provider == "gemini":
+        client = OpenAICompatibleClient(base_url=settings.llm_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/")
+        client.provider = "gemini"
     else:
         client = OllamaClient()
 
