@@ -50,7 +50,7 @@ const CustomTooltip = ({ active, payload, label, unit }) => {
   return null;
 };
 
-export default function MonitoringChart({ title, data, services, compareServices = [], loading, unit, onClick, showControls = true, showLegend = true, defaultTopN = 10 }) {
+export default function MonitoringChart({ title, data, services, compareServices = [], loading, unit, onClick, showControls = true, showLegend = true, defaultTopN = 10, emptyMessage }) {
   const [hiddenSeries, setHiddenSeries] = useState(new Set());
   const [topN, setTopN] = useState(defaultTopN);
   
@@ -66,19 +66,19 @@ export default function MonitoringChart({ title, data, services, compareServices
   const { visibleServices, processedData } = useMemo(() => {
     if (safeData.length === 0) return { visibleServices: services, processedData: safeData };
     
-    // Find max values across all time for sorting
-    const maxValues = {};
-    services.forEach(s => maxValues[s] = 0);
+    // Find sum values across all time for sorting
+    const sumValues = {};
+    services.forEach(s => sumValues[s] = 0);
     
     safeData.forEach(point => {
       services.forEach(s => {
-        if (point[s] > maxValues[s]) {
-          maxValues[s] = point[s];
+        if (point[s] !== undefined && !isNaN(point[s])) {
+          sumValues[s] += point[s];
         }
       });
     });
     
-    const sortedServices = Object.keys(maxValues).sort((a, b) => maxValues[b] - maxValues[a]);
+    const sortedServices = Object.keys(sumValues).sort((a, b) => sumValues[b] - sumValues[a]);
     
     if (topN === 'all') {
       return { visibleServices: sortedServices, processedData: safeData };
@@ -260,11 +260,18 @@ export default function MonitoringChart({ title, data, services, compareServices
           </div>
         ) : safeData.length === 0 ? (
           <div className="empty-state" style={{ height: '100%', width: '100%' }}>
-            <div className="empty-state-title">No metrics recorded</div>
+            <div className="empty-state-title">{emptyMessage || "No metrics recorded"}</div>
           </div>
         ) : (
           <>
-            <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+            <div style={{ 
+              flex: 1, 
+              minWidth: 0, 
+              minHeight: 0, 
+              opacity: loading ? 0.5 : 1, 
+              transition: 'opacity 0.3s ease',
+              position: 'relative'
+            }}>
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart 
                   data={processedData} 
@@ -327,7 +334,9 @@ export default function MonitoringChart({ title, data, services, compareServices
                       fillOpacity={1}
                       strokeWidth={2}
                       hide={hiddenSeries.has(svc)}
-                      isAnimationActive={false}
+                      activeDot={processedData.length <= 100}
+                      animationDuration={500}
+                      animationEasing="ease-out"
                     />
                   ))}
                   {compareServices.map((svc) => {
@@ -343,7 +352,9 @@ export default function MonitoringChart({ title, data, services, compareServices
                         fill="transparent"
                         strokeWidth={2}
                         hide={hiddenSeries.has(originalSvc)}
-                        isAnimationActive={false}
+                        activeDot={processedData.length <= 100}
+                        animationDuration={500}
+                        animationEasing="ease-out"
                       />
                     );
                   })}

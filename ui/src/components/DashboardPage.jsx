@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   getSystems, getSystemMetricsRequests, getSystemMetricsRam, getSystemMetricsLogs, 
-  getSystemMetricsHttpRequests, getSystemMetricsHttpLatency, getSystemMetricsHttpErrors,
+  getSystemMetricsErrorLogs, getSystemMetricsRestarts, getSystemMetricsThrottling,
   getSystemAlerts, getTopErrors 
 } from '../api';
 import { useToast } from '../toast';
@@ -23,9 +23,9 @@ export default function DashboardPage() {
   const [cpuData, setCpuData] = useState([]);
   const [ramData, setRamData] = useState([]);
   const [logsData, setLogsData] = useState([]);
-  const [httpReqData, setHttpReqData] = useState([]);
-  const [httpLatencyData, setHttpLatencyData] = useState([]);
-  const [httpErrorsData, setHttpErrorsData] = useState([]);
+  const [errorLogsData, setErrorLogsData] = useState([]);
+  const [restartsData, setRestartsData] = useState([]);
+  const [throttlingData, setThrottlingData] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [topErrors, setTopErrors] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,9 +33,9 @@ export default function DashboardPage() {
   const [cpuServices, setCpuServices] = useState([]);
   const [ramServices, setRamServices] = useState([]);
   const [logsServices, setLogsServices] = useState([]);
-  const [httpReqServices, setHttpReqServices] = useState([]);
-  const [httpLatencyServices, setHttpLatencyServices] = useState([]);
-  const [httpErrorsServices, setHttpErrorsServices] = useState([]);
+  const [errorLogsServices, setErrorLogsServices] = useState([]);
+  const [restartsServices, setRestartsServices] = useState([]);
+  const [throttlingServices, setThrottlingServices] = useState([]);
 
   const [selectedChart, setSelectedChart] = useState(null);
 
@@ -70,13 +70,13 @@ export default function DashboardPage() {
       setLoading(true);
       
       try {
-        const [cpuRes, ramRes, logsRes, httpReqRes, httpLatencyRes, httpErrorsRes, alertsRes, errorsRes] = await Promise.all([
+        const [cpuRes, ramRes, logsRes, errorLogsRes, restartsRes, throttlingRes, alertsRes, errorsRes] = await Promise.all([
           getSystemMetricsRequests(selectedId, start, end).catch(() => []),
           getSystemMetricsRam(selectedId, start, end).catch(() => []),
           getSystemMetricsLogs(selectedId, start, end).catch(() => []),
-          getSystemMetricsHttpRequests(selectedId, start, end).catch(() => []),
-          getSystemMetricsHttpLatency(selectedId, start, end).catch(() => []),
-          getSystemMetricsHttpErrors(selectedId, start, end).catch(() => []),
+          getSystemMetricsErrorLogs(selectedId, start, end).catch(() => []),
+          getSystemMetricsRestarts(selectedId, start, end).catch(() => []),
+          getSystemMetricsThrottling(selectedId, start, end).catch(() => []),
           getSystemAlerts(selectedId).catch(() => []),
           getTopErrors(selectedId, start, end).catch(() => [])
         ]);
@@ -85,9 +85,9 @@ export default function DashboardPage() {
           setCpuData(cpuRes);
           setRamData(ramRes);
           setLogsData(logsRes);
-          setHttpReqData(httpReqRes);
-          setHttpLatencyData(httpLatencyRes);
-          setHttpErrorsData(httpErrorsRes);
+          setErrorLogsData(errorLogsRes);
+          setRestartsData(restartsRes);
+          setThrottlingData(throttlingRes);
           setTopErrors(errorsRes || []);
           
           setAlerts(alertsRes || []);
@@ -105,9 +105,9 @@ export default function DashboardPage() {
           setCpuServices(extractServices(cpuRes));
           setRamServices(extractServices(ramRes));
           setLogsServices(extractServices(logsRes));
-          setHttpReqServices(extractServices(httpReqRes));
-          setHttpLatencyServices(extractServices(httpLatencyRes));
-          setHttpErrorsServices(extractServices(httpErrorsRes));
+          setErrorLogsServices(extractServices(errorLogsRes));
+          setRestartsServices(extractServices(restartsRes));
+          setThrottlingServices(extractServices(throttlingRes));
         }
       } catch (err) {
         console.error(err);
@@ -210,7 +210,7 @@ export default function DashboardPage() {
             <div style={{ minHeight: '400px', display: 'flex' }}>
               <div style={{ flex: 1 }}>
                 <MonitoringChart 
-                  title="CPU Usage (cores)" data={cpuData} services={cpuServices} loading={loading} unit="c" showControls={false} showLegend={false} defaultTopN="all"
+                  title="CPU Usage (cores)" data={cpuData} services={cpuServices} loading={loading} unit="c" showControls={false} showLegend={false} defaultTopN={5}
                   onClick={() => setSelectedChart({ title: 'CPU Usage (cores)', data: cpuData, services: cpuServices, unit: 'c', fetchFn: (s, e) => getSystemMetricsRequests(selectedId, s, e) })} 
                 />
               </div>
@@ -218,7 +218,7 @@ export default function DashboardPage() {
             <div style={{ minHeight: '400px', display: 'flex' }}>
               <div style={{ flex: 1 }}>
                 <MonitoringChart 
-                  title="RAM Usage" data={ramData} services={ramServices} loading={loading} unit="MB" showControls={false} showLegend={false} defaultTopN="all"
+                  title="RAM Usage" data={ramData} services={ramServices} loading={loading} unit="MB" showControls={false} showLegend={false} defaultTopN={5}
                   onClick={() => setSelectedChart({ title: 'RAM Usage', data: ramData, services: ramServices, unit: 'MB', fetchFn: (s, e) => getSystemMetricsRam(selectedId, s, e) })} 
                 />
               </div>
@@ -226,7 +226,7 @@ export default function DashboardPage() {
             <div style={{ minHeight: '400px', display: 'flex' }}>
               <div style={{ flex: 1 }}>
                 <MonitoringChart 
-                  title="Log Ingestion Rate" data={logsData} services={logsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN="all"
+                  title="Log Ingestion Rate" data={logsData} services={logsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN={5}
                   onClick={() => setSelectedChart({ title: 'Log Ingestion Rate', data: logsData, services: logsServices, unit: '', fetchFn: (s, e) => getSystemMetricsLogs(selectedId, s, e) })} 
                 />
               </div>
@@ -234,24 +234,27 @@ export default function DashboardPage() {
             <div style={{ minHeight: '400px', display: 'flex' }}>
               <div style={{ flex: 1 }}>
                 <MonitoringChart 
-                  title="HTTP Request Rate" data={httpReqData} services={httpReqServices} loading={loading} unit=" req/s" showControls={false} showLegend={false} defaultTopN="all"
-                  onClick={() => setSelectedChart({ title: 'HTTP Request Rate', data: httpReqData, services: httpReqServices, unit: ' req/s', fetchFn: (s, e) => getSystemMetricsHttpRequests(selectedId, s, e) })} 
+                  title="Error Log Rate" data={errorLogsData} services={errorLogsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN={5}
+                  emptyMessage="No error logs recorded"
+                  onClick={() => setSelectedChart({ title: 'Error Log Rate', data: errorLogsData, services: errorLogsServices, unit: '', fetchFn: (s, e) => getSystemMetricsErrorLogs(selectedId, s, e) })} 
                 />
               </div>
             </div>
             <div style={{ minHeight: '400px', display: 'flex' }}>
               <div style={{ flex: 1 }}>
                 <MonitoringChart 
-                  title="HTTP Latency (p95)" data={httpLatencyData} services={httpLatencyServices} loading={loading} unit="s" showControls={false} showLegend={false} defaultTopN="all"
-                  onClick={() => setSelectedChart({ title: 'HTTP Latency (p95)', data: httpLatencyData, services: httpLatencyServices, unit: 's', fetchFn: (s, e) => getSystemMetricsHttpLatency(selectedId, s, e) })} 
+                  title="Container Restarts" data={restartsData} services={restartsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN={5}
+                  emptyMessage="No container restarts recorded"
+                  onClick={() => setSelectedChart({ title: 'Container Restarts', data: restartsData, services: restartsServices, unit: '', fetchFn: (s, e) => getSystemMetricsRestarts(selectedId, s, e) })} 
                 />
               </div>
             </div>
             <div style={{ minHeight: '400px', display: 'flex' }}>
               <div style={{ flex: 1 }}>
                 <MonitoringChart 
-                  title="HTTP Error Rate" data={httpErrorsData} services={httpErrorsServices} loading={loading} unit=" err/s" showControls={false} showLegend={false} defaultTopN="all"
-                  onClick={() => setSelectedChart({ title: 'HTTP Error Rate', data: httpErrorsData, services: httpErrorsServices, unit: ' err/s', fetchFn: (s, e) => getSystemMetricsHttpErrors(selectedId, s, e) })} 
+                  title="CPU Throttling" data={throttlingData} services={throttlingServices} loading={loading} unit="%" showControls={false} showLegend={false} defaultTopN={5}
+                  emptyMessage="No CPU throttling recorded"
+                  onClick={() => setSelectedChart({ title: 'CPU Throttling', data: throttlingData, services: throttlingServices, unit: '%', fetchFn: (s, e) => getSystemMetricsThrottling(selectedId, s, e) })} 
                 />
               </div>
             </div>
@@ -285,6 +288,7 @@ export default function DashboardPage() {
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border)' }}>
                     <th style={{ padding: '8px', color: 'var(--text-3)', fontWeight: 600 }}>Error Message</th>
+                    <th style={{ padding: '8px', color: 'var(--text-3)', fontWeight: 600, width: '200px' }}>Service</th>
                     <th style={{ padding: '8px', color: 'var(--text-3)', fontWeight: 600, width: '100px', textAlign: 'right' }}>Occurrences</th>
                   </tr>
                 </thead>
@@ -292,6 +296,7 @@ export default function DashboardPage() {
                   {topErrors.map((err, idx) => (
                     <tr key={idx} style={{ borderBottom: '1px solid var(--border-soft)' }}>
                       <td style={{ padding: '8px', color: 'var(--err)', fontFamily: 'var(--mono)', fontSize: '13px' }}>{err.message}</td>
+                      <td style={{ padding: '8px', color: 'var(--text-2)', fontSize: '13px' }}>{err.service || 'Unknown'}</td>
                       <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600 }}>{err.count}</td>
                     </tr>
                   ))}

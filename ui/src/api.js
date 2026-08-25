@@ -148,13 +148,51 @@ export const getClusters = () => getJSON('/api/clusters');
 export const updateSettings = (values) => putJSON('/api/settings', { values });
 export const testConnection = (target) => postJSON('/api/settings/test', { target });
 export const refreshSystems = () => postJSON('/api/systems/refresh');
-export const getSystemMetricsRequests = (id, start, end) => getJSON(`/api/systems/${id}/metrics/requests?start=${start}&end=${end}`);
-export const getSystemMetricsRam = (id, start, end) => getJSON(`/api/systems/${id}/metrics/ram?start=${start}&end=${end}`);
-export const getSystemMetricsLogs = (id, start, end) => getJSON(`/api/systems/${id}/metrics/logs?start=${start}&end=${end}`);
-export const getSystemMetricsHttpRequests = (id, start, end) => getJSON(`/api/systems/${id}/metrics/http_requests?start=${start}&end=${end}`);
-export const getSystemMetricsHttpLatency = (id, start, end) => getJSON(`/api/systems/${id}/metrics/http_latency?start=${start}&end=${end}`);
-export const getSystemMetricsHttpErrors = (id, start, end) => getJSON(`/api/systems/${id}/metrics/http_errors?start=${start}&end=${end}`);
-export const getTopErrors = (id, start, end) => getJSON(`/api/systems/${id}/errors/top?start=${start}&end=${end}`);
+
+// Snap timestamps to cache-friendly intervals
+const snapTime = (start, end) => {
+  const rangeSeconds = end - start;
+  let interval = 60; // default 1 min
+  if (rangeSeconds <= 3600) interval = 60; // 1 hour -> 1m
+  else if (rangeSeconds <= 21600) interval = 300; // 6 hours -> 5m
+  else if (rangeSeconds <= 86400) interval = 900; // 24 hours -> 15m
+  else if (rangeSeconds <= 259200) interval = 3600; // 3 days -> 1h
+  else interval = 14400; // >3 days -> 4h
+
+  return {
+    snappedStart: Math.floor(start / interval) * interval,
+    snappedEnd: Math.floor(end / interval) * interval
+  };
+};
+
+export const getSystemMetricsRequests = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/metrics/requests?start=${snappedStart}&end=${snappedEnd}`);
+};
+export const getSystemMetricsRam = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/metrics/ram?start=${snappedStart}&end=${snappedEnd}`);
+};
+export const getSystemMetricsLogs = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/metrics/logs?start=${snappedStart}&end=${snappedEnd}`);
+};
+export const getSystemMetricsErrorLogs = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/metrics/error_logs?start=${snappedStart}&end=${snappedEnd}`);
+};
+export const getSystemMetricsRestarts = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/metrics/restarts?start=${snappedStart}&end=${snappedEnd}`);
+};
+export const getSystemMetricsThrottling = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/metrics/throttling?start=${snappedStart}&end=${snappedEnd}`);
+};
+export const getTopErrors = (id, start, end) => {
+  const { snappedStart, snappedEnd } = snapTime(start, end);
+  return getJSON(`/api/systems/${id}/errors/top?start=${snappedStart}&end=${snappedEnd}`);
+};
 export const getLogsContext = (id, timestamp, service) => getJSON(`/api/systems/${id}/logs/context?timestamp=${timestamp}&service=${encodeURIComponent(service)}`);
 
 export async function getSystemLogs(systemId, params = {}) {

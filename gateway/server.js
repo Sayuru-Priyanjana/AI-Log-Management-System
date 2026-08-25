@@ -523,7 +523,7 @@ app.get('/api/clusters', requireAuth, requireAdmin, agentProxy);
 app.get('/api/health', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const agentRes = await fetch(`${AGENT_URL}/api/health`, { signal: controller.signal });
     clearTimeout(timeout);
     if (agentRes.ok) {
@@ -547,7 +547,7 @@ app.get('/api/health', requireAuth, async (req, res) => {
 app.get('/api/systems', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     // Note: We don't forward auth headers to agent, it trusts gateway
     const agentRes = await fetch(`${AGENT_URL}/api/systems`, { signal: controller.signal });
     clearTimeout(timeout);
