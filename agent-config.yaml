@@ -1,4 +1,10 @@
+---
+# Source: logintel-agent/templates/configmap.yaml
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logintel-agent-config
+  namespace: logintel
 data:
   fluent-bit.conf: |
     [SERVICE]
@@ -32,6 +38,7 @@ data:
         Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
         Kube_Tag_Prefix     kube.var.log.containers.
         Merge_Log           On
+        Merge_Log_Key       log_processed
 
     # Transform logs into exact LogIntel schema
     [FILTER]
@@ -59,36 +66,8 @@ data:
         Suppress_Type_Name On
         Replace_Dots    On
         Generate_ID     On
-  normalize.lua: "local function iso_to_epoch(value)\n  if type(value) ~= \"string\"
-    then return nil, nil end\n  local y, mo, d, h, mi, s, frac = value:match(\"^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)\")\n
-    \ if not y then return nil, nil end\n  local epoch = os.time({\n    year = tonumber(y),
-    month = tonumber(mo), day = tonumber(d),\n    hour = tonumber(h), min = tonumber(mi),
-    sec = tonumber(s), isdst = false\n  })\n  local nanos = 0\n  if frac ~= \"\" then
-    nanos = tonumber((frac .. \"000000000\"):sub(1, 9)) or 0 end\n  return epoch,
-    nanos\nend\n\nfunction normalize(tag, timestamp, record)\n  local kube = record[\"kubernetes\"]\n
-    \ if kube == nil then return -1, 0, 0 end\n\n  local labels = kube[\"labels\"]
-    or {}\n  local out = {}\n\n  out[\"system\"] = {\n    id   = \"cls-7a2c1f83\",\n
-    \   name = \"shared-env\"\n  }\n  out[\"environment\"] = \"testbed\"\n  out[\"source\"]
-    = { type = \"kubernetes\", collector = \"fluent-bit\" }\n  out[\"kubernetes\"]
-    = {\n    cluster   = \"cls-7a2c1f83\",\n    namespace = kube[\"namespace_name\"],\n
-    \   pod       = { name = kube[\"pod_name\"], uid = kube[\"pod_id\"] },\n    container
-    = { name = kube[\"container_name\"], image = kube[\"container_image\"] },\n    node
-    \     = { name = kube[\"host\"] }\n  }\n\n  local body = record[\"log\"]\n  local
-    record_ts, record_ns = nil, nil\n\n  if type(body) == \"table\" then\n    for
-    key, value in pairs(record) do\n      if key ~= \"kubernetes\" and key ~= \"stream\"
-    and key ~= \"time\" and key ~= \"logtag\" then\n        out[key] = value\n      end\n
-    \   end\n    out[\"log\"] = body\n    if body[\"level\"] == nil then out[\"log\"][\"level\"]
-    = \"UNKNOWN\" end\n    if body[\"message\"] == nil then out[\"log\"][\"message\"]
-    = \"\" end\n    record_ts, record_ns = iso_to_epoch(record[\"@timestamp\"])\n
-    \ else\n    out[\"log\"] = { level = \"UNKNOWN\", message = tostring(body or \"\")
-    }\n  end\n\n  if out[\"service\"] == nil then\n    local svc_name = labels[\"app.kubernetes.io/name\"]
-    or labels[\"app\"] or labels[\"name\"] or labels[\"k8s-app\"]\n    \n    -- ULTIMATE
-    FALLBACK: If labels are completely missing, use the container name\n    if svc_name
-    == nil and kube[\"container_name\"] ~= nil then\n      svc_name = kube[\"container_name\"]\n
-    \   end\n\n    if svc_name ~= nil then\n      out[\"service\"] = { name = svc_name
-    }\n    end\n  end\n\n  out[\"@timestamp\"] = nil\n\n  if record_ts ~= nil then\n
-    \   return 2, { sec = record_ts, nsec = record_ns }, out\n  end\n  return 2, timestamp,
-    out\nend\n\n"
+
+
   parsers.conf: |
     [PARSER]
         Name        docker
@@ -98,23 +77,132 @@ data:
         Time_Keep   On
 
     [PARSER]
-        Name        cri
-        Format      regex
-        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Name cri
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
         Time_Key    time
         Time_Format %Y-%m-%dT%H:%M:%S.%L%z
         Time_Keep   On
-kind: ConfigMap
-metadata:
-  annotations:
-    kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"v1","data":{"fluent-bit.conf":"[SERVICE]\n    Flush         1\n    Log_Level     info\n    Daemon        off\n    Parsers_File  parsers.conf\n\n# --- INPUTS ---\n# 1. Container Logs\n[INPUT]\n    Name              tail\n    Tag               kube.*\n    Path              /var/log/containers/*.log\n    Parser            cri\n    DB                /var/log/flb_kube.db\n    Mem_Buf_Limit     5MB\n    Skip_Long_Lines   On\n\n\n\n# 3. Kubernetes Events (Removed - now handled by dedicated event_collector deployment)\n\n# --- FILTERS ---\n# Add Kubernetes metadata to logs\n[FILTER]\n    Name                kubernetes\n    Match               kube.*\n    Kube_URL            https://kubernetes.default.svc:443\n    Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token\n    Kube_Tag_Prefix     kube.var.log.containers.\n    Merge_Log           On\n\n# Transform logs into exact LogIntel schema\n[FILTER]\n    Name                lua\n    Match               kube.*\n    script              /fluent-bit/etc/normalize.lua\n    call                normalize\n    time_as_table       true\n\n# Send application logs to central OpenSearch\n[OUTPUT]\n    Name            opensearch\n    Match           kube.*\n    Host            logintel.inova.lk\n    Port            443\n    HTTP_User       logintel\n    HTTP_Passwd     logintel_tok_b5a8f9f98267b94dbcba932235300ee4\n    TLS             On\n    TLS.Verify      Off\n    Logstash_Format On\n    Logstash_Prefix logintel-logs\n    Time_Key        @timestamp\n    Time_Key_Format %Y-%m-%dT%H:%M:%S\n    Time_Key_Nanos  On\n    Suppress_Type_Name On\n    Replace_Dots    On\n    Generate_ID     On\n","normalize.lua":"local function iso_to_epoch(value)\n  if type(value) ~= \"string\" then return nil, nil end\n  local y, mo, d, h, mi, s, frac = value:match(\"^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)\")\n  if not y then return nil, nil end\n  local epoch = os.time({\n    year = tonumber(y), month = tonumber(mo), day = tonumber(d),\n    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false\n  })\n  local nanos = 0\n  if frac ~= \"\" then nanos = tonumber((frac .. \"000000000\"):sub(1, 9)) or 0 end\n  return epoch, nanos\nend\n\nfunction normalize(tag, timestamp, record)\n  local kube = record[\"kubernetes\"]\n  if kube == nil then return -1, 0, 0 end\n\n  local labels = kube[\"labels\"] or {}\n  local out = {}\n\n  out[\"system\"] = {\n    id   = \"cls-7a2c1f83\",\n    name = \"shared-env\"\n  }\n  out[\"environment\"] = \"testbed\"\n  out[\"source\"] = { type = \"kubernetes\", collector = \"fluent-bit\" }\n  out[\"kubernetes\"] = {\n    cluster   = \"cls-7a2c1f83\",\n    namespace = kube[\"namespace_name\"],\n    pod       = { name = kube[\"pod_name\"], uid = kube[\"pod_id\"] },\n    container = { name = kube[\"container_name\"], image = kube[\"container_image\"] },\n    node      = { name = kube[\"host\"] }\n  }\n\n  local body = record[\"log\"]\n  local record_ts, record_ns = nil, nil\n\n  if type(body) == \"table\" then\n    for key, value in pairs(record) do\n      if key ~= \"kubernetes\" and key ~= \"stream\" and key ~= \"time\" and key ~= \"logtag\" then\n        out[key] = value\n      end\n    end\n    out[\"log\"] = body\n    if body[\"level\"] == nil then out[\"log\"][\"level\"] = \"UNKNOWN\" end\n    if body[\"message\"] == nil then out[\"log\"][\"message\"] = \"\" end\n    record_ts, record_ns = iso_to_epoch(record[\"@timestamp\"])\n  else\n    local str_body = tostring(body or \"\")\n    local lvl = \"UNKNOWN\"\n    -- Attempt to parse common Spring Boot log format\n    local ts, parsed_lvl, rest = str_body:match(\"^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)\")\n    if ts ~= nil then\n      lvl = parsed_lvl\n      str_body = rest\n    else\n      local fallback_lvl = str_body:match(\"%s+(ERROR)%s+\") or str_body:match(\"%s+(WARN)%s+\") or str_body:match(\"%s+(INFO)%s+\") or str_body:match(\"%s+(DEBUG)%s+\")\n      if fallback_lvl ~= nil then lvl = fallback_lvl end\n    end\n    out[\"log\"] = { level = lvl, message = str_body }\n  end\n\n  if out[\"service\"] == nil then\n    local svc_name = labels[\"app.kubernetes.io/name\"] or labels[\"app\"] or labels[\"name\"] or labels[\"k8s-app\"]\n    \n    -- ULTIMATE FALLBACK: If labels are completely missing, use the container name\n    if svc_name == nil and kube[\"container_name\"] ~= nil then\n      svc_name = kube[\"container_name\"]\n    end\n\n    if svc_name ~= nil then\n      out[\"service\"] = { name = svc_name }\n    end\n  end\n\n  out[\"@timestamp\"] = nil\n\n  if record_ts ~= nil then\n    return 2, { sec = record_ts, nsec = record_ns }, out\n  end\n  return 2, timestamp, out\nend\n\n","parsers.conf":"[PARSER]\n    Name        docker\n    Format      json\n    Time_Key    time\n    Time_Format %Y-%m-%dT%H:%M:%S.%L\n    Time_Keep   On\n\n[PARSER]\n    Name        cri\n    Format      regex\n    Regex       ^(?\u003ctime\u003e[^ ]+) (?\u003cstream\u003estdout|stderr) (?\u003clogtag\u003e[^ ]*) (?\u003clog\u003e.*)$\n    Time_Key    time\n    Time_Format %Y-%m-%dT%H:%M:%S.%L%z\n    Time_Keep   On\n"},"kind":"ConfigMap","metadata":{"annotations":{"meta.helm.sh/release-name":"logintel-agent","meta.helm.sh/release-namespace":"logintel"},"creationTimestamp":"2026-08-19T09:55:14Z","labels":{"app.kubernetes.io/managed-by":"Helm"},"name":"logintel-agent-config","namespace":"logintel","resourceVersion":"4647435","uid":"275c437c-fc38-4065-9588-96763c8366f2"}}
-    meta.helm.sh/release-name: logintel-agent
-    meta.helm.sh/release-namespace: logintel
-  creationTimestamp: "2026-08-19T09:55:14Z"
-  labels:
-    app.kubernetes.io/managed-by: Helm
-  name: logintel-agent-config
-  namespace: logintel
-  resourceVersion: "6039686"
-  uid: 275c437c-fc38-4065-9588-96763c8366f2
+
+  normalize.lua: |
+    local function iso_to_epoch(value)
+      if type(value) ~= "string" then return nil, nil end
+      local y, mo, d, h, mi, s, frac = value:match("^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)")
+      if not y then return nil, nil end
+      local epoch = os.time({
+        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false
+      })
+      local nanos = 0
+      if frac ~= "" then nanos = tonumber((frac .. "000000000"):sub(1, 9)) or 0 end
+      return epoch, nanos
+    end
+
+    function normalize(tag, timestamp, record)
+      local kube = record["kubernetes"]
+      if kube == nil then return -1, 0, 0 end
+
+      local labels = kube["labels"] or {}
+      local out = {}
+
+      out["system"] = {
+        id   = "cls-7a2c1f83",
+        name = "shared-env"
+      }
+      out["environment"] = "testbed"
+      out["source"] = { type = "kubernetes", collector = "fluent-bit" }
+      out["kubernetes"] = {
+        cluster   = "cls-ed316702",
+        namespace = kube["namespace_name"],
+        pod       = { name = kube["pod_name"], uid = kube["pod_id"] },
+        container = { name = kube["container_name"], image = kube["container_image"] },
+        node      = { name = kube["host"] }
+      }
+
+      local body = record["log"]
+      local parsed = record["log_processed"]
+      local record_ts, record_ns = nil, nil
+
+      if type(parsed) == "table" then
+        if parsed["log"] ~= nil then
+          body = parsed["log"]
+        else
+          body = parsed
+        end
+        for k, v in pairs(parsed) do
+          if k ~= "log" and k ~= "kubernetes" and k ~= "@timestamp" then
+            out[k] = v
+          end
+        end
+        record_ts, record_ns = iso_to_epoch(parsed["@timestamp"])
+      end
+
+      if type(body) == "table" then
+        out["log"] = body
+        local lvl = body["level"]
+        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
+          local http_code = body["status"] or body["status_code"] or body["http_status"] or body["http.status_code"]
+          local resolved_lvl = "INFO"
+          if http_code ~= nil then
+            local code = tonumber(http_code)
+            if code ~= nil then
+              if code >= 500 then resolved_lvl = "ERROR"
+              elseif code >= 400 then resolved_lvl = "WARN"
+              elseif code >= 200 then resolved_lvl = "INFO"
+              end
+            end
+          end
+          out["log"]["level"] = resolved_lvl
+        end
+        if body["message"] == nil then out["log"]["message"] = "" end
+      else
+        local str_body = tostring(body or "")
+        local lvl = nil
+        -- Attempt to parse common Spring Boot log format
+        local ts, parsed_lvl, rest = str_body:match("^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)")
+        if ts ~= nil then
+          lvl = parsed_lvl
+          str_body = rest
+        else
+          lvl = str_body:match("%s+(ERROR)%s+") or str_body:match("%s+(WARN)%s+") or str_body:match("%s+(INFO)%s+") or str_body:match("%s+(DEBUG)%s+")
+        end
+
+        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
+          -- Try to find HTTP status code
+          local http_code = str_body:match("HTTP/%d%.%d\"?%s+(%d%d%d)")
+          if http_code == nil then http_code = str_body:match("status=(%d%d%d)") end
+          if http_code == nil then http_code = str_body:match("\"status\":%s*(%d%d%d)") end
+          
+          lvl = "INFO" -- default fallback
+          if http_code ~= nil then
+            local code = tonumber(http_code)
+            if code ~= nil then
+              if code >= 500 then lvl = "ERROR"
+              elseif code >= 400 then lvl = "WARN"
+              elseif code >= 200 then lvl = "INFO"
+              end
+            end
+          end
+        end
+        out["log"] = { level = lvl, message = str_body }
+      end
+
+        if out["service"] == nil then
+          local svc_name = labels["app.kubernetes.io/name"] or labels["app"] or labels["name"] or labels["k8s-app"]
+          if svc_name == nil and kube["container_name"] ~= nil then
+            svc_name = kube["container_name"]
+          end
+          if svc_name ~= nil then
+            out["service"] = { name = svc_name }
+          end
+        end
+
+      out["@timestamp"] = nil
+
+      if record_ts ~= nil then
+        return 2, { sec = record_ts, nsec = record_ns }, out
+      end
+      return 2, timestamp, out
+    end
+
+
