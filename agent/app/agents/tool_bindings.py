@@ -356,7 +356,7 @@ class ToolBindings:
                 continue
             if wanted and sample.level not in wanted:
                 continue
-            if service_name not in ("all", "", None) and sample.service != service_name:
+            if service_name not in ("all", "", None) and service_name.lower() not in (sample.service or "").lower():
                 continue
             rows.append([clock(sample.timestamp), sample.level,
                          sample.service or "-", sample.message[:160]])
@@ -372,7 +372,7 @@ class ToolBindings:
                 continue
             if wanted and pattern.level not in wanted:
                 continue
-            if service_name not in ("all", "", None) and pattern.service != service_name:
+            if service_name not in ("all", "", None) and service_name.lower() not in (pattern.service or "").lower():
                 continue
             pattern_rows.append([str(pattern.count), pattern.level,
                                  pattern.service or "-", pattern.example[:160]])
@@ -428,8 +428,8 @@ class ToolBindings:
         if level and level.upper() not in levels:
             parts.append(f"NOTE: no logs of level '{level}' exist here. "
                          f"Levels present: {', '.join(levels) or 'none'}.")
-        if service_name not in ("all", "", None) and service_name not in services:
-            parts.append(f"NOTE: no logs for service '{service_name}'. "
+        if service_name not in ("all", "", None) and not any(service_name.lower() in (s or "").lower() for s in services):
+            parts.append(f"NOTE: no logs for service containing '{service_name}'. "
                          f"Services present: {', '.join(services) or 'none'}.")
 
         parts.append(f"This window holds {logs.total_documents} documents across "
@@ -448,7 +448,7 @@ class ToolBindings:
         field = (group_by or "level").lower()
         counts: dict[str, int] = {}
         for pattern in logs.patterns:
-            if service_name not in ("all", "", None) and pattern.service != service_name:
+            if service_name not in ("all", "", None) and service_name.lower() not in (pattern.service or "").lower():
                 continue
             key = {"level": pattern.level,
                    "service": pattern.service or "unknown",
