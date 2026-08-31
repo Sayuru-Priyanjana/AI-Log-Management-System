@@ -130,6 +130,7 @@ async def lifespan(app: FastAPI):
     # component that relies on them.
     try:
         await opensearch.ensure_templates()
+        await opensearch.ensure_ism_policies()
         for problem in await opensearch.check_mapping_conflicts():
             logger.warning("MAPPING CONFLICT: %s", problem)
     except Exception as exc:

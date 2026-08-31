@@ -27,8 +27,12 @@ const stringToColor = (str) => {
 
 const CustomTooltip = ({ active, payload, label, unit }) => {
   if (active && payload && payload.length) {
-    // Sort payload by value descending
-    const sortedPayload = [...payload].sort((a, b) => b.value - a.value);
+    // Sort payload by value descending, but force 'Other' to the bottom
+    const sortedPayload = [...payload].sort((a, b) => {
+      if (a.name === 'Other') return 1;
+      if (b.name === 'Other') return -1;
+      return b.value - a.value;
+    });
     
     return (
       <div className="chart-tooltip">
