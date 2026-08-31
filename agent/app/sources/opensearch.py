@@ -227,6 +227,43 @@ class OpenSearchClient:
         logger.info("Applied index templates: %s", ", ".join(applied))
         return applied
 
+    async def ensure_ism_policies(self) -> None:
+        policy = {
+            "policy": {
+                "description": "Delete logs older than 5 days",
+                "default_state": "hot",
+                "states": [
+                    {
+                        "name": "hot",
+                        "actions": [],
+                        "transitions": [
+                            {
+                                "state_name": "delete",
+                                "conditions": {
+                                    "min_index_age": "5d"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "name": "delete",
+                        "actions": [{"delete": {}}],
+                        "transitions": []
+                    }
+                ],
+                "ism_template": {
+                    "index_patterns": ["logintel-logs-*"],
+                    "priority": 100
+                }
+            }
+        }
+        try:
+            await self._request("PUT", "/_plugins/_ism/policies/delete_after_5d", policy)
+            logger.info("Applied ISM policy: delete_after_5d")
+        except OpenSearchError as e:
+            logger.error("Failed to apply ISM policy: %s", e)
+
+
     async def check_mapping_conflicts(self) -> list[str]:
         """Detects indices created before the templates existed.
 

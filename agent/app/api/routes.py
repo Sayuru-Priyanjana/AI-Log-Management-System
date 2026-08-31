@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from fastapi_cache.decorator import cache
 from pydantic import BaseModel, Field
 
 from app.agents.tool_bindings import ToolBindings
@@ -289,6 +291,7 @@ async def effective_config() -> dict:
     }
 
 @router.get("/systems/{system_id}/metrics/requests")
+@cache(expire=300)
 async def get_system_metrics_requests(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
@@ -310,6 +313,7 @@ async def get_system_metrics_requests(system_id: str, start: int, end: int, requ
     return sorted_data
 
 @router.get("/systems/{system_id}/metrics/ram")
+@cache(expire=300)
 async def get_system_metrics_ram(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
@@ -332,6 +336,7 @@ async def get_system_metrics_ram(system_id: str, start: int, end: int, request: 
     return sorted_data
 
 @router.get("/systems/{system_id}/metrics/logs")
+@cache(expire=300)
 async def get_system_metrics_logs(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     
@@ -395,69 +400,124 @@ async def get_system_metrics_logs(system_id: str, start: int, end: int, request:
         logger.error(f"Failed to fetch log metrics: {exc}")
         return []
 
-@router.get("/systems/{system_id}/metrics/http_requests")
-async def get_system_metrics_http_requests(system_id: str, start: int, end: int, request: Request):
+@router.get("/systems/{system_id}/metrics/error_logs")
+@cache(expire=300)
+async def get_system_metrics_error_logs(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    
+    range_hours = (end - start) / 3600
+    if range_hours <= 1:
+        interval = "1m"
+    elif range_hours <= 6:
+        interval = "5m"
+    elif range_hours <= 24:
+        interval = "15m"
+    elif range_hours <= 72:
+        interval = "1h"
+    else:
+        interval = "4h"
+
+    query = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ],
+                "should": [
+                    {"match": {"level": "error"}},
+                    {"match": {"level": "ERROR"}},
+                    {"match": {"log.level": "error"}},
+                    {"match": {"status": "ERROR"}},
+                    {"match": {"message": "error"}},
+                    {"match": {"message": "fatal"}},
+                    {"match": {"message": "critical"}},
+                    {"match": {"log.message": "error"}},
+                    {"match": {"log.message": "fatal"}},
+                    {"match": {"log.message": "critical"}}
+                ],
+                "minimum_should_match": 1
+            }
+        },
+        "aggs": {
+            "services": {
+                "terms": {"field": "service.name", "size": 100},
+                "aggs": {
+                    "errors_over_time": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": interval,
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start * 1000, "max": end * 1000}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, query)
+        
+        data_by_time = {}
+        buckets = result.get("aggregations", {}).get("services", {}).get("buckets", [])
+        for bucket in buckets:
+            svc = bucket.get("key", "unknown")
+            time_buckets = bucket.get("errors_over_time", {}).get("buckets", [])
+            for tb in time_buckets:
+                ts = tb.get("key")
+                val = tb.get("doc_count", 0)
+                if ts not in data_by_time:
+                    data_by_time[ts] = {"time": ts}
+                data_by_time[ts][svc] = val
+                
+        sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+        return sorted_data
+    except Exception as exc:
+        logger.error(f"Failed to fetch error log metrics: {exc}")
+        return []
+
+@router.get("/systems/{system_id}/metrics/restarts")
+@cache(expire=300)
+async def get_system_metrics_restarts(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
     step = container.prometheus.step_for(window)
-    expression = f'sum by (service) (rate(http_requests_total{{system_id="{system_id}"}}[2m]))'
+    expression = f'sum by (container) (kube_pod_container_status_restarts_total{{system_id="{system_id}", container!="", container!="POD"}})'
     raw_series = await container.prometheus.query_range(expression, window, step)
     
     data_by_time = {}
     for series in raw_series:
-        svc = series.get("metric", {}).get("service", "unknown")
+        svc = series.get("metric", {}).get("container", "unknown")
         points = container.prometheus.to_points(series)
         for pt_time, val in points:
             ts = int(pt_time.timestamp()) * 1000
             if ts not in data_by_time:
                 data_by_time[ts] = {"time": ts}
-            data_by_time[ts][svc] = round(val, 2)
+            data_by_time[ts][svc] = int(val)
             
     sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
     return sorted_data
 
-@router.get("/systems/{system_id}/metrics/http_latency")
-async def get_system_metrics_http_latency(system_id: str, start: int, end: int, request: Request):
+@router.get("/systems/{system_id}/metrics/throttling")
+@cache(expire=300)
+async def get_system_metrics_throttling(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
     step = container.prometheus.step_for(window)
-    expression = f'histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{{system_id="{system_id}"}}[2m])))'
+    expression = f'sum by (container) (rate(container_cpu_cfs_throttled_seconds_total{{system_id="{system_id}", container!="", container!="POD"}}[2m]))'
     raw_series = await container.prometheus.query_range(expression, window, step)
     
     data_by_time = {}
     for series in raw_series:
-        svc = series.get("metric", {}).get("service", "unknown")
+        svc = series.get("metric", {}).get("container", "unknown")
         points = container.prometheus.to_points(series)
         for pt_time, val in points:
             ts = int(pt_time.timestamp()) * 1000
             if ts not in data_by_time:
                 data_by_time[ts] = {"time": ts}
-            # Only include valid numbers (ignore NaNs from Prometheus histogram calculation when no requests)
-            if val == val and val != float('inf') and val != float('-inf'):
-                data_by_time[ts][svc] = round(val, 3)
-            else:
-                data_by_time[ts][svc] = 0
-            
-    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
-    return sorted_data
-
-@router.get("/systems/{system_id}/metrics/http_errors")
-async def get_system_metrics_http_errors(system_id: str, start: int, end: int, request: Request):
-    container = deps(request)
-    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
-    step = container.prometheus.step_for(window)
-    expression = f'sum by (service) (rate(http_requests_total{{system_id="{system_id}", status=~"5.."}}[2m]))'
-    raw_series = await container.prometheus.query_range(expression, window, step)
-    
-    data_by_time = {}
-    for series in raw_series:
-        svc = series.get("metric", {}).get("service", "unknown")
-        points = container.prometheus.to_points(series)
-        for pt_time, val in points:
-            ts = int(pt_time.timestamp()) * 1000
-            if ts not in data_by_time:
-                data_by_time[ts] = {"time": ts}
-            data_by_time[ts][svc] = round(val, 2)
+            data_by_time[ts][svc] = round(val, 3)
             
     sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
     return sorted_data
@@ -471,6 +531,7 @@ async def get_system_snapshot(system_id: str, request: Request) -> dict:
     
     count_query = {
         "size": 0,
+        "track_total_hits": True,
         "query": {
             "bool": {
                 "filter": [
@@ -609,7 +670,13 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
                     {"match": {"level": "error"}},
                     {"match": {"level": "ERROR"}},
                     {"match": {"log.level": "error"}},
-                    {"match": {"status": "ERROR"}}
+                    {"match": {"status": "ERROR"}},
+                    {"match": {"message": "error"}},
+                    {"match": {"message": "fatal"}},
+                    {"match": {"message": "critical"}},
+                    {"match": {"log.message": "error"}},
+                    {"match": {"log.message": "fatal"}},
+                    {"match": {"log.message": "critical"}}
                 ],
                 "minimum_should_match": 1
             }
@@ -617,8 +684,16 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
         "aggs": {
             "top_errors": {
                 "terms": {
-                    "field": "message.keyword",
+                    "field": "log.message.keyword",
                     "size": 5
+                },
+                "aggs": {
+                    "services": {
+                        "terms": {
+                            "field": "service.name",
+                            "size": 3
+                        }
+                    }
                 }
             }
         }
@@ -628,13 +703,22 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
         result = await container.opensearch.search(settings.opensearch_log_index, query)
         buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
         
-        # If message.keyword is empty, fallback to log.keyword
+        # If log.message.keyword is empty, fallback to message.keyword
         if not buckets:
-            query["aggs"]["top_errors"]["terms"]["field"] = "log.keyword"
+            query["aggs"]["top_errors"]["terms"]["field"] = "message.keyword"
             result = await container.opensearch.search(settings.opensearch_log_index, query)
             buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
 
-        errors = [{"message": b.get("key"), "count": b.get("doc_count")} for b in buckets]
+        errors = []
+        for b in buckets:
+            msg = b.get("key")
+            count = b.get("doc_count")
+            services = []
+            service_buckets = b.get("services", {}).get("buckets", [])
+            for sb in service_buckets:
+                services.append(sb.get("key"))
+            service_str = ", ".join(services) if services else "Unknown"
+            errors.append({"message": msg, "count": count, "service": service_str})
         return errors
     except Exception as exc:
         logger.error(f"Failed to fetch top errors: {exc}")
@@ -753,11 +837,9 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                 
             # Attempt to parse CRI format containing JSON: "timestamp stdout F {...}"
             if isinstance(msg, str):
-                import re
                 match = re.search(r'^[^\s]+\s+(?:stdout|stderr)\s+[FP]\s+(\{.*\})$', msg.strip())
                 if match:
                     try:
-                        import json
                         parsed = json.loads(match.group(1))
                         if "log" in parsed and isinstance(parsed["log"], dict):
                             inner_log = parsed["log"]
@@ -772,7 +854,6 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                         pass
                 
             if lvl == "UNKNOWN" and isinstance(msg, str):
-                import re
                 prefix = msg[:200].upper()
                 if re.search(r'\b(ERROR|FATAL|CRITICAL|ERR)\b', prefix):
                     lvl = "ERROR"

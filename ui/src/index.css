@@ -974,6 +974,9 @@ pre.block {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-height: 250px;
+  overflow-y: auto;
+  padding-right: 8px; /* Room for scrollbar */
 }
 .chart-tooltip-item {
   display: flex;

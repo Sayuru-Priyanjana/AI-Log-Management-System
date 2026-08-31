@@ -3,9 +3,13 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+import redis.asyncio as redis
 
 from app.agents.react import ReActAgent
 from app.agents.orchestrator import OrchestratorAgent
@@ -126,6 +130,7 @@ async def lifespan(app: FastAPI):
     # component that relies on them.
     try:
         await opensearch.ensure_templates()
+        await opensearch.ensure_ism_policies()
         for problem in await opensearch.check_mapping_conflicts():
             logger.warning("MAPPING CONFLICT: %s", problem)
     except Exception as exc:
@@ -142,6 +147,14 @@ async def lifespan(app: FastAPI):
     logger.info("OpenSearch %s | model %s via %s at %s | times shown in %s",
                 opensearch.describe(), describe_model(llm),
                 describe_provider(llm), describe_endpoint(llm), zone_label())
+
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        r = redis.from_url(redis_url, encoding="utf8", decode_responses=False)
+        FastAPICache.init(RedisBackend(r), prefix="logintel-metrics")
+        logger.info("FastAPICache initialized with Redis at %s", redis_url)
+    except Exception as exc:
+        logger.warning("Could not initialize Redis cache: %s", exc)
 
     yield
 

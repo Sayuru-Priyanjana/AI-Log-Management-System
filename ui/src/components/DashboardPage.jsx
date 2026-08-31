@@ -1,44 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
-} from 'recharts';
 import { 
   getSystems, getSystemMetricsRequests, getSystemMetricsRam, getSystemMetricsLogs, 
-  getSystemMetricsHttpRequests, getSystemMetricsHttpLatency, getSystemMetricsHttpErrors,
+  getSystemMetricsErrorLogs, getSystemMetricsRestarts, getSystemMetricsThrottling,
   getSystemAlerts, getTopErrors 
 } from '../api';
 import { useToast } from '../toast';
 import AnomalyTimeline from './AnomalyTimeline';
+import ChartModal from './ChartModal';
+import MonitoringChart from './MonitoringChart';
 
-const COLORS = [
-  '#2E72D2', '#00A78F', '#632CA6', '#E24D42', '#F39B00',
-  '#00875A', '#D9B300', '#D34836', '#9B59B6', '#34495E'
-];
-
-const CustomTooltip = ({ active, payload, label, unit }) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="chart-tooltip">
-        <div className="chart-tooltip-header">
-          {new Date(label).toLocaleString()}
-        </div>
-        <div className="chart-tooltip-body">
-          {payload.map((entry, index) => (
-            <div key={index} className="chart-tooltip-item">
-              <span className="chart-tooltip-color" style={{ backgroundColor: entry.color }}></span>
-              <span className="chart-tooltip-name">{entry.name}</span>
-              <span className="chart-tooltip-value">{entry.value}{unit}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-  return null;
-};
+import { useNavigate } from 'react-router-dom';
 
 export default function DashboardPage() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [systems, setSystems] = useState([]);
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem('lastSystemId') || null);
   const [hours, setHours] = useState(() => Number(localStorage.getItem('timeRangeHours')) || 24);
@@ -48,9 +23,9 @@ export default function DashboardPage() {
   const [cpuData, setCpuData] = useState([]);
   const [ramData, setRamData] = useState([]);
   const [logsData, setLogsData] = useState([]);
-  const [httpReqData, setHttpReqData] = useState([]);
-  const [httpLatencyData, setHttpLatencyData] = useState([]);
-  const [httpErrorsData, setHttpErrorsData] = useState([]);
+  const [errorLogsData, setErrorLogsData] = useState([]);
+  const [restartsData, setRestartsData] = useState([]);
+  const [throttlingData, setThrottlingData] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [topErrors, setTopErrors] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -58,9 +33,11 @@ export default function DashboardPage() {
   const [cpuServices, setCpuServices] = useState([]);
   const [ramServices, setRamServices] = useState([]);
   const [logsServices, setLogsServices] = useState([]);
-  const [httpReqServices, setHttpReqServices] = useState([]);
-  const [httpLatencyServices, setHttpLatencyServices] = useState([]);
-  const [httpErrorsServices, setHttpErrorsServices] = useState([]);
+  const [errorLogsServices, setErrorLogsServices] = useState([]);
+  const [restartsServices, setRestartsServices] = useState([]);
+  const [throttlingServices, setThrottlingServices] = useState([]);
+
+  const [selectedChart, setSelectedChart] = useState(null);
 
   const end = Math.floor(Date.now() / 1000);
   const start = end - (hours * 3600);
@@ -93,13 +70,13 @@ export default function DashboardPage() {
       setLoading(true);
       
       try {
-        const [cpuRes, ramRes, logsRes, httpReqRes, httpLatencyRes, httpErrorsRes, alertsRes, errorsRes] = await Promise.all([
+        const [cpuRes, ramRes, logsRes, errorLogsRes, restartsRes, throttlingRes, alertsRes, errorsRes] = await Promise.all([
           getSystemMetricsRequests(selectedId, start, end).catch(() => []),
           getSystemMetricsRam(selectedId, start, end).catch(() => []),
           getSystemMetricsLogs(selectedId, start, end).catch(() => []),
-          getSystemMetricsHttpRequests(selectedId, start, end).catch(() => []),
-          getSystemMetricsHttpLatency(selectedId, start, end).catch(() => []),
-          getSystemMetricsHttpErrors(selectedId, start, end).catch(() => []),
+          getSystemMetricsErrorLogs(selectedId, start, end).catch(() => []),
+          getSystemMetricsRestarts(selectedId, start, end).catch(() => []),
+          getSystemMetricsThrottling(selectedId, start, end).catch(() => []),
           getSystemAlerts(selectedId).catch(() => []),
           getTopErrors(selectedId, start, end).catch(() => [])
         ]);
@@ -108,9 +85,9 @@ export default function DashboardPage() {
           setCpuData(cpuRes);
           setRamData(ramRes);
           setLogsData(logsRes);
-          setHttpReqData(httpReqRes);
-          setHttpLatencyData(httpLatencyRes);
-          setHttpErrorsData(httpErrorsRes);
+          setErrorLogsData(errorLogsRes);
+          setRestartsData(restartsRes);
+          setThrottlingData(throttlingRes);
           setTopErrors(errorsRes || []);
           
           setAlerts(alertsRes || []);
@@ -128,9 +105,9 @@ export default function DashboardPage() {
           setCpuServices(extractServices(cpuRes));
           setRamServices(extractServices(ramRes));
           setLogsServices(extractServices(logsRes));
-          setHttpReqServices(extractServices(httpReqRes));
-          setHttpLatencyServices(extractServices(httpLatencyRes));
-          setHttpErrorsServices(extractServices(httpErrorsRes));
+          setErrorLogsServices(extractServices(errorLogsRes));
+          setRestartsServices(extractServices(restartsRes));
+          setThrottlingServices(extractServices(throttlingRes));
         }
       } catch (err) {
         console.error(err);
@@ -158,87 +135,8 @@ export default function DashboardPage() {
     localStorage.setItem('lastSystemId', id);
   };
 
-  const renderChart = (title, data, services, loading, unit, isStacked = true) => (
-    <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '0', overflow: 'visible' }}>
-      <header style={{ padding: '12px 16px', background: 'transparent', borderBottom: '1px solid var(--border)' }}>
-        <h3 style={{ margin: 0, color: 'var(--text-2)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{title}</h3>
-      </header>
-      <div className="card-body" style={{ flex: 1, minHeight: 0, padding: '16px 24px 16px 0', overflow: 'visible' }}>
-        {loading && data.length === 0 ? (
-          <div className="empty-state" style={{ height: '100%' }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
-            </svg>
-            <div className="empty-state-title">Loading metrics</div>
-            <div className="empty-state-desc">Please wait while data is retrieved...</div>
-          </div>
-        ) : data.length === 0 ? (
-          <div className="empty-state" style={{ height: '100%' }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-              <line x1="3" y1="9" x2="21" y2="9"></line>
-              <line x1="9" y1="21" x2="9" y2="9"></line>
-            </svg>
-            <div className="empty-state-title">No metrics recorded</div>
-            <div className="empty-state-desc">No data was found in this window.</div>
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%" style={{ overflow: 'visible' }}>
-            <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} style={{ overflow: 'visible' }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-              <XAxis 
-                dataKey="time" 
-                tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                stroke="var(--text-3)" 
-                fontSize={11} 
-                tickMargin={12}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis 
-                stroke="var(--text-3)" 
-                fontSize={11} 
-                tickMargin={12} 
-                tickFormatter={(val) => `${val}${unit}`}
-                axisLine={false}
-                tickLine={false}
-              />
-              <Tooltip 
-                content={<CustomTooltip unit={unit} />}
-                cursor={{ stroke: 'var(--text-2)', strokeWidth: 1, strokeDasharray: '3 3' }}
-                isAnimationActive={false}
-              />
-              <defs>
-                {services.map((svc, i) => (
-                  <linearGradient key={svc} id={`grad-${i}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={COLORS[i % COLORS.length]} stopOpacity={0.8}/>
-                    <stop offset="95%" stopColor={COLORS[i % COLORS.length]} stopOpacity={0.2}/>
-                  </linearGradient>
-                ))}
-              </defs>
-              {services.map((svc, i) => {
-                const color = COLORS[i % COLORS.length];
-                return (
-                  <Area 
-                    key={svc} 
-                    type="monotone" 
-                    dataKey={svc} 
-                    stackId={isStacked ? "1" : undefined}
-                    stroke={color}
-                    fill={`url(#grad-${i})`}
-                    strokeWidth={2}
-                    fillOpacity={isStacked ? 1 : 0.5}
-                    isAnimationActive={true}
-                    animationDuration={1000}
-                  />
-                );
-              })}
-            </AreaChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    </div>
-  );
+
+
 
   return (
     <div className="wsx" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 46px)' }}>
@@ -276,6 +174,10 @@ export default function DashboardPage() {
             {autoRefresh && <span className="dot dot--ok" style={{ animation: 'toast-in 1s infinite alternate' }} />}
             Auto Reload {autoRefresh ? 'ON' : 'OFF'}
           </button>
+          
+          <button onClick={() => navigate('/logs')} className="btn btn--primary btn--sm" style={{ padding: '2px 12px', fontWeight: 'bold' }}>
+            Go to Logs →
+          </button>
         </div>
       </div>
 
@@ -305,23 +207,56 @@ export default function DashboardPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', flexShrink: 0 }}>
-            <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('CPU Usage (cores)', cpuData, cpuServices, loading, 'c')}</div>
+            <div style={{ minHeight: '400px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>
+                <MonitoringChart 
+                  title="CPU Usage (cores)" data={cpuData} services={cpuServices} loading={loading} unit="c" showControls={false} showLegend={false} defaultTopN={5}
+                  onClick={() => setSelectedChart({ title: 'CPU Usage (cores)', data: cpuData, services: cpuServices, unit: 'c', fetchFn: (s, e) => getSystemMetricsRequests(selectedId, s, e) })} 
+                />
+              </div>
             </div>
-            <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('RAM Usage', ramData, ramServices, loading, 'MB')}</div>
+            <div style={{ minHeight: '400px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>
+                <MonitoringChart 
+                  title="RAM Usage" data={ramData} services={ramServices} loading={loading} unit="MB" showControls={false} showLegend={false} defaultTopN={5}
+                  onClick={() => setSelectedChart({ title: 'RAM Usage', data: ramData, services: ramServices, unit: 'MB', fetchFn: (s, e) => getSystemMetricsRam(selectedId, s, e) })} 
+                />
+              </div>
             </div>
-            <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('Log Ingestion Rate', logsData, logsServices, loading, '')}</div>
+            <div style={{ minHeight: '400px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>
+                <MonitoringChart 
+                  title="Log Ingestion Rate" data={logsData} services={logsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN={5}
+                  onClick={() => setSelectedChart({ title: 'Log Ingestion Rate', data: logsData, services: logsServices, unit: '', fetchFn: (s, e) => getSystemMetricsLogs(selectedId, s, e) })} 
+                />
+              </div>
             </div>
-            <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('HTTP Request Rate', httpReqData, httpReqServices, loading, ' req/s')}</div>
+            <div style={{ minHeight: '400px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>
+                <MonitoringChart 
+                  title="Error Log Rate" data={errorLogsData} services={errorLogsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN={5}
+                  emptyMessage="No error logs recorded"
+                  onClick={() => setSelectedChart({ title: 'Error Log Rate', data: errorLogsData, services: errorLogsServices, unit: '', fetchFn: (s, e) => getSystemMetricsErrorLogs(selectedId, s, e) })} 
+                />
+              </div>
             </div>
-            <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('HTTP Latency (p95)', httpLatencyData, httpLatencyServices, loading, 's', false)}</div>
+            <div style={{ minHeight: '400px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>
+                <MonitoringChart 
+                  title="Container Restarts" data={restartsData} services={restartsServices} loading={loading} unit="" showControls={false} showLegend={false} defaultTopN={5}
+                  emptyMessage="No container restarts recorded"
+                  onClick={() => setSelectedChart({ title: 'Container Restarts', data: restartsData, services: restartsServices, unit: '', fetchFn: (s, e) => getSystemMetricsRestarts(selectedId, s, e) })} 
+                />
+              </div>
             </div>
-            <div style={{ minHeight: '300px', display: 'flex' }}>
-              <div style={{ flex: 1 }}>{renderChart('HTTP Error Rate', httpErrorsData, httpErrorsServices, loading, ' err/s')}</div>
+            <div style={{ minHeight: '400px', display: 'flex' }}>
+              <div style={{ flex: 1 }}>
+                <MonitoringChart 
+                  title="CPU Throttling" data={throttlingData} services={throttlingServices} loading={loading} unit="%" showControls={false} showLegend={false} defaultTopN={5}
+                  emptyMessage="No CPU throttling recorded"
+                  onClick={() => setSelectedChart({ title: 'CPU Throttling', data: throttlingData, services: throttlingServices, unit: '%', fetchFn: (s, e) => getSystemMetricsThrottling(selectedId, s, e) })} 
+                />
+              </div>
             </div>
           </div>
 
@@ -353,6 +288,7 @@ export default function DashboardPage() {
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border)' }}>
                     <th style={{ padding: '8px', color: 'var(--text-3)', fontWeight: 600 }}>Error Message</th>
+                    <th style={{ padding: '8px', color: 'var(--text-3)', fontWeight: 600, width: '200px' }}>Service</th>
                     <th style={{ padding: '8px', color: 'var(--text-3)', fontWeight: 600, width: '100px', textAlign: 'right' }}>Occurrences</th>
                   </tr>
                 </thead>
@@ -360,6 +296,7 @@ export default function DashboardPage() {
                   {topErrors.map((err, idx) => (
                     <tr key={idx} style={{ borderBottom: '1px solid var(--border-soft)' }}>
                       <td style={{ padding: '8px', color: 'var(--err)', fontFamily: 'var(--mono)', fontSize: '13px' }}>{err.message}</td>
+                      <td style={{ padding: '8px', color: 'var(--text-2)', fontSize: '13px' }}>{err.service || 'Unknown'}</td>
                       <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600 }}>{err.count}</td>
                     </tr>
                   ))}
@@ -369,6 +306,21 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      )}
+      
+      {selectedChart && (
+        <ChartModal 
+          isOpen={true}
+          onClose={() => setSelectedChart(null)}
+          title={selectedChart.title}
+          currentData={selectedChart.data}
+          services={selectedChart.services}
+          unit={selectedChart.unit}
+          isStacked={selectedChart.isStacked}
+          fetchComparisonData={selectedChart.fetchFn}
+          currentStart={start}
+          currentEnd={end}
+        />
       )}
     </div>
   );

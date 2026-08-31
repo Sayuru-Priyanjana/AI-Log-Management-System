@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { getSystemLogs } from '../api';
 import { useToast } from '../toast';
 
-export default function LogExplorer({ systemId, services = [], start, end }) {
+export default function LogExplorer({ systemId, services = [], timeframe, start: fallbackStart, end: fallbackEnd }) {
   const toast = useToast();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -20,7 +20,32 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
     if (showLoading) setLoading(true);
     try {
       const offset = (page - 1) * limit;
-      const result = await getSystemLogs(systemId, { query, service, level, limit, offset, start, end });
+      
+      let activeStart = timeframe?.start || fallbackStart;
+      let activeEnd = timeframe?.end || fallbackEnd;
+      
+      if (timeframe?.isRelative) {
+        if (timeframe.relativeType?.type === 'seconds') {
+          activeEnd = Math.floor(Date.now() / 1000);
+          activeStart = activeEnd - timeframe.relativeType.value;
+        } else if (timeframe.relativeType?.type === 'today') {
+          const now = new Date();
+          activeEnd = Math.floor(now.getTime() / 1000);
+          activeStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+        } else if (timeframe.relativeType?.type === 'thisWeek') {
+          const now = new Date();
+          activeEnd = Math.floor(now.getTime() / 1000);
+          const day = now.getDay() || 7;
+          if (day !== 1) now.setHours(-24 * (day - 1));
+          activeStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+        }
+      }
+      
+      if (liveTail) {
+        activeEnd = undefined; // Drop upper bound to never miss logs arriving exactly now
+      }
+
+      const result = await getSystemLogs(systemId, { query, service, level, limit, offset, start: activeStart, end: activeEnd });
       setLogs(result?.logs || []);
       setTotal(result?.total || 0);
     } catch (err) {
@@ -35,7 +60,7 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
     setPage(1);
     fetchLogs(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [systemId, start, end, query, service, level]);
+  }, [systemId, timeframe?.start, timeframe?.end, fallbackStart, fallbackEnd, query, service, level]);
 
   useEffect(() => {
     fetchLogs(true);
@@ -128,8 +153,12 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
                   <td style={{ padding: '8px 16px', color: 'var(--text-2)', fontSize: '12px', whiteSpace: 'nowrap' }}>
                     {new Date(log.timestamp).toLocaleString()}
                   </td>
-                  <td style={{ padding: '8px 16px', fontWeight: 600, fontSize: '12px', color: getLevelColor(log.level) }}>
-                    {(log.level || 'INFO').toUpperCase()}
+                  <td style={{ padding: '8px 16px', fontWeight: 600, fontSize: '12px', whiteSpace: 'nowrap', color: getLevelColor(log.level) }}>
+                    {String(log.level || '').toUpperCase() === 'UNKNOWN' ? (
+                      <span style={{ color: 'var(--text-3)' }}>-</span>
+                    ) : (
+                      String(log.level || 'INFO').toUpperCase()
+                    )}
                   </td>
                   <td style={{ padding: '8px 16px', color: 'var(--text)', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {log.service}

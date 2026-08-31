@@ -369,7 +369,105 @@ async function provisionSystem(clusterId, systemName) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
+
+    // 3. Create Anomaly Monitor attached to the detector
+    const anomalyMonitorPayload = {
+      type: "monitor",
+      name: `anomaly-monitor-${safeName}`,
+      monitor_type: "query_level_monitor",
+      enabled: true,
+      schedule: { period: { interval: 1, unit: "MINUTES" } },
+      inputs: [{
+        search: {
+          indices: [".opendistro-anomaly-results*"],
+          query: {
+            size: 1,
+            sort: [{ data_end_time: { order: "desc" } }],
+            query: {
+              bool: {
+                filter: [
+                  { term: { detector_id: createRes._id } },
+                  { range: { data_end_time: { from: "{{period_end}}||-2m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
+                ]
+              }
+            }
+          }
+        }
+      }],
+      triggers: [{
+        id: `trigger-anomaly-${safeName}`,
+        name: `High Anomaly Grade Trigger`,
+        severity: "2",
+        condition: {
+          script: {
+            lang: "painless",
+            source: "ctx.results[0].hits.hits.size() > 0 && ctx.results[0].hits.hits[0]._source.anomaly_grade > 0.7"
+          }
+        },
+        actions: []
+      }]
+    };
+    
+    await makeReq(`${osUrl}/_plugins/_alerting/monitors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(anomalyMonitorPayload)
+    });
   }
+
+  // 4. Create Bucket-Level Monitor for Top Error Patterns
+  const bucketMonitorPayload = {
+    type: "monitor",
+    name: `bucket-monitor-${safeName}`,
+    monitor_type: "bucket_level_monitor",
+    enabled: true,
+    schedule: { period: { interval: 3, unit: "MINUTES" } },
+    inputs: [{
+      search: {
+        indices: ["logintel-logs-*"],
+        query: {
+          size: 0,
+          query: {
+            bool: {
+              filter: [
+                { term: { "system.id": clusterId } },
+                { terms: { "log.level": ["ERROR", "FATAL", "CRITICAL"] } },
+                { range: { "@timestamp": { from: "{{period_end}}||-3m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
+              ]
+            }
+          },
+          aggregations: {
+            composite_agg: {
+              composite: {
+                sources: [
+                  { error_pattern: { terms: { field: "log.message.keyword" } } }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }],
+    triggers: [{
+      bucket_level_trigger: {
+        id: `trigger-bucket-${safeName}`,
+        name: `High Frequency Error Trigger`,
+        severity: "1",
+        condition: {
+          buckets_path: { count: "_count" },
+          parent_bucket_path: "composite_agg",
+          script: { source: "params.count > 50" }
+        },
+        actions: []
+      }
+    }]
+  };
+
+  await makeReq(`${osUrl}/_plugins/_alerting/monitors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bucketMonitorPayload)
+  });
 
   console.log(`Successfully initiated auto-provisioning for system ${clusterId}`);
 }
@@ -523,7 +621,7 @@ app.get('/api/clusters', requireAuth, requireAdmin, agentProxy);
 app.get('/api/health', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const agentRes = await fetch(`${AGENT_URL}/api/health`, { signal: controller.signal });
     clearTimeout(timeout);
     if (agentRes.ok) {
@@ -547,7 +645,7 @@ app.get('/api/health', requireAuth, async (req, res) => {
 app.get('/api/systems', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     // Note: We don't forward auth headers to agent, it trusts gateway
     const agentRes = await fetch(`${AGENT_URL}/api/systems`, { signal: controller.signal });
     clearTimeout(timeout);

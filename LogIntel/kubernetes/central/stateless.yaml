@@ -77,7 +77,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: agent
-        image: ghcr.io/sayuru-priyanjana/logintel-ai-agent:latest
+        image: ghcr.io/sayuru-priyanjana/logintel-agent:backend-0.1.0
         imagePullPolicy: Always
         env:
         - name: OPENSEARCH_URL
