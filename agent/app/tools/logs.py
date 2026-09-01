@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.config import settings
@@ -27,6 +28,27 @@ def _dig(source: dict, path: str):
             return None
         node = node.get(part)
     return node
+
+
+@dataclass
+class Collapsed:
+    """What one pattern query yielded.
+
+    A named structure rather than a tuple: the caller needs six things from this
+    now, and positional unpacking of six was already a place to introduce a
+    silent bug by transposing two of them.
+    """
+
+    patterns: dict[str, LogPattern]
+    totals_by_level: dict[str, int]
+    unparsed: int
+    total_documents: int
+    # Exact per-service, per-level counts. Not derived from `patterns`, which is
+    # capped — this is what an error *rate* must be measured from.
+    by_service_level: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Services whose message aggregation was truncated, so an absent pattern
+    # bucket does not establish that the pattern was absent.
+    truncated_services: set[str] = field(default_factory=set)
 
 
 class LogTool:
@@ -133,6 +155,17 @@ class LogTool:
                         },
                     },
                 },
+                # Exact per-service, per-level counts over the whole window.
+                # Deliberately separate from the pattern tree below: that one is
+                # truncated to the top few messages per service for display, and
+                # summing it to get an error *rate* undercounts every service
+                # with more distinct templates than the cut allows. A service
+                # emitting 40 different errors had most of them dropped before
+                # the rate was computed, so ERROR_RATE_SPIKE never fired.
+                "service_levels": {
+                    "terms": {"field": "service.name", "size": 100},
+                    "aggs": {"levels": {"terms": {"field": "log.level", "size": 10}}},
+                },
                 "parsed": {
                     # Lines Fluent Bit could not parse are counted but excluded
                     # from pattern analysis; they are noise, not evidence.
@@ -168,7 +201,7 @@ class LogTool:
         return edges
 
     @staticmethod
-    def _collapse(result: dict, with_examples: bool) -> tuple[dict[str, LogPattern], dict[str, int], int, int]:
+    def _collapse(result: dict, with_examples: bool) -> Collapsed:
         """Folds exact-message buckets into fingerprint-keyed patterns."""
         patterns: dict[str, LogPattern] = {}
         aggregations = result.get("aggregations", {})
@@ -179,10 +212,25 @@ class LogTool:
         unparsed = aggregations.get("unparsed", {}).get("doc_count", 0)
         total_documents = result.get("hits", {}).get("total", {}).get("value", 0)
 
+        # Exact counts, untouched by the pattern truncation below.
+        by_service_level: dict[str, dict[str, int]] = {}
+        for bucket in aggregations.get("service_levels", {}).get("buckets", []):
+            by_service_level[bucket["key"]] = {
+                level["key"]: level["doc_count"]
+                for level in bucket.get("levels", {}).get("buckets", [])
+            }
+
+        # Services whose message aggregation hit its cap. For those, "this
+        # pattern has no baseline bucket" does not mean "it never happened" —
+        # it may simply have ranked below the cut.
+        truncated: set[str] = set()
+
         for service_bucket in (
             aggregations.get("parsed", {}).get("by_service", {}).get("buckets", [])
         ):
             service = service_bucket["key"]
+            if service_bucket.get("by_message", {}).get("sum_other_doc_count", 0) > 0:
+                truncated.add(service)
             for message_bucket in service_bucket.get("by_message", {}).get("buckets", []):
                 message = message_bucket["key"]
                 template = fingerprint(message)
@@ -216,43 +264,152 @@ class LogTool:
                     service=service, count=message_bucket["doc_count"],
                     first_seen=first, last_seen=last,
                 )
-        return patterns, totals, unparsed, total_documents
+        return Collapsed(patterns=patterns, totals_by_level=totals,
+                         unparsed=unparsed, total_documents=total_documents,
+                         by_service_level=by_service_level,
+                         truncated_services=truncated)
 
-    # -- samples -----------------------------------------------------------
+    # -- retrieval ---------------------------------------------------------
+    # The maximum a single call may return. The agent chooses `limit`, and an
+    # unbounded one would put an arbitrary number of raw lines into the prompt.
+    MAX_FETCH = 200
+
+    @staticmethod
+    def _to_sample(hit: dict) -> LogSample | None:
+        source = hit.get("_source", {})
+        raw_ts = _dig(source, "@timestamp")
+        if not raw_ts:
+            return None
+        return LogSample(
+            # Minted here, in Python, from the document's own id. Every line the
+            # model is asked to cite is given an identifier it cannot invent.
+            id=f"log:{hit.get('_id', '')[:10]}",
+            timestamp=ensure_utc(datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))),
+            level=_dig(source, "log.level") or "UNKNOWN",
+            service=_dig(source, "service.name"),
+            pod=_dig(source, "kubernetes.pod.name"),
+            message=(_dig(source, "log.message") or "")[:500],
+            http_status=_dig(source, "http.status_code"),
+            error_type=_dig(source, "error.type"),
+            trace_id=_dig(source, "trace.id"),
+        )
+
+    async def fetch(self, plan: InvestigationPlan, window: TimeWindow, *,
+                    levels: list[str] | None = None,
+                    service: str | None = None,
+                    contains: str | None = None,
+                    order: str = "newest",
+                    limit: int = 20) -> list[LogSample]:
+        """Raw log lines, on whatever terms the caller asks for.
+
+        The generalisation of `samples`. That method could only ever return the
+        *first* ERROR-level lines of the incident window, which is right for
+        incident evidence and useless for anything else: "show me the last 20
+        logs" and "what was this service saying just before it broke" both need
+        a different level filter, a different sort, or both.
+
+        Every argument here is a *parameter*, never a query fragment. The caller
+        — including the reasoning loop — chooses what to look for; the query
+        itself is assembled here, so a filter can be wrong but never malformed,
+        and no field or index name is ever taken from model output.
+        """
+        filters = list(self.base_filters(plan, window))
+        if levels:
+            filters.append({"terms": {"log.level": [str(l).upper() for l in levels]}})
+        if service:
+            filters.append({"term": {"service.name": service}})
+        if contains:
+            # match_phrase against the analysed field, so the caller can pass
+            # ordinary words rather than having to know about `.keyword`.
+            filters.append({"match_phrase": {"log.message": contains}})
+
+        try:
+            size = max(1, min(int(limit), self.MAX_FETCH))
+        except (TypeError, ValueError):
+            size = 20
+
+        body = {
+            "size": size,
+            "_source": {"includes": _SAMPLE_FIELDS},
+            "query": {"bool": {"filter": filters}},
+            "sort": [{"@timestamp": {"order": "asc" if order == "oldest" else "desc"}}],
+        }
+        result = await self._client.search(self._index, body)
+        found = [s for s in (self._to_sample(hit)
+                             for hit in result.get("hits", {}).get("hits", []))
+                 if s is not None]
+        # A "newest first" query is the right way to *find* the last N lines and
+        # the wrong way to *read* them: causal order is chronological either way.
+        return sorted(found, key=lambda s: s.timestamp)
+
     async def samples(self, plan: InvestigationPlan, window: TimeWindow, size: int) -> list[LogSample]:
         """A few raw error lines from the start of the incident.
 
         Sorted ascending from the incident start, because the useful ones are the
         *first* failures, not the most recent repetitions of them.
         """
+        return await self.fetch(plan, window, levels=list(ERROR_LEVELS),
+                                order="oldest", limit=size)
+
+    # How many unverified "new error" candidates to settle with a targeted
+    # lookup. Only ERROR-level patterns matter here, and a window with more
+    # than this many distinct new error templates has bigger problems than the
+    # precision of one signal.
+    MAX_VERIFY = 30
+
+    async def _verify_new_patterns(self, plan: InvestigationPlan, baseline: TimeWindow,
+                                   patterns: dict[str, LogPattern]) -> None:
+        """Settles, exactly, whether a candidate new error really is new.
+
+        The baseline's message aggregation is capped, so a pattern below the cut
+        comes back with no bucket and looks brand new. Rather than widen the cap
+        and hope — the next busy service overflows whatever number is chosen —
+        the small set of candidates is checked directly against the baseline
+        window with a filter on those exact messages.
+
+        One extra query, only when the aggregation was truncated, and only for
+        ERROR-level patterns that are about to become a signal.
+        """
+        candidates = [
+            p for p in patterns.values()
+            if not p.baseline_verified and p.baseline_count == 0
+            and p.level in ERROR_LEVELS
+        ][: self.MAX_VERIFY]
+        if not candidates:
+            return
+
+        by_example = {p.example: p for p in candidates if p.example}
+        if not by_example:
+            return
+
         body = {
-            "size": size,
-            "_source": {"includes": _SAMPLE_FIELDS},
-            "query": {"bool": {
-                "filter": [*self.base_filters(plan, window),
-                           {"terms": {"log.level": list(ERROR_LEVELS)}}],
-            }},
-            "sort": [{"@timestamp": {"order": "asc"}}],
+            "size": 0,
+            "query": {"bool": {"filter": [
+                *self.base_filters(plan, baseline),
+                {"terms": {"log.message.keyword": list(by_example)}},
+            ]}},
+            "aggs": {"messages": {"terms": {"field": "log.message.keyword",
+                                            "size": len(by_example)}}},
         }
-        result = await self._client.search(self._index, body)
-        samples = []
-        for hit in result.get("hits", {}).get("hits", []):
-            source = hit.get("_source", {})
-            raw_ts = _dig(source, "@timestamp")
-            if not raw_ts:
-                continue
-            samples.append(LogSample(
-                id=f"log:{hit.get('_id', '')[:10]}",
-                timestamp=ensure_utc(datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))),
-                level=_dig(source, "log.level") or "UNKNOWN",
-                service=_dig(source, "service.name"),
-                pod=_dig(source, "kubernetes.pod.name"),
-                message=(_dig(source, "log.message") or "")[:500],
-                http_status=_dig(source, "http.status_code"),
-                error_type=_dig(source, "error.type"),
-                trace_id=_dig(source, "trace.id"),
-            ))
-        return samples
+        try:
+            result = await self._client.search(self._index, body)
+        except OpenSearchError as exc:
+            # The doubt stands. Leaving these unverified suppresses the signal,
+            # which is the safe direction: a missed new-error pattern is a gap,
+            # an invented one is a wrong answer wearing high severity.
+            logger.warning("Could not verify new-pattern candidates: %s", exc)
+            return
+
+        seen = {
+            bucket["key"]: bucket["doc_count"]
+            for bucket in result.get("aggregations", {})
+            .get("messages", {}).get("buckets", [])
+        }
+        for message, pattern in by_example.items():
+            pattern.baseline_count = seen.get(message, 0)
+            # Checked either way now: found means not new, absent from a query
+            # that asked for it specifically means genuinely absent.
+            pattern.baseline_verified = True
 
     # -- collect -----------------------------------------------------------
     async def collect(self, plan: InvestigationPlan, incident: TimeWindow,
@@ -260,18 +417,30 @@ class LogTool:
         evidence = LogEvidence()
         try:
             incident_result = await self._pattern_query(plan, incident, with_examples=True)
-            patterns, totals, unparsed, total = self._collapse(incident_result, with_examples=True)
+            collapsed = self._collapse(incident_result, with_examples=True)
+            patterns = collapsed.patterns
+            totals, unparsed = collapsed.totals_by_level, collapsed.unparsed
+            total = collapsed.total_documents
+            evidence.by_service_level = collapsed.by_service_level
 
             if baseline is not None:
                 baseline_result = await self._pattern_query(plan, baseline, with_examples=False)
-                baseline_patterns, baseline_totals, _, baseline_total = self._collapse(
-                    baseline_result, with_examples=False
-                )
+                base = self._collapse(baseline_result, with_examples=False)
                 for key, pattern in patterns.items():
-                    matched = baseline_patterns.get(key)
+                    matched = base.patterns.get(key)
                     pattern.baseline_count = matched.count if matched else 0
-                evidence.baseline_totals_by_level = baseline_totals
-                evidence.baseline_documents = baseline_total
+                    # Absent from a truncated aggregation is not absent from the
+                    # window. Left unmarked, every such pattern reads as brand new
+                    # and fires a HIGH-severity NEW_ERROR_PATTERN on a line that
+                    # may have been happening all day.
+                    pattern.baseline_verified = bool(
+                        matched or pattern.service not in base.truncated_services
+                    )
+                evidence.baseline_totals_by_level = base.totals_by_level
+                evidence.baseline_documents = base.total_documents
+                evidence.baseline_by_service_level = base.by_service_level
+
+                await self._verify_new_patterns(plan, baseline, patterns)
 
             ranked = sorted(
                 patterns.values(),

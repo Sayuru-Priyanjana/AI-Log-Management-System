@@ -69,15 +69,81 @@ def _first_crossing(series: MetricSeries, predicate) -> datetime | None:
     return series.points[0].timestamp if series.points else None
 
 
+def _state_onset(series: MetricSeries, predicate) -> tuple[datetime | None, bool]:
+    """Onset of a *state*, plus whether it was already true when the window opened.
+
+    Some of these metrics are not events. `pod_oom_terminated` reads from
+    kube_pod_container_status_last_terminated_reason, which stays at 1 for as
+    long as the pod's last termination was an OOM — hours or days after the kill.
+    `pod_ready`, `pod_pending` and `target_up` are the same shape.
+
+    Asking when such a series "first crossed" inside the window returns the
+    window's own start whenever the condition predates it. That is not a
+    measurement, and it is the most damaging possible error here because the
+    hypothesis engine ranks on causal precedence: an artefact sitting at the
+    window edge outranks everything real.
+
+    Observed in production. A 28-hour investigation opened at 00:05 and reported
+    OOM_KILL onset=00:05:00 — the window edge exactly. The loop took it as the
+    earliest event, named it the root cause, and invented a dependency to explain
+    how it caused a service that does not call it. MEMORY_PRESSURE on the same
+    pod was reported at 02:25, *after* the kill it supposedly caused, which is
+    the ordering telling you the first timestamp was never real.
+
+    So a condition already true at the first sample is reported as pre-existing:
+    its start was not observed, and it must not win precedence for being old.
+    """
+    points = series.points
+    if not points:
+        return None, False
+    if predicate(points[0].value):
+        # True from the first sample. The window cannot say when it began, only
+        # that it was already the case.
+        return points[0].timestamp, True
+    for point in points:
+        if predicate(point.value):
+            return point.timestamp, False
+    return points[0].timestamp, False
+
+
 def _pair_by_identity(numerators: list[MetricSeries],
                       denominators: list[MetricSeries],
-                      keys: tuple[str, ...]) -> list[tuple[MetricSeries, MetricSeries]]:
+                      keys: tuple[str, ...],
+                      what: str = "") -> list[tuple[MetricSeries, MetricSeries]]:
+    """Joins two metric series on the labels that identify the same thing.
+
+    A ratio needs both halves, and the join is exact. When an exporter labels the
+    two sides differently — a `service` label present on one and not the other is
+    the usual case — every pair is lost and the signal simply never fires. That
+    failure is invisible: no error, no gap recorded, just an absent signal that
+    reads as an absent problem. Measured against the eval testbed,
+    HTTP_5XX_BURST went missing this way while the 5xx were plainly there.
+
+    So an unmatched numerator is logged. It cannot be fixed here — the labels are
+    the exporter's — but it must not pass silently.
+    """
     index = {tuple(s.labels.get(k, "") for k in keys): s for s in denominators}
     pairs = []
+    unmatched: list[str] = []
     for series in numerators:
         match = index.get(tuple(series.labels.get(k, "") for k in keys))
         if match is not None:
             pairs.append((series, match))
+        else:
+            unmatched.append(series.id)
+
+    if unmatched and not pairs:
+        logger.warning(
+            "%s: none of the %d series could be paired on %s — the ratio cannot be "
+            "computed and its signal will not fire. Available keys on the other "
+            "side: %s. Unmatched: %s",
+            what or "metric pairing", len(unmatched), "/".join(keys),
+            sorted({str(k) for k in index})[:5], unmatched[:5],
+        )
+    elif unmatched:
+        logger.info("%s: %d of %d series unpaired on %s (%s)",
+                    what or "metric pairing", len(unmatched),
+                    len(numerators), "/".join(keys), unmatched[:3])
     return pairs
 
 
@@ -146,12 +212,33 @@ class SignalEngine:
         baseline_window = windows.baseline
 
         # -- error rate, per service -------------------------------------
+        # Taken from the exact per-service aggregation, not from `logs.patterns`.
+        # That list is ranked and capped at max_log_patterns for display, so
+        # summing it undercounts every service with more distinct error
+        # templates than the cap allows — a service emitting 40 different errors
+        # had most of them dropped before its rate was computed, and
+        # ERROR_RATE_SPIKE then failed to fire on a service that was plainly
+        # broken. The pattern list remains the right source for *which* errors;
+        # it was never the right source for *how many*.
         incident_errors: dict[str, int] = defaultdict(int)
         baseline_errors: dict[str, int] = defaultdict(int)
-        for pattern in logs.patterns:
-            if pattern.level in ERROR_LEVELS:
-                incident_errors[pattern.service or "system"] += pattern.count
-                baseline_errors[pattern.service or "system"] += pattern.baseline_count
+
+        if logs.by_service_level:
+            for service, levels in logs.by_service_level.items():
+                total = sum(count for level, count in levels.items()
+                            if level in ERROR_LEVELS)
+                if total:
+                    incident_errors[service or "system"] = total
+            for service, levels in (logs.baseline_by_service_level or {}).items():
+                baseline_errors[service or "system"] = sum(
+                    count for level, count in levels.items() if level in ERROR_LEVELS)
+        else:
+            # Evidence collected before the aggregation existed — stored
+            # investigations replayed through this engine still have to work.
+            for pattern in logs.patterns:
+                if pattern.level in ERROR_LEVELS:
+                    incident_errors[pattern.service or "system"] += pattern.count
+                    baseline_errors[pattern.service or "system"] += pattern.baseline_count
 
         for service, count in incident_errors.items():
             rate = count / windows.incident.minutes
@@ -224,7 +311,8 @@ class SignalEngine:
 
         # -- 5xx ratio -----------------------------------------------------
         for errors, total in _pair_by_identity(
-            metrics.of("http_error_rate"), metrics.of("http_request_rate"), ("service",)
+            metrics.of("http_error_rate"), metrics.of("http_request_rate"), ("service",),
+            what="HTTP_5XX_BURST",
         ):
             if not total.incident.average:
                 continue
@@ -283,22 +371,42 @@ class SignalEngine:
 
         # -- traffic volume -------------------------------------------------
         for series in metrics.of("http_request_rate"):
-            ratio = series.ratio_to_baseline()
+            # Peak against the baseline average, matching the 5xx and dependency
+            # checks rather than contradicting them. The window deliberately
+            # starts before the onset, so an average over it mixes quiet minutes
+            # with busy ones and dilutes a real surge towards nothing: measured
+            # live, a 6.8x surge averaged out to 1.97x and sat under the 2.5x bar
+            # while the dashboard showed it plainly. These are rate[2m] series,
+            # so each point is already a two-minute average and a peak is a
+            # sustained condition, not one stray sample.
+            #
+            # A collapse is still judged on the average — traffic stopping is a
+            # sustained state by definition, and a peak would hide it.
+            baseline_average = (series.baseline.average
+                                if series.baseline else None) or 0.0
+            peak_ratio = ((series.incident.maximum or 0.0) / baseline_average
+                          if baseline_average > 0 else None)
+            mean_ratio = series.ratio_to_baseline()
             service = series.labels.get("service")
-            if ratio and ratio >= settings.traffic_surge_multiplier:
+            if peak_ratio and peak_ratio >= settings.traffic_surge_multiplier:
                 signals.append(Signal(
                     id=self._signal_id(SignalType.TRAFFIC_SURGE, service),
                     type=SignalType.TRAFFIC_SURGE,
                     severity=Severity.MEDIUM,
                     service=service,
                     first_seen=_first_crossing(
-                        series, lambda v: v >= (series.baseline.average or 0) * settings.traffic_surge_multiplier),
-                    magnitude=Magnitude(baseline=series.baseline.average if series.baseline else None,
-                                        incident=series.incident.average, unit="req/s", ratio=ratio),
-                    description=f"{service} request rate rose {ratio:.1f}x above baseline.",
+                        series, lambda v: v >= baseline_average * settings.traffic_surge_multiplier),
+                    # The peak is reported, because the peak is what the ratio
+                    # describes. Quoting the window average beside a peak-derived
+                    # multiple gives the reader two numbers that do not divide.
+                    magnitude=Magnitude(baseline=baseline_average,
+                                        incident=series.incident.maximum,
+                                        unit="req/s at peak", ratio=peak_ratio),
+                    description=(f"{service} request rate peaked at "
+                                 f"{peak_ratio:.1f}x its baseline."),
                     evidence_ids=[series.id],
                 ))
-            elif (ratio is not None and ratio <= 0.3 and series.baseline
+            elif (mean_ratio is not None and mean_ratio <= 0.3 and series.baseline
                   and (series.baseline.average or 0) > 0.2):
                 signals.append(Signal(
                     id=self._signal_id(SignalType.TRAFFIC_COLLAPSE, service),
@@ -308,9 +416,10 @@ class SignalEngine:
                     first_seen=_first_crossing(
                         series, lambda v: v <= (series.baseline.average or 0) * 0.3),
                     magnitude=Magnitude(baseline=series.baseline.average,
-                                        incident=series.incident.average, unit="req/s", ratio=ratio),
-                    description=(f"{service} request rate collapsed to {ratio:.0%} of baseline — "
-                                 f"it may have stopped receiving traffic."),
+                                        incident=series.incident.average, unit="req/s",
+                                        ratio=mean_ratio),
+                    description=(f"{service} request rate collapsed to {mean_ratio:.0%} of "
+                                 f"baseline — it may have stopped receiving traffic."),
                     evidence_ids=[series.id],
                 ))
         return signals
@@ -322,7 +431,7 @@ class SignalEngine:
 
         for failures, total in _pair_by_identity(
             metrics.of("dependency_failure_rate"), metrics.of("dependency_request_rate"),
-            ("service", "dependency"),
+            ("service", "dependency"), what="DEPENDENCY_FAILURE",
         ):
             if not total.incident.average:
                 continue
@@ -362,16 +471,21 @@ class SignalEngine:
             if series.incident.minimum is None or series.incident.minimum > 0:
                 continue
             service = series.labels.get("app") or self.resolver.from_pod(series.labels.get("pod"))
+            onset, pre_existing = _state_onset(series, lambda v: v == 0)
             signals.append(Signal(
                 id=self._signal_id(SignalType.DEPENDENCY_UNAVAILABLE, f"{service}-target"),
                 type=SignalType.DEPENDENCY_UNAVAILABLE,
-                severity=Severity.CRITICAL,
+                severity=Severity.HIGH if pre_existing else Severity.CRITICAL,
                 service=service,
                 pod=series.labels.get("pod"),
-                first_seen=_first_crossing(series, lambda v: v == 0),
+                first_seen=onset,
+                pre_existing=pre_existing,
                 magnitude=Magnitude(baseline=series.baseline.average if series.baseline else None,
                                     incident=series.incident.average, unit="up"),
-                description=f"{service} stopped responding to metric scrapes (up = 0).",
+                description=(f"{service} stopped responding to metric scrapes (up = 0)."
+                             + (" It was already down when the window opened, so this "
+                                "is a pre-existing condition rather than something that "
+                                "started here." if pre_existing else "")),
                 evidence_ids=[series.id],
             ))
         return signals
@@ -383,7 +497,8 @@ class SignalEngine:
 
         # -- CPU against its own limit -------------------------------------
         for usage, limit in _pair_by_identity(
-            metrics.of("cpu_usage_cores"), metrics.of("cpu_limit_cores"), ("pod", "container")
+            metrics.of("cpu_usage_cores"), metrics.of("cpu_limit_cores"), ("pod", "container"),
+            what="CPU_SATURATION",
         ):
             limit_cores = limit.incident.maximum
             if not limit_cores or limit_cores <= 0:
@@ -431,7 +546,7 @@ class SignalEngine:
         # -- Memory against its own limit ------------------------------------
         for usage, limit in _pair_by_identity(
             metrics.of("memory_working_set_bytes"), metrics.of("memory_limit_bytes"),
-            ("pod", "container"),
+            ("pod", "container"), what="MEMORY_PRESSURE",
         ):
             limit_bytes = limit.incident.maximum
             if not limit_bytes or limit_bytes <= 0:
@@ -488,29 +603,52 @@ class SignalEngine:
             if (series.incident.maximum or 0) < 1:
                 continue
             pod = series.labels.get("pod")
+            # `last_terminated_reason` is a state, not an event: it reads 1 for
+            # as long as the pod's most recent termination was an OOM, which can
+            # be days. When it is already 1 at the first sample the kill happened
+            # before the window and its time is simply not knowable from here.
+            onset, pre_existing = _state_onset(series, lambda v: v >= 1)
             signals.append(Signal(
                 id=self._signal_id(SignalType.OOM_KILL, pod),
                 type=SignalType.OOM_KILL,
-                severity=Severity.CRITICAL,
+                severity=Severity.HIGH if pre_existing else Severity.CRITICAL,
                 service=self.resolver.of(series), pod=pod,
-                first_seen=_first_crossing(series, lambda v: v >= 1),
-                description=f"{pod} was last terminated by the kernel OOM killer.",
+                first_seen=onset,
+                pre_existing=pre_existing,
+                description=(
+                    f"{pod} was last terminated by the kernel OOM killer."
+                    + (" The metric reports only that this was the most recent "
+                       "termination reason, and it already held when the window "
+                       "opened — the kill itself happened earlier and its time was "
+                       "not observed. Do not treat this timestamp as the onset."
+                       if pre_existing else "")),
                 evidence_ids=[series.id],
             ))
+
+        succeeded_pods = {series.labels.get("pod") 
+                          for series in metrics.of("pod_succeeded") 
+                          if series.incident.maximum and series.incident.maximum >= 1}
 
         for series in metrics.of("pod_ready"):
             if series.incident.minimum is None or series.incident.minimum > 0:
                 continue
             pod = series.labels.get("pod")
+            if pod in succeeded_pods:
+                continue
+            onset, pre_existing = _state_onset(series, lambda v: v == 0)
             signals.append(Signal(
                 id=self._signal_id(SignalType.READINESS_FAILURE, pod),
                 type=SignalType.READINESS_FAILURE,
-                severity=Severity.HIGH,
+                severity=Severity.MEDIUM if pre_existing else Severity.HIGH,
                 service=self.resolver.from_pod(pod), pod=pod,
-                first_seen=_first_crossing(series, lambda v: v == 0),
+                first_seen=onset,
+                pre_existing=pre_existing,
                 magnitude=Magnitude(baseline=series.baseline.average if series.baseline else None,
                                     incident=series.incident.average, unit="ready"),
-                description=f"{pod} was not Ready and was removed from its Service endpoints.",
+                description=(f"{pod} was not Ready and was removed from its Service endpoints."
+                             + (" It was already unready when the window opened, so it "
+                                "predates this incident rather than starting it."
+                                if pre_existing else "")),
                 evidence_ids=[series.id],
             ))
 
@@ -518,13 +656,17 @@ class SignalEngine:
             if (series.incident.maximum or 0) < 1:
                 continue
             pod = series.labels.get("pod")
+            onset, pre_existing = _state_onset(series, lambda v: v >= 1)
             signals.append(Signal(
                 id=self._signal_id(SignalType.SCHEDULING_FAILURE, pod),
                 type=SignalType.SCHEDULING_FAILURE,
-                severity=Severity.CRITICAL,
+                severity=Severity.HIGH if pre_existing else Severity.CRITICAL,
                 service=self.resolver.from_pod(pod), pod=pod,
-                first_seen=_first_crossing(series, lambda v: v >= 1),
-                description=f"{pod} is stuck in Pending and has not been scheduled.",
+                first_seen=onset,
+                pre_existing=pre_existing,
+                description=(f"{pod} is stuck in Pending and has not been scheduled."
+                             + (" It was already Pending when the window opened."
+                                if pre_existing else "")),
                 evidence_ids=[series.id],
             ))
 

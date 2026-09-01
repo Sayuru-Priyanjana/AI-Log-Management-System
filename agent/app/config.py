@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_output_tokens: int = 2048
 
+    # Transient-fault retries. A hosted endpoint rate-limits and sheds load, and
+    # without these a single 429 or 503 ends an investigation that had already
+    # done all of its expensive work. Measured against Gemini's free tier, one
+    # call in six came back 503, so an eight-step run would rarely survive.
+    llm_retry_attempts: int = 3
+    llm_retry_base_delay: float = 1.0
+    llm_retry_max_delay: float = 30.0
+
     # --- Ollama -----------------------------------------------------------
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder"
@@ -111,6 +119,11 @@ class Settings(BaseSettings):
 
     # --- Misc -------------------------------------------------------------
     prometheus_url: str = "http://localhost:9090"
+    # The testbed's incident injector, used only by the evaluation harness.
+    # Declared here because `extra="ignore"` means an undeclared key in .env is
+    # silently dropped — INCIDENT_CONTROLLER_URL was set correctly all along and
+    # went nowhere, and `settings.incident_controller_url` raised AttributeError.
+    incident_controller_url: str = "http://localhost:30099"
     system_active_lookback_hours: int = 24
     log_level: str = "INFO"
     persist_investigations: bool = True

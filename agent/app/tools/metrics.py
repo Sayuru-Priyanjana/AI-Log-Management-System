@@ -53,6 +53,8 @@ SPECS: tuple[MetricSpec, ...] = (
     # "ready" or "definitely not ready".
     MetricSpec("pod_ready", "bool",
                'max by (pod) (kube_pod_status_ready{{{ns}, condition="true"}})', ("pod",)),
+    MetricSpec("pod_succeeded", "bool",
+               'max by (pod) (kube_pod_status_phase{{{ns}, phase="Succeeded"}})', ("pod",)),
     MetricSpec("pod_pending", "bool",
                'max by (pod) (kube_pod_status_phase{{{ns}, phase="Pending"}})', ("pod",)),
     MetricSpec("pod_oom_terminated", "bool",

@@ -27,7 +27,7 @@ Run the following command:
 ```bash
 helm install logintel-agent \
   oci://ghcr.io/sayuru-priyanjana/logintel-agent \
-  --version 0.1.0 \
+  --version 0.2.1 \
   --set central.url="http://YOUR_CENTRAL_IP" \
   --set auth.clusterId="cls-xxxxx" \
   --set auth.token="YOUR_TOKEN"

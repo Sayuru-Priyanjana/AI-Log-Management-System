@@ -35,7 +35,7 @@ import httpx
 from app.agents.react import ReActAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.config import settings
-from app.llm.factory import build_llm
+from app.llm.factory import build_llm, describe_model, describe_provider
 from app.models.analysis import InvestigationResult
 from app.models.plan import InvestigationRequest
 from app.pipeline.run import InvestigationPipeline
@@ -143,7 +143,10 @@ class ScenarioScore:
 async def build_pipeline() -> tuple[InvestigationPipeline, list, OpenSearchClient,
                                     InvestigationStore, PrometheusClient]:
     opensearch = OpenSearchClient()
-    prometheus = PrometheusClient()
+    # PrometheusClient takes its base URL explicitly — it has no settings
+    # default, and calling it bare raised TypeError before the harness got as
+    # far as its first scenario.
+    prometheus = PrometheusClient(settings.prometheus_url)
     llm = build_llm()
     registry = SystemRegistry(opensearch)
     log_tool = LogTool(opensearch)
@@ -156,7 +159,9 @@ async def build_pipeline() -> tuple[InvestigationPipeline, list, OpenSearchClien
         orchestrator=OrchestratorAgent(llm),
         react_agent=ReActAgent(llm),
         registry=registry,
-        prometheus=prometheus,
+        # Named `prometheus_client` on the pipeline; the window resolver uses it
+        # for latency-based onset detection.
+        prometheus_client=prometheus,
     )
     return (pipeline, [opensearch, prometheus, llm], opensearch,
             InvestigationStore(opensearch), prometheus)
@@ -290,16 +295,25 @@ async def score_one(pipeline: InvestigationPipeline, scenario_id: str, spec: dic
         await store.save(result)
 
     score.duration_s = time.perf_counter() - started
-    score.detected_signals = []
-    
-    # ReAct agent sets final_conclusion directly into summary/cause field
-    # in the analysis stage, but the result object has analysis=None. Let's fix that.
-    score.actual_cause = "Unknown"
-    score.confidence = 1.0
-    score.analyst = "react"
-    score.agreed_with_engine = True
-    score.actual_service = "Unknown"
-    
+
+    # Read from the run, not asserted. These six lines used to be hardcoded —
+    # `detected_signals = []`, `actual_cause = "Unknown"`, `confidence = 1.0` —
+    # so every scenario scored 0% recall and a failed cause no matter what the
+    # pipeline actually did, and a green run was indistinguishable from a broken
+    # one. A harness that does not read its own subject measures nothing.
+    score.detected_signals = sorted({s.type.value for s in result.signals})
+
+    analysis = result.analysis
+    score.actual_cause = analysis.category.value
+    score.actual_service = (result.answer.root_cause_service if result.answer else None)
+    score.confidence = (result.answer.confidence if result.answer
+                        else analysis.confidence)
+    # "react" vs "react (degraded)" vs "deterministic" — a run the model failed
+    # on still produces an answer via the fallback, and that must not be counted
+    # as the model getting it right.
+    score.analyst = analysis.analyst
+    score.agreed_with_engine = analysis.agrees_with_engine
+
     return score
 
 
@@ -339,7 +353,10 @@ def render(scores: list[ScenarioScore]) -> str:
         mean_recall = sum(s.recall for s in scored) / len(scored)
         cause_accuracy = sum(1 for s in scored if s.cause_correct) / len(scored)
         service_accuracy = sum(1 for s in scored if s.service_correct) / len(scored)
-        deterministic = sum(1 for s in scored if s.analyst == "deterministic")
+        # The pipeline labels a fallback run "react (degraded)", never
+        # "deterministic", so this counter could never fire and a run where the
+        # model failed on every scenario looked identical to a clean sweep.
+        deterministic = sum(1 for s in scored if "degraded" in s.analyst)
         lines.append(f"signal recall   {mean_recall:.0%}   "
                      f"(the leading indicator — fix this before touching prompts)")
         lines.append(f"cause accuracy  {cause_accuracy:.0%}   "
@@ -470,9 +487,15 @@ async def main() -> int:
     report = render(scores)
     print(report)
 
+    # Record the model that actually ran. Hardcoding `ollama_model` labelled
+    # every report "qwen2.5-coder" regardless of provider, so a Gemini run and a
+    # local run were indistinguishable in the results — which makes comparing
+    # two reports meaningless, the one thing a report is for.
+    llm_used = build_llm()
     Path(args.report).write_text(json.dumps({
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "model": settings.ollama_model,
+        "provider": describe_provider(llm_used),
+        "model": describe_model(llm_used),
         "num_ctx": settings.ollama_num_ctx,
         "scores": [score.__dict__ | {"recall": score.recall,
                                      "cause_correct": score.cause_correct,

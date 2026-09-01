@@ -28,11 +28,28 @@ class LogPattern(BaseModel):
     first_seen: datetime | None = None
     last_seen: datetime | None = None
 
+    # Whether `baseline_count` was actually established, rather than merely not
+    # found. The baseline aggregation is capped, so a pattern ranking below the
+    # cut comes back with no bucket at all — indistinguishable, without this,
+    # from one that genuinely never occurred.
+    baseline_verified: bool = True
+
     @property
     def is_new(self) -> bool:
         """Absent from the baseline and present now. The single highest-value
-        cheap signal in log analysis."""
-        return self.baseline_count == 0 and self.count > 0
+        cheap signal in log analysis — and the easiest to get wrong.
+
+        `baseline_count == 0` alone is not enough. The baseline's message
+        aggregation returns at most a few dozen buckets per service, so a pattern
+        that occurred in the baseline but ranked below that cut has no bucket,
+        reads as count 0, and is announced as brand new. That fires
+        NEW_ERROR_PATTERN — a HIGH-severity signal — on a line that has been
+        happening all day.
+
+        So absence only counts when it was checked. `baseline_verified` is set by
+        a targeted lookup when the aggregation could not settle it.
+        """
+        return self.baseline_count == 0 and self.count > 0 and self.baseline_verified
 
     @property
     def growth(self) -> float | None:
@@ -71,6 +88,12 @@ class LogEvidence(BaseModel):
     samples: list[LogSample] = Field(default_factory=list)
     totals_by_level: dict[str, int] = Field(default_factory=dict)
     baseline_totals_by_level: dict[str, int] = Field(default_factory=dict)
+    # Exact document counts per service per level, straight from an aggregation
+    # over the whole window. `patterns` is a ranked, truncated view for display;
+    # measuring an error *rate* from it silently undercounts any service with
+    # more distinct error templates than the cut allows.
+    by_service_level: dict[str, dict[str, int]] = Field(default_factory=dict)
+    baseline_by_service_level: dict[str, dict[str, int]] = Field(default_factory=dict)
     total_documents: int = 0
     baseline_documents: int = 0
     unparsed_documents: int = 0

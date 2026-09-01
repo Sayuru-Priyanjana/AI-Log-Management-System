@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.integrations.teams import ping_teams
@@ -144,7 +146,12 @@ async def test_a_successful_ping_names_the_configured_channel(monkeypatch):
 
     assert result["ok"] is True
     assert captured["url"] == "https://outlook.office.com/webhook/shopdemo"
-    assert "on-call" in captured["json"]["text"]
+    # Asserted against the whole payload rather than one field. The message was a
+    # flat {"text": ...} when this was written and is now a MessageCard carrying
+    # the channel in a fact, so pinning the field made the test fail on a change
+    # that did not break anything. What matters is that whoever reads the message
+    # can tell which channel it was aimed at.
+    assert "on-call" in json.dumps(captured["json"])
 
 
 @pytest.mark.asyncio

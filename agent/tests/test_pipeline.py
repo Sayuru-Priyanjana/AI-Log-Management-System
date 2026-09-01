@@ -125,8 +125,11 @@ async def test_a_full_run_reaches_a_verified_structured_answer():
     logs, events, metrics = dependency_outage_evidence()
     llm = ScriptedLLM(
         PLAN,
-        json.dumps({"thought": "start with the measured signals",
-                    "action": "get_signals", "action_input": {"service_name": "all"},
+        # A distinct tool, not the seeded get_signals: repeating that one is
+        # caught by the repeat guard, never reaches the call log, and now counts
+        # as concluding without investigating.
+        json.dumps({"thought": "check which service sits deepest",
+                    "action": "get_dependencies", "action_input": {"service_name": "all"},
                     "is_finished": False}),
         json.dumps({
             "thought": "payment-db is the deepest failing service",
@@ -297,6 +300,11 @@ async def test_invented_citations_survive_into_the_answer_as_unresolved():
     logs, events, metrics = dependency_outage_evidence()
     llm = ScriptedLLM(
         PLAN,
+        # Root-cause answers must now be preceded by at least one real tool call;
+        # a conclusion drawn from nothing is refused once.
+        json.dumps({"thought": "check the call graph first",
+                    "action": "get_dependencies", "action_input": {"service_name": "all"},
+                    "is_finished": False}),
         json.dumps({"thought": "done", "action": None, "is_finished": True,
                     "answer": {"headline": "payment-db failed",
                                "root_cause_service": "payment-db",

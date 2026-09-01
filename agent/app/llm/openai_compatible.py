@@ -13,8 +13,10 @@ and discovering that on every call would cost a doubled round trip each time.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import random
 import time
 
 import httpx
@@ -23,6 +25,12 @@ from app.config import settings
 from app.llm.base import LLMClient, LLMResponse, LLMUnavailable
 
 logger = logging.getLogger(__name__)
+
+# Statuses that mean "ask again shortly", not "this request is wrong":
+#   429  rate limited — routine on a free tier
+#   503  "experiencing high demand" — observed once in six calls against Gemini
+#   500/502/504  transient gateway faults
+_RETRYABLE = frozenset({429, 500, 502, 503, 504})
 
 
 class OpenAICompatibleClient(LLMClient):
@@ -89,18 +97,57 @@ class OpenAICompatibleClient(LLMClient):
             )
         return payload
 
+    @staticmethod
+    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+        """How long to wait before asking again.
+
+        The server's own `Retry-After` is authoritative when it sends one —
+        guessing shorter just earns another rejection. Otherwise exponential
+        backoff with jitter, because several investigations retrying in lockstep
+        would rebuild the very spike they are backing off from.
+        """
+        header = response.headers.get("retry-after", "")
+        if header.strip().isdigit():
+            return min(float(header.strip()), settings.llm_retry_max_delay)
+        base = min(settings.llm_retry_base_delay * (2 ** attempt),
+                   settings.llm_retry_max_delay)
+        return base * (0.5 + random.random() / 2)
+
+    async def _post(self, payload: dict) -> httpx.Response:
+        """POST with retries on transient faults.
+
+        Without this a single 429 or 503 ends the investigation: the client
+        raises LLMUnavailable, the ReAct loop treats it as fatal and returns, and
+        six steps of gathered evidence are discarded because the provider was
+        briefly busy. Measured against Gemini's free tier, one call in six came
+        back 503 "experiencing high demand" — an investigation crossing eight
+        steps would almost never finish.
+        """
+        last: httpx.Response | None = None
+        for attempt in range(settings.llm_retry_attempts + 1):
+            response = await self._client.post("/chat/completions", json=payload)
+            if response.status_code not in _RETRYABLE:
+                return response
+            last = response
+            if attempt == settings.llm_retry_attempts:
+                break
+            delay = self._retry_delay(response, attempt)
+            logger.warning("%s returned %d; retrying in %.1fs (attempt %d of %d)",
+                           self.base_url, response.status_code, delay,
+                           attempt + 1, settings.llm_retry_attempts)
+            await asyncio.sleep(delay)
+        return last if last is not None else response
+
     async def generate(self, *, system: str, prompt: str,
                        schema: dict | None = None) -> LLMResponse:
         started = time.perf_counter()
         try:
-            response = await self._client.post("/chat/completions",
-                                               json=self._payload(system, prompt, schema))
+            response = await self._post(self._payload(system, prompt, schema))
             if response.status_code == 400 and schema is not None and self._schema_supported:
                 logger.warning("%s rejected a JSON schema; falling back to json_object mode",
                                self.base_url)
                 self._schema_supported = False
-                response = await self._client.post("/chat/completions",
-                                                   json=self._payload(system, prompt, schema))
+                response = await self._post(self._payload(system, prompt, schema))
             response.raise_for_status()
         except httpx.ConnectError as exc:
             raise LLMUnavailable(f"Cannot reach {self.base_url}: {exc}") from exc

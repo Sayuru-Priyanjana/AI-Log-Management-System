@@ -28,8 +28,8 @@ def _found_nothing(observation: str) -> bool:
 
 SYSTEM_PROMPT = """You are a site reliability engineer answering a question about a running system.
 
-You work in a loop: think, call a tool, read the observation, repeat. Stop as soon
-as you can answer — extra steps cost time and add nothing.
+You work in a loop: think, call a tool, read the observation, repeat. Stop when the
+evidence supports an answer — not before, and not after.
 
 Available tools:
 {tools}
@@ -71,16 +71,28 @@ When finished, set "is_finished": true, "action": null, and fill "answer":
 
 MODE_GUIDANCE: dict[AnswerMode, str] = {
     AnswerMode.ROOT_CAUSE: (
-        "The user wants to know WHY something broke. Establish the causal chain and "
-        "name the single component at its root. The signals are already in front of "
-        "you; every one of them is a fact this answer has to account for, whether it "
-        "came from a log, a Kubernetes event or a metric. Use get_dependencies to tell "
-        "cause from symptom and get_timeline to confirm the ordering, and reach for "
-        "get_service_events and get_service_metrics on the services the signals name — "
-        "a restart, an eviction or a request-rate step change is often the cause the "
-        "logs only describe the effects of. `headline` must name the failing component "
-        "and what it did, and `detail` must say what the metrics and events showed, not "
-        "only the logs."
+        "The user wants to know WHY something broke. The signals in front of you are "
+        "measured facts — do not re-derive them. Your job is to establish WHICH "
+        "CAUSED WHICH, and to name the single component at the root.\n"
+        "\n"
+        "Work through the signals in onset order, earliest first. For each one:\n"
+        "  1. logs_around(its onset, before_seconds=180) — what was being logged just "
+        "BEFORE it? Leave `level` empty: the trigger is usually an INFO or WARN line, "
+        "not an ERROR, and filtering to errors hides it.\n"
+        "  2. first_occurrence(a distinctive phrase from that line) — did the problem "
+        "really start there, or earlier than the window shows?\n"
+        "  3. get_dependencies on the service — did something beneath it fail first?\n"
+        "\n"
+        "Then apply two tests. Reject any candidate whose onset FOLLOWS the symptom it "
+        "claims to explain; an effect cannot precede its cause. And prefer the DEEPEST "
+        "failing component, because failures propagate upward and everything above it "
+        "is a symptom.\n"
+        "\n"
+        "Every signal is a fact the answer must account for, whether it came from a "
+        "log, a Kubernetes event or a metric — get_service_events and "
+        "get_service_metrics cover the last two. `headline` must name the failing "
+        "component and what it did; `detail` must say what the evidence showed, "
+        "including the line you found before the first error if you found one."
     ),
     AnswerMode.DATA_EXTRACTION: (
         "The user wants to SEE specific records, not an analysis of them. Retrieve "
@@ -211,8 +223,13 @@ class ReActAgent:
 
     async def run(self, plan: InvestigationPlan, windows: InvestigationWindows,
                   evidence: EvidenceBundle, signals: list[Signal],
-                  candidates: list[Candidate]) -> AsyncIterator[dict]:
-        bindings = ToolBindings(plan, windows, evidence, signals, candidates)
+                  candidates: list[Candidate], log_tool=None,
+                  search_window=None) -> AsyncIterator[dict]:
+        # `log_tool` is what makes the live query tools work. It is optional so a
+        # caller with no index access still gets the ten in-memory tools; those
+        # three then say so rather than failing obscurely.
+        bindings = ToolBindings(plan, windows, evidence, signals, candidates,
+                                log_tool=log_tool, search_window=search_window)
         mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
 
         system = SYSTEM_PROMPT.format(
@@ -239,7 +256,7 @@ class ReActAgent:
         # deterministic layer; whether the loop consults them is not a decision
         # worth delegating.
         opening_input = {"service_name": "all"}
-        opening = bindings.execute("get_signals", opening_input)
+        opening = await bindings.execute("get_signals", opening_input)
         opening_text = opening.text
         if opening.evidence_ids:
             # Naming what the list *is* matters as much as showing it. Asked to
@@ -270,6 +287,10 @@ class ReActAgent:
         }
         empty_calls: dict[str, int] = {}
         repeated = 0
+        # The seeded get_signals is already in the call log, so "did the model
+        # investigate?" is a comparison against this, not against zero.
+        seeded_calls = len(bindings.call_log)
+        pushed_back = False
 
         for step in range(1, self.max_steps + 1):
             remaining = self.max_steps - step
@@ -327,6 +348,36 @@ class ReActAgent:
                 continue
 
             if is_finished or (not action and answer):
+                # A root cause named without looking at anything is a guess about
+                # which signal came first, and the signal list cannot settle that
+                # on its own: several signal types are *states* whose onset is the
+                # window edge rather than the moment they began, so the earliest
+                # entry is not automatically the trigger. Observed in production —
+                # the loop read fifteen signals, made zero tool calls, and blamed
+                # an OOM kill whose reported onset was simply the start of the
+                # window, inventing a dependency to carry the explanation.
+                #
+                # Pushed back once only, and never on the last step: a late
+                # conclusion is worth more than no conclusion.
+                if (mode is AnswerMode.ROOT_CAUSE
+                        and len(bindings.call_log) <= seeded_calls
+                        and not pushed_back and step < self.max_steps):
+                    pushed_back = True
+                    yield {"type": "note", "step": step,
+                           "message": ("Concluded without checking any evidence; "
+                                       "asked to investigate before answering.")}
+                    transcript.append(
+                        "System: you have not called a single tool. The signals are "
+                        "leads, not a conclusion. Some of them are states that may "
+                        "predate this window, so the earliest entry in the list is "
+                        "not automatically the cause. Before answering: call "
+                        "get_dependencies to check whether the service you want to "
+                        "blame actually sits beneath the others in the call graph, "
+                        "and logs_around on that signal's onset to see what preceded "
+                        "it. Then answer."
+                    )
+                    continue
+
                 yield {"type": "answer", "step": step, "mode": mode.value,
                        "answer": answer or {}, "exposed_ids": sorted(bindings.exposed_ids),
                        "steps_used": step, "tool_calls": len(bindings.call_log)}
@@ -350,7 +401,7 @@ class ReActAgent:
             else:
                 seen_calls.add(signature)
                 yield {"type": "action", "step": step, "tool": action, "input": action_input}
-                observation = bindings.execute(action, action_input)
+                observation = await bindings.execute(action, action_input)
 
                 # Varying one argument and re-running a tool that keeps finding
                 # nothing is the same dead end reached by a different route. One

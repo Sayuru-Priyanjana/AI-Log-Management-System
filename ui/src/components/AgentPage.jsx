@@ -127,13 +127,36 @@ export default function AgentPage() {
 
       if (text.length > 2000) text = text.substring(0, 2000) + "\n\n... (truncated for Teams)";
       
+      const isIncident = rawText.toLowerCase().includes("incident detected") || rawText.toLowerCase().includes("root cause");
+      const statusColor = isIncident ? "E81123" : "107C10";
+      const statusText = isIncident ? "🔴 Incident Detected" : "🟢 No Anomalies";
+
       const payload = {
         "@type": "MessageCard",
         "@context": "http://schema.org/extensions",
-        "themeColor": "1F6FEB",
+        "themeColor": statusColor,
         "summary": "Agent Investigation Result",
         "title": `Agent Result: ${meta?.label || 'Investigation'}`,
-        "text": text,
+        "sections": [
+          {
+            "facts": [
+              {
+                "name": "Status:",
+                "value": statusText
+              },
+              {
+                "name": "Target:",
+                "value": selected?.name || systemId || 'Unknown'
+              }
+            ],
+            "markdown": true
+          },
+          {
+            "activityTitle": "**Executive Summary**",
+            "text": text,
+            "markdown": true
+          }
+        ]
       };
       const response = await notifyIntegrations(systemId, payload);
       if (response && response.ok === false) {

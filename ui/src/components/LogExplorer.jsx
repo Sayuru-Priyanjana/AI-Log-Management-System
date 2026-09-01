@@ -154,11 +154,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
                     {new Date(log.timestamp).toLocaleString()}
                   </td>
                   <td style={{ padding: '8px 16px', fontWeight: 600, fontSize: '12px', whiteSpace: 'nowrap', color: getLevelColor(log.level) }}>
-                    {String(log.level || '').toUpperCase() === 'UNKNOWN' ? (
-                      <span style={{ color: 'var(--text-3)' }}>-</span>
-                    ) : (
-                      String(log.level || 'INFO').toUpperCase()
-                    )}
+                    {log.level || <span style={{ color: 'var(--text-3)' }}>-</span>}
                   </td>
                   <td style={{ padding: '8px 16px', color: 'var(--text)', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {log.service}

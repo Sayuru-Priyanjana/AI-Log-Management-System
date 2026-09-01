@@ -16,18 +16,62 @@ exactly the unit and baseline errors the engine exists to prevent.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from app.models.analysis import Candidate, InvestigationWindows
+from app.models.domain import TimeWindow, ensure_utc
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
 from app.models.signals import Signal
 from app.util.timefmt import clock
 
 ERROR_LEVELS = ("ERROR", "FATAL", "CRITICAL")
+
+# How many live queries one investigation may issue. The count is chosen by the
+# model, so without a ceiling a confused loop can hammer the index. Generous
+# enough that no honest investigation reaches it.
+MAX_LIVE_QUERIES = 20
+
+
+def _parse_moment(value: Any, *, anchor: datetime) -> datetime | None:
+    """Accepts what a model actually writes for a timestamp.
+
+    It copies the value straight out of an observation, and observations render
+    times for humans — `clock()` prints "14:32" — so that is the form the model
+    echoes back. Insisting on a full ISO timestamp costs a whole step to learn a
+    format nothing ever showed it.
+
+    A bare clock time carries no date, so it is anchored to the day of the window
+    being investigated. `anchor` is that window's end: a window never spans more
+    than the search range, and the alternative — today's date — lands outside the
+    data entirely whenever an investigation is replayed.
+    """
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return ensure_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError:
+        pass
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+        anchored = ensure_utc(datetime.combine(anchor.date(), parsed))
+        # A time later than the anchor belongs to the previous day: a window
+        # ending at 00:20 that mentions 23:58 means last night, not tonight.
+        if anchored > anchor + timedelta(minutes=1):
+            anchored -= timedelta(days=1)
+        return anchored
+    return None
 
 
 def _levels(value: str | list | None) -> set[str]:
@@ -76,15 +120,27 @@ class ToolResult:
 class ToolBindings:
     def __init__(self, plan: InvestigationPlan, windows: InvestigationWindows,
                  evidence: EvidenceBundle, signals: list[Signal] | None = None,
-                 candidates: list[Candidate] | None = None) -> None:
+                 candidates: list[Candidate] | None = None,
+                 log_tool=None, search_window: TimeWindow | None = None) -> None:
         self.plan = plan
         self.windows = windows
         self.evidence = evidence
         self.signals = signals or []
         self.candidates = candidates or []
+        # The live query surface. Optional so every caller that only needs the
+        # in-memory views — the stored-investigation replay endpoint, most tests —
+        # keeps working unchanged; the live tools say so plainly when it is absent
+        # rather than failing in a way the model has to guess at.
+        self.log_tool = log_tool
+        # How far back a live query may reach. The *incident* window is what the
+        # answer is about, but "when did this actually start" is a question about
+        # what came before it, and clamping the search to the incident makes that
+        # question unanswerable by construction.
+        self.search_window = search_window
         # Every ID the loop has legitimately been shown.
         self.exposed_ids: set[str] = set()
         self.call_log: list[tuple[str, dict]] = []
+        self.live_queries = 0
 
     # ------------------------------------------------------------------ facts
     def get_signals(self, service_name: str = "all") -> ToolResult:
@@ -480,6 +536,165 @@ class ToolBindings:
         }
         return ToolResult("\n".join(lines), [], table)
 
+    # ------------------------------------------------------------ live queries
+    # These are the only tools that reach the index during the loop. Everything
+    # above reads the bundle collected before the loop started, which is why the
+    # loop could only ever rearrange facts it had already been given.
+    #
+    # What the model supplies here is always a *parameter* — a service name, a
+    # level, a limit, a moment. The query is assembled in Python, so a filter can
+    # be wrong but never malformed, and no field, index or expression is ever
+    # taken from model output. That is what keeps every figure measured and every
+    # evidence ID one the verifier can check.
+
+    def _live_budget(self) -> str | None:
+        if self.log_tool is None:
+            return ("Live log queries are not available in this context; only the "
+                    "evidence already collected can be read.")
+        if self.live_queries >= MAX_LIVE_QUERIES:
+            return (f"Query budget spent ({MAX_LIVE_QUERIES} live queries). Answer "
+                    f"from the evidence you have gathered.")
+        return None
+
+    def _rows(self, samples, header: str, note: str = "") -> ToolResult:
+        if not samples:
+            return ToolResult(f"{header}\nNothing matched. {note}".strip())
+        lines = [header, "Cite these by the ID in brackets:"]
+        rows, ids = [], []
+        for s in samples:
+            lines.append(f"  [{s.id}] {clock(s.timestamp)} {s.level:<5} "
+                         f"{s.service or '-'}: {s.message[:200]}")
+            rows.append([s.id, clock(s.timestamp), s.level, s.service or "-",
+                         s.message[:200]])
+            ids.append(s.id)
+        table = {
+            "columns": ["id", "time", "level", "service", "message"],
+            "rows": rows, "total_matched": len(rows),
+            "truncated": False, "query_description": header,
+        }
+        return ToolResult("\n".join(lines), ids, table)
+
+    async def fetch_logs(self, service_name: str = "all", level: str = "",
+                         contains: str = "", order: str = "newest",
+                         limit: int = 20) -> ToolResult:
+        """Raw log lines from the index, on the caller's terms.
+
+        This is what a plain retrieval question needs — "show me the last 20
+        logs" had no code path at all before it, because the only raw lines kept
+        were the first 25 ERROR-level ones of the incident window.
+        """
+        blocked = self._live_budget()
+        if blocked:
+            return ToolResult(blocked)
+        self.live_queries += 1
+
+        service = None if service_name in ("all", "", None) else str(service_name)
+        found = await self.log_tool.fetch(
+            self.plan, self.windows.incident,
+            levels=sorted(_levels(level)) or None, service=service,
+            contains=contains or None, order=order, limit=limit,
+        )
+        scope = f"service={service or 'all'} level={level or 'any'}"
+        if contains:
+            scope += f" containing '{contains}'"
+        return self._rows(found, f"{len(found)} log line(s), {scope}, "
+                                 f"{'newest' if order != 'oldest' else 'oldest'} first:",
+                          note="Widen the filter rather than repeating the search.")
+
+    async def logs_around(self, timestamp: str = "", before_seconds: int = 180,
+                          after_seconds: int = 60, service_name: str = "all",
+                          level: str = "", limit: int = 40) -> ToolResult:
+        """What was being logged either side of a moment.
+
+        The tool root-cause work actually needs. A signal says an error rate rose
+        at 14:32; the question that follows is always what the service was saying
+        at 14:31 — and the cause is very often an INFO or WARN line that the
+        error-only sampling threw away before the loop ever ran.
+        """
+        blocked = self._live_budget()
+        if blocked:
+            return ToolResult(blocked)
+
+        moment = _parse_moment(timestamp, anchor=self.windows.incident.end)
+        if moment is None:
+            return ToolResult(
+                f"Could not read '{timestamp}' as a time. Copy one from an "
+                f"observation — either a clock time like 14:32 or a full "
+                f"timestamp like 2026-08-09T14:32:00Z."
+            )
+        self.live_queries += 1
+
+        try:
+            before = max(0, min(int(before_seconds), 3600))
+            after = max(0, min(int(after_seconds), 3600))
+        except (TypeError, ValueError):
+            before, after = 180, 60
+
+        outer = self.search_window or self.windows.incident
+        window = TimeWindow(
+            start=max(moment - timedelta(seconds=before), outer.start),
+            end=min(moment + timedelta(seconds=after), outer.end),
+            label="around",
+        )
+        service = None if service_name in ("all", "", None) else str(service_name)
+        found = await self.log_tool.fetch(
+            self.plan, window, levels=sorted(_levels(level)) or None,
+            service=service, order="oldest", limit=limit,
+        )
+        return self._rows(
+            found,
+            f"{len(found)} log line(s) from {clock(window.start)} to "
+            f"{clock(window.end)} (around {clock(moment)}), service="
+            f"{service or 'all'}, level={level or 'any'}, oldest first:",
+            note=("Nothing was logged in this interval by that filter. Try a wider "
+                  "before_seconds, or service_name='all'."),
+        )
+
+    async def first_occurrence(self, contains: str = "", service_name: str = "all",
+                               level: str = "") -> ToolResult:
+        """The earliest time a message appears — searching before the window.
+
+        The window analysed is deliberately clamped to the period asked about, so
+        an error that began earlier has its true origin hidden. That clamp is
+        right for scoping a report and wrong for finding a cause: "did this start
+        before we were looking?" is often the whole investigation, and this is
+        the only tool that can answer it.
+        """
+        blocked = self._live_budget()
+        if blocked:
+            return ToolResult(blocked)
+        if not (contains or "").strip():
+            return ToolResult("first_occurrence needs `contains`: the text to search for.")
+        self.live_queries += 1
+
+        outer = self.search_window or self.windows.incident
+        service = None if service_name in ("all", "", None) else str(service_name)
+        found = await self.log_tool.fetch(
+            self.plan, outer, levels=sorted(_levels(level)) or None,
+            service=service, contains=contains, order="oldest", limit=5,
+        )
+        if not found:
+            return ToolResult(
+                f"'{contains}' does not appear anywhere between {clock(outer.start)} "
+                f"and {clock(outer.end)} for service={service or 'all'}. That is the "
+                f"widest range available, so it did not occur in this data."
+            )
+
+        earliest = found[0]
+        incident_start = self.windows.incident.start
+        if earliest.timestamp < incident_start:
+            verdict = (f"This PREDATES the window analysed (which starts "
+                       f"{clock(incident_start)}), so it was already happening before "
+                       f"the period asked about — it cannot have been triggered by "
+                       f"anything inside it.")
+        else:
+            verdict = "This falls inside the window analysed."
+        return self._rows(
+            found,
+            f"Earliest occurrence of '{contains}' is {clock(earliest.timestamp)}. "
+            f"{verdict}\nThe {len(found)} earliest matching line(s):",
+        )
+
     def get_investigation_scope(self, _: str = "") -> ToolResult:
         """What was actually examined — window, baseline, and any gaps.
 
@@ -549,9 +764,42 @@ class ToolBindings:
                  "What was actually examined: windows, baseline, evidence gaps. Use it "
                  "before concluding that something is absent.",
                  {}, "get_investigation_scope"),
+
+        # -- live queries against the index --------------------------------
+        ToolSpec("fetch_logs",
+                 "Fetch raw log lines from the index. Use this to SEE actual log "
+                 "records — any level, newest or oldest first. This is the tool for "
+                 "'show me the last N logs'.",
+                 {"service_name": "service name, or 'all'",
+                  "level": "optional: ERROR, WARN, INFO — omit for every level",
+                  "contains": "optional text the message must contain",
+                  "order": "'newest' or 'oldest'",
+                  "limit": "how many lines (default 20, max 200)"},
+                 "fetch_logs"),
+        ToolSpec("logs_around",
+                 "Fetch the log lines either side of a moment. THE key tool for root "
+                 "cause: given a signal's onset, this shows what was being logged "
+                 "just BEFORE it, where the cause usually is. Include INFO and WARN — "
+                 "the trigger is rarely an ERROR itself.",
+                 {"timestamp": "the moment to centre on, e.g. an onset from a signal",
+                  "before_seconds": "how far back to look (default 180)",
+                  "after_seconds": "how far forward (default 60)",
+                  "service_name": "service name, or 'all'",
+                  "level": "optional level filter — usually leave empty",
+                  "limit": "how many lines (default 40)"},
+                 "logs_around"),
+        ToolSpec("first_occurrence",
+                 "Find the EARLIEST time a message appears, searching further back "
+                 "than the window analysed. Use it to test whether a problem actually "
+                 "began before the period under investigation — an effect cannot "
+                 "precede its cause, so this settles causal ordering.",
+                 {"contains": "text to search for",
+                  "service_name": "service name, or 'all'",
+                  "level": "optional level filter"},
+                 "first_occurrence"),
     )
 
-    def execute(self, action: str, inputs: dict[str, Any]) -> ToolResult:
+    async def execute(self, action: str, inputs: dict[str, Any]) -> ToolResult:
         spec = next((s for s in self.SPECS if s.name == action), None)
         if spec is None:
             available = ", ".join(s.name for s in self.SPECS)
@@ -562,6 +810,11 @@ class ToolBindings:
         allowed = {k: v for k, v in (inputs or {}).items() if k in spec.parameters}
         try:
             result = handler(**allowed) if allowed else handler()
+            # The in-memory tools stay synchronous; only the live ones await. A
+            # single dispatch handles both so callers do not have to know which
+            # kind of tool they asked for.
+            if inspect.isawaitable(result):
+                result = await result
         except TypeError as exc:
             return ToolResult(
                 f"Error calling {action}: {exc}. Expected parameters: "

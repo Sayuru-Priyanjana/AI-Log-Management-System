@@ -12,6 +12,7 @@ from app.agents.orchestrator import OrchestratorAgent
 from app.agents.react import ReActAgent
 from app.models.analysis import Analysis, CauseCategory, InvestigationResult, InvestigationWindows
 from app.models.answer import MODE_BY_INTENT, AnswerMode, DataTable, StructuredAnswer
+from app.models.domain import TimeWindow, ensure_utc
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan, InvestigationRequest
 from app.pipeline.answer_check import verify_answer
@@ -46,7 +47,9 @@ class InvestigationPipeline:
 
     def __init__(self, *, log_tool: LogTool, event_tool: EventTool,
                  orchestrator: OrchestratorAgent, react_agent: ReActAgent,
-                 registry: SystemRegistry, system_settings: SystemSettingsStore,
+                 registry: SystemRegistry,
+                 system_settings: SystemSettingsStore | None = None,
+                 metric_tool: MetricTool | None = None,
                  prometheus_client=None) -> None:
         self.logs = log_tool
         self.events = event_tool
@@ -55,6 +58,12 @@ class InvestigationPipeline:
         self.registry = registry
         self.system_settings = system_settings
         self.prometheus_client = prometheus_client
+        # Injected rather than built inside `run`. Constructing it per call made
+        # the metric source impossible to substitute, which took the whole
+        # pipeline out of reach of the test suite and the eval harness at once —
+        # both were still passing `metric_tool=` and both had been failing with a
+        # TypeError ever since.
+        self.metric_tool = metric_tool
         self.hypotheses = HypothesisEngine()
 
     async def run(self, request: InvestigationRequest) -> AsyncIterator[StageEvent]:
@@ -69,9 +78,7 @@ class InvestigationPipeline:
         system = await self.registry.require(request.system_id)
         mark("registry", started)
         
-        system_settings = await self.system_settings.get(request.system_id)
-            
-        metrics_tool = MetricTool(self.prometheus_client)
+        metrics_tool = self.metric_tool or MetricTool(self.prometheus_client)
         windows_resolver = WindowResolver(self.logs, prometheus=self.prometheus_client)
 
         try:
@@ -128,7 +135,21 @@ class InvestigationPipeline:
             # Held so it can be closed explicitly: breaking out of `async for` leaves
             # the generator suspended mid-await, and the event loop later complains
             # about a task destroyed while pending.
-            loop = self.react_agent.run(plan, windows, evidence, signals, candidates)
+            # How far back the loop's live queries may reach. The resolver already
+            # looked back several times further than the question asked, to find
+            # an onset and a quiet baseline; its first bucket is the earliest data
+            # examined. Handing that bound to the loop is what lets it ask "did
+            # this start before the window?" — clamping live queries to the
+            # incident window would make that unanswerable by construction.
+            search_window = None
+            if search_histogram:
+                search_window = TimeWindow(
+                    start=ensure_utc(search_histogram[0].timestamp),
+                    end=windows.incident.end, label="search",
+                )
+
+            loop = self.react_agent.run(plan, windows, evidence, signals, candidates,
+                                        log_tool=self.logs, search_window=search_window)
             try:
                 async for event in loop:
                     kind = event.get("type")

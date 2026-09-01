@@ -99,6 +99,127 @@ data:
       return epoch, nanos
     end
 
+    -- Level resolution -----------------------------------------------------
+    -- Most third-party loggers do not emit LogIntel's exact schema, so a log
+    -- can arrive with no `level` field at all, a different field name, a
+    -- synonym ("warning"/"err"), or as a plain-text line with no structure.
+    -- Rather than ship any of that as UNKNOWN (or silently guess "INFO", the
+    -- bug this replaces), infer it from whatever signal is actually present,
+    -- checked from most to least reliable.
+    local KNOWN_LEVELS = { ERROR=true, FATAL=true, CRITICAL=true, WARN=true,
+                            INFO=true, DEBUG=true, TRACE=true }
+    local LEVEL_SYNONYMS = { WARNING="WARN", ERR="ERROR", CRIT="CRITICAL",
+                              EMERG="FATAL", EMERGENCY="FATAL", SEVERE="ERROR" }
+
+    local function normalize_level_value(v)
+      if v == nil then return nil end
+      local up = string.upper(tostring(v))
+      up = LEVEL_SYNONYMS[up] or up
+      if KNOWN_LEVELS[up] then return up end
+      return nil
+    end
+
+    local function pick_level_field(body)
+      return body["level"] or body["severity"] or body["levelname"]
+          or body["lvl"] or body["loglevel"]
+    end
+
+    local function pick_message_field(body)
+      local m = body["message"] or body["msg"]
+      if type(m) == "string" then return m end
+      return nil
+    end
+
+    -- A real 2xx/3xx status genuinely means info-level, not a guess; only
+    -- 4xx/5xx are treated as the caller needing to mark the result inferred.
+    local function level_from_status_code(code)
+      if code == nil then return nil end
+      code = tonumber(code)
+      if code == nil then return nil end
+      if code >= 500 then return "ERROR" end
+      if code >= 400 then return "WARN" end
+      return "INFO"
+    end
+
+    -- Access-log / JSON-fragment style status codes inside free text.
+    local function status_code_from_text(text)
+      return text:match("HTTP/%d%.%d\"?%s+(%d%d%d)")
+          or text:match("status=(%d%d%d)")
+          or text:match("\"status\":%s*(%d%d%d)")
+          or text:match("\"status_code\":%s*(%d%d%d)")
+    end
+
+    -- Recognises "<timestamp> <LEVEL> <rest>" (Spring Boot / Logback and
+    -- similar), a logfmt/JSON-fragment "level=X" or "level":"X"" pair (Go's
+    -- logrus/zerolog/zap), or a bare level keyword anywhere in the line. All
+    -- matched case-insensitively: logfmt loggers in particular default to
+    -- lowercase ("level=error"), unlike the Java-style uppercase convention.
+    local function level_from_text(text)
+      local upper = string.upper(text)
+      local lvl = upper:match(
+        "^%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*%s+([A-Z]+)%s+")
+      if lvl == nil then
+        lvl = upper:match("[\"']?LEVEL[\"']?%s*[=:]%s*[\"']?([A-Z]+)")
+      end
+      if lvl == nil then
+        lvl = upper:match("%s+(ERROR)%s+") or upper:match("%s+(WARNING)%s+")
+           or upper:match("%s+(WARN)%s+") or upper:match("%s+(INFO)%s+")
+           or upper:match("%s+(DEBUG)%s+") or upper:match("%s+(FATAL)%s+")
+      end
+      return normalize_level_value(lvl)
+    end
+
+    -- Returns level, inferred(bool). `inferred` marks a guess so it can be
+    -- told apart from a level the application (or a recognised log format)
+    -- actually reported.
+    local function resolve_level(body, message)
+      local lvl = normalize_level_value(pick_level_field(body))
+      if lvl then return lvl, false end
+
+      -- 1. A recognisable text log format states its own level explicitly.
+      if type(message) == "string" and message ~= "" then
+        local text_lvl = level_from_text(message)
+        if text_lvl then return text_lvl, false end
+      end
+
+      -- 2. HTTP status code - structured field first, then free text.
+      local http = body["http"]
+      local code = (http and http["status_code"])
+                or body["status"] or body["status_code"] or body["http_status"]
+      if code == nil and type(message) == "string" then
+        code = status_code_from_text(message)
+      end
+      local from_status = level_from_status_code(code)
+      if from_status then return from_status, true end
+
+      -- 3. An explicit error object, or a failed dependency/event outcome.
+      local err = body["error"]
+      if err and (err["type"] ~= nil or err["message"] ~= nil or err["stack_trace"] ~= nil) then
+        return "ERROR", true
+      end
+      local event = body["event"]
+      if event and event["outcome"] == "failure" then return "ERROR", true end
+      local dep = body["dependency"]
+      if dep and dep["outcome"] == "failure" then return "ERROR", true end
+
+      -- 4. Last resort: keyword scan of the message text.
+      if type(message) == "string" and message ~= "" then
+        local upper = string.upper(message)
+        if string.find(upper, "TRACEBACK", 1, true) or string.find(upper, "EXCEPTION", 1, true)
+           or string.find(upper, "FATAL", 1, true) or string.find(upper, "PANIC", 1, true)
+           or string.find(upper, "ERROR", 1, true) then
+          return "ERROR", true
+        elseif string.find(upper, "WARN", 1, true) then
+          return "WARN", true
+        elseif string.find(upper, "DEBUG", 1, true) then
+          return "DEBUG", true
+        end
+      end
+
+      -- Genuinely nothing to go on. Honest, not a guessed "INFO".
+      return "UNKNOWN", false
+    end
+
     function normalize(tag, timestamp, record)
       local kube = record["kubernetes"]
       if kube == nil then return -1, 0, 0 end
@@ -140,52 +261,27 @@ data:
 
       if type(body) == "table" then
         out["log"] = body
-        local lvl = body["level"]
-        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
-          local http_code = body["status"] or body["status_code"] or body["http_status"] or body["http.status_code"]
-          local resolved_lvl = "INFO"
-          if http_code ~= nil then
-            local code = tonumber(http_code)
-            if code ~= nil then
-              if code >= 500 then resolved_lvl = "ERROR"
-              elseif code >= 400 then resolved_lvl = "WARN"
-              elseif code >= 200 then resolved_lvl = "INFO"
-              end
-            end
-          end
-          out["log"]["level"] = resolved_lvl
-        end
-        if body["message"] == nil then out["log"]["message"] = "" end
+        local message = pick_message_field(body) or ""
+        out["log"]["message"] = message
+        local level, inferred = resolve_level(body, message)
+        out["log"]["level"] = level
+        if inferred then out["log"]["level_inferred"] = true end
       else
         local str_body = tostring(body or "")
-        local lvl = nil
-        -- Attempt to parse common Spring Boot log format
-        local ts, parsed_lvl, rest = str_body:match("^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)")
-        if ts ~= nil then
-          lvl = parsed_lvl
+        -- Strip a leading "<timestamp> <LEVEL>" prefix (Spring Boot / Logback
+        -- and similar) so the stored message doesn't repeat it, and hand the
+        -- extracted level to resolve_level as an explicit value rather than
+        -- re-detecting it from text.
+        local synthetic = {}
+        local ts, parsed_lvl, rest = str_body:match(
+          "^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Za-z]+)%s+(.*)")
+        if ts ~= nil and normalize_level_value(parsed_lvl) ~= nil then
+          synthetic["level"] = parsed_lvl
           str_body = rest
-        else
-          lvl = str_body:match("%s+(ERROR)%s+") or str_body:match("%s+(WARN)%s+") or str_body:match("%s+(INFO)%s+") or str_body:match("%s+(DEBUG)%s+")
         end
-
-        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
-          -- Try to find HTTP status code
-          local http_code = str_body:match("HTTP/%d%.%d\"?%s+(%d%d%d)")
-          if http_code == nil then http_code = str_body:match("status=(%d%d%d)") end
-          if http_code == nil then http_code = str_body:match("\"status\":%s*(%d%d%d)") end
-          
-          lvl = "INFO" -- default fallback
-          if http_code ~= nil then
-            local code = tonumber(http_code)
-            if code ~= nil then
-              if code >= 500 then lvl = "ERROR"
-              elseif code >= 400 then lvl = "WARN"
-              elseif code >= 200 then lvl = "INFO"
-              end
-            end
-          end
-        end
-        out["log"] = { level = lvl, message = str_body }
+        local level, inferred = resolve_level(synthetic, str_body)
+        out["log"] = { level = level, message = str_body }
+        if inferred then out["log"]["level_inferred"] = true end
       end
 
         if out["service"] == nil then

@@ -23,10 +23,22 @@ async def ping_teams(webhook_url: str, channel_name: str = "") -> dict:
         "@type": "MessageCard",
         "@context": "http://schema.org/extensions",
         "summary": "LogIntel test notification",
-        "themeColor": "1F6FEB",
+        "themeColor": "107C10",
         "title": "LogIntel connection test",
-        "text": f"This confirms LogIntel can reach **{channel}**. "
-                f"No detection triggered this — it was requested from the system's settings.",
+        "sections": [
+            {
+                "facts": [
+                    {"name": "Status:", "value": "🟢 Successful"},
+                    {"name": "Target Channel:", "value": channel},
+                    {"name": "Triggered By:", "value": "System Settings"}
+                ],
+                "markdown": True
+            },
+            {
+                "text": "This confirms LogIntel can reach this channel. No detection triggered this — it was requested from the system's settings.",
+                "markdown": True
+            }
+        ]
     }
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
