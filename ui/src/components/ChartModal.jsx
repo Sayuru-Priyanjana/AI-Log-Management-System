@@ -220,7 +220,7 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
             </div>
 
             {/* Compare Tools */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '20px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>Compare:</span>
               <select 
                 className="input input--sm" 
@@ -240,12 +240,12 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
                   className="input input--sm" 
                   value={customDate} 
                   onChange={(e) => setCustomDate(e.target.value)}
-                  style={{ backgroundColor: 'var(--surface)' }}
+                  style={{ backgroundColor: 'var(--surface)', flexShrink: 0 }}
                 />
               )}
 
               {compareMode !== 'none' && (
-                <div style={{ display: 'flex', backgroundColor: 'var(--bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', flexShrink: 0, backgroundColor: 'var(--bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border)' }}>
                   <button 
                     className="btn btn--sm" 
                     style={{ border: 'none', borderRadius: 0, backgroundColor: compareView === 'side-by-side' ? 'var(--primary)' : 'transparent', color: compareView === 'side-by-side' ? '#fff' : 'var(--text)' }}
