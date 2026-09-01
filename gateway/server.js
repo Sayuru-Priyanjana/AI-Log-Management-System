@@ -339,9 +339,21 @@ async function provisionSystem(clusterId, systemName) {
     filter_query: {
       bool: {
         filter: [
-          { term: { "system.id": clusterId } },
-          { terms: { "log.level": ["ERROR", "FATAL", "CRITICAL"] } }
-        ]
+          { term: { "system.id": clusterId } }
+        ],
+        should: [
+          { match: { level: "error" } },
+          { match: { level: "ERROR" } },
+          { match: { "log.level": "error" } },
+          { match: { status: "ERROR" } },
+          { match: { message: "error" } },
+          { match: { message: "fatal" } },
+          { match: { message: "critical" } },
+          { match: { "log.message": "error" } },
+          { match: { "log.message": "fatal" } },
+          { match: { "log.message": "critical" } }
+        ],
+        minimum_should_match: 1
       }
     },
     feature_attributes: [{
@@ -431,9 +443,21 @@ async function provisionSystem(clusterId, systemName) {
             bool: {
               filter: [
                 { term: { "system.id": clusterId } },
-                { terms: { "log.level": ["ERROR", "FATAL", "CRITICAL"] } },
                 { range: { "@timestamp": { from: "{{period_end}}||-3m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
-              ]
+              ],
+              should: [
+                { match: { level: "error" } },
+                { match: { level: "ERROR" } },
+                { match: { "log.level": "error" } },
+                { match: { status: "ERROR" } },
+                { match: { message: "error" } },
+                { match: { message: "fatal" } },
+                { match: { message: "critical" } },
+                { match: { "log.message": "error" } },
+                { match: { "log.message": "fatal" } },
+                { match: { "log.message": "critical" } }
+              ],
+              minimum_should_match: 1
             }
           },
           aggregations: {
