@@ -119,7 +119,7 @@ export default function FeedbackModal({ onClose }) {
                   className="input" 
                   value={category} 
                   onChange={e => setCategory(e.target.value)}
-                  style={{ width: '100%', padding: '8px' }}
+                  style={{ width: '100%' }}
                 >
                   <option value="Bug Report">Bug Report</option>
                   <option value="Feature Request">Feature Request</option>
