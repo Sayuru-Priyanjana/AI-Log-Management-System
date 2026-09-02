@@ -26,7 +26,7 @@ export async function getSystemSnapshot(systemId) {
   return getJSON(`/api/systems/${encodeURIComponent(systemId)}/snapshot`);
 }
 
-export const getSystemAlerts = (id) => getJSON(`/api/systems/${id}/alerts`);
+export const getSystemAlerts = (id) => getJSON(`/api/systems/${id}/alerts?_t=${Date.now()}`);
 
 async function getJSON(path) {
   const response = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
