@@ -83,9 +83,6 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
     if (compareMode === 'yesterday') {
       compStart = modalStart - (24 * 3600);
       compEnd = modalEnd - (24 * 3600);
-    } else if (compareMode === 'lastWeek') {
-      compStart = modalStart - (7 * 24 * 3600);
-      compEnd = modalEnd - (7 * 24 * 3600);
     } else if (compareMode === 'custom' && customDate) {
       const selectedDate = new Date(customDate);
       compStart = Math.floor(selectedDate.getTime() / 1000);
@@ -293,7 +290,6 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
               >
                 <option value="none">None</option>
                 <option value="yesterday">Yesterday</option>
-                <option value="lastWeek">Last Week</option>
                 <option value="custom">Custom Date...</option>
               </select>
 

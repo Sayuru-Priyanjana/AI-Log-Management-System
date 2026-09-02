@@ -155,14 +155,15 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
 
           <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '8px' }}>Commonly used</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-            <button type="button" className="btn-link" style={linkStyle} onClick={handleToday}>Today</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 24 hours', 86400)}>Last 24 hours</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={handleThisWeek}>This week</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 7 days', 86400 * 7)}>Last 7 days</button>
             <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 15 minutes', 900)}>Last 15 minutes</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 30 days', 86400 * 30)}>Last 30 days</button>
             <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 30 minutes', 1800)}>Last 30 minutes</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 90 days', 86400 * 90)}>Last 90 days</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 1 hour', 3600)}>Last 1 hour</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 12 hours', 43200)}>Last 12 hours</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 24 hours', 86400)}>Last 24 hours</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={handleToday}>Today</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={handleThisWeek}>This week</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 5 days', 86400 * 5)}>Last 5 days (Logs limit)</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 7 days', 86400 * 7)}>Last 7 days (Metrics limit)</button>
           </div>
         </div>
       )}
