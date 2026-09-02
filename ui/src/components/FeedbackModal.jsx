@@ -110,7 +110,7 @@ export default function FeedbackModal({ onClose }) {
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', margin: 0 }}>
             <div className="modal-body" style={{ padding: '16px' }}>
               <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                Please fill out the form below to send a structured message to the engineering team.
+                Your feedback is essential for maintaining and enhancing system stability and functionality. Please outline your observations or requests below.
               </p>
               
               <div style={{ marginBottom: '12px' }}>
