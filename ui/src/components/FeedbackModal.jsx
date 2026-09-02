@@ -57,44 +57,61 @@ export default function FeedbackModal({ onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>Send Feedback to Teams</h2>
-          <button className="iconbtn" onClick={onClose}>&times;</button>
-        </div>
-        <div className="modal-body" style={{ padding: '1.5rem' }}>
-          {status === 'success' ? (
-             <div className="alert is-success">Feedback sent successfully! Thank you.</div>
-          ) : (
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <label style={{ fontWeight: '500' }}>Your Message</label>
-                <textarea 
-                  rows="5"
-                  value={feedback}
-                  onChange={e => setFeedback(e.target.value)}
-                  placeholder="Found a bug? Have a suggestion? Let us know!"
-                  required
-                  style={{ padding: '0.75rem', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-inset)', color: 'var(--text)' }}
-                />
-              </div>
+        <header>
+          <h3 style={{ margin: 0 }}>Send Feedback</h3>
+          <button type="button" className="iconbtn" onClick={onClose} title="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </header>
+
+        {status === 'success' ? (
+          <div className="modal-body" style={{ padding: '24px', textAlign: 'center' }}>
+            <div style={{ color: 'var(--success)', marginBottom: '12px' }}>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+            </div>
+            <h3 style={{ marginBottom: '8px' }}>Thank you!</h3>
+            <p style={{ color: 'var(--text-muted)' }}>Your feedback has been sent directly to the Teams channel.</p>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', margin: 0 }}>
+            <div className="modal-body" style={{ padding: '16px' }}>
+              <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                Have a suggestion, found a bug, or need help? Send a message directly to the engineering team.
+              </p>
+              <textarea 
+                rows="5"
+                value={feedback}
+                onChange={e => setFeedback(e.target.value)}
+                placeholder="Type your message here..."
+                required
+                className="input"
+                style={{ resize: 'vertical', width: '100%', minHeight: '100px' }}
+                autoFocus
+              />
               
               {status === 'error' && (
-                <div style={{ padding: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', borderRadius: '4px', fontSize: '0.9rem' }}>
+                <div style={{ marginTop: '12px', padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderLeft: '3px solid #ef4444', color: '#ef4444', borderRadius: '4px', fontSize: '0.85rem' }}>
                   Failed to send feedback. Please try again later.
                 </div>
               )}
-              
-              <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                <button type="button" className="btn btn-secondary" onClick={onClose} disabled={submitting}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={submitting || !feedback.trim()}>
-                  {submitting ? 'Sending...' : 'Send Feedback'}
-                </button>
-              </div>
-            </form>
-          )}
-        </div>
+            </div>
+            
+            <footer className="modal-foot">
+              <button type="button" className="btn" onClick={onClose} disabled={submitting}>
+                Cancel
+              </button>
+              <button type="submit" className="btn is-primary" disabled={submitting || !feedback.trim()}>
+                {submitting ? 'Sending...' : 'Send Feedback'}
+              </button>
+            </footer>
+          </form>
+        )}
       </div>
     </div>
   );
