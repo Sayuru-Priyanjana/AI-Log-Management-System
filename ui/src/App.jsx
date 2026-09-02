@@ -67,7 +67,7 @@ export default function App() {
 
         <nav className="nav">
           <NavLink to="/" end className={navClass}>Workstation</NavLink>
-          <a href="/osd/" target="_blank" rel="noopener noreferrer">Dashboards</a>
+          <a href="/osd/" target="_blank" rel="noopener noreferrer">OpenSearch</a>
           {isAdmin && <NavLink to="/systems" className={navClass}>Systems</NavLink>}
           {isAdmin && <NavLink to="/users" className={navClass}>Users</NavLink>}
           {isAdmin && <NavLink to="/configuration" className={navClass}>Configuration</NavLink>}
