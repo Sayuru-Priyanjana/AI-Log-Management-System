@@ -270,3 +270,64 @@ spec:
           limits:
             memory: "128Mi"
             cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logintel-langgraph-agent
+spec:
+  ports:
+  - port: 8000
+    name: http
+    targetPort: 8000
+  selector:
+    app: logintel-langgraph-agent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-langgraph-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-langgraph-agent
+  template:
+    metadata:
+      labels:
+        app: logintel-langgraph-agent
+    spec:
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: agent
+        image: ghcr.io/sayuru-priyanjana/logintel-langgraph-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: OPENSEARCH_URL
+          value: "http://opensearch:9200"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus:9090"
+        - name: LLM_PROVIDER
+          value: "gemini"
+        - name: LLM_MODEL
+          value: "gemini-3.5-flash-lite"
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: logintel-llm
+              key: api-key
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        ports:
+        - containerPort: 8000
+          name: http
