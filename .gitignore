@@ -22,3 +22,10 @@ LogIntel/ui/.env
 LogIntel/ui/.next/
 
 pat.txt
+
+#langgraph agent
+langgraph-agent/venv/
+langgraph-agent/.env
+langgraph-agent/__pycache__/
+langgraph-agent/*.pyc
+
