@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-08-09T22:11:42.418702+00:00",
+  "model": "qwen2.5-coder",
+  "num_ctx": 16384,
+  "scores": [
+    {
+      "scenario": "payment-5xx",
+      "expected_cause": "application_fault",
+      "expected_signals": [
+        "HTTP_5XX_BURST",
+        "ERROR_RATE_SPIKE"
+      ],
+      "detected_signals": [
+        "ERROR_RATE_SPIKE"
+      ],
+      "actual_cause": "application_fault",
+      "actual_service": "payment-api",
+      "expected_service": "payment-api",
+      "confidence": 0.85,
+      "analyst": "llm",
+      "agreed_with_engine": true,
+      "duration_s": 21.693531683005858,
+      "error": null,
+      "investigation_id": "inv-f8b8ededc845",
+      "recall": 0.5,
+      "cause_correct": true,
+      "missing_signals": [
+        "HTTP_5XX_BURST"
+      ]
+    }
+  ]
+}

@@ -77,6 +77,12 @@ export function PreferencesProvider({ children }) {
     localStorage.setItem('ui.default_hours', next);
   }, []);
 
+  const [agentBackend, setAgentBackendState] = useState(() => localStorage.getItem('ui.agentBackend') || 'custom');
+  const setAgentBackend = useCallback((next) => {
+    setAgentBackendState(next);
+    localStorage.setItem('ui.agentBackend', next);
+  }, []);
+
   const value = useMemo(() => ({
     theme,
     setTheme,
@@ -85,8 +91,10 @@ export function PreferencesProvider({ children }) {
     setZone,
     defaultHours,
     setDefaultHours,
+    agentBackend,
+    setAgentBackend,
     ...formatters(zone),
-  }), [theme, setTheme, zone, setZone, defaultHours, setDefaultHours]);
+  }), [theme, setTheme, zone, setZone, defaultHours, setDefaultHours, agentBackend, setAgentBackend]);
 
   return (
     <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>

@@ -38,6 +38,7 @@ export function InvestigationProvider({ children }) {
   const [status, setStatus] = useState('idle'); // idle, connecting, streaming, complete, error
   const [elapsed, setElapsed] = useState(0);
   const [errorDetail, setErrorDetail] = useState(null);
+  const [chatHistory, setChatHistory] = useState([]); // stores past turns in a single thread
   // { kind: 'new' | 'scheduled' | 'alert', label?: string } — label is the
   // alert name or the scheduled timestamp; absent for an ordinary question.
   const [meta, setMeta] = useState({ kind: 'new' });
@@ -63,7 +64,33 @@ export function InvestigationProvider({ children }) {
     const controller = new AbortController();
     controllerRef.current = controller;
 
-    setRequest(newRequest);
+    // If it's a follow-up on the SAME system and environment, append to chatHistory
+    // Otherwise, clear the chatHistory
+    let updatedHistory = [];
+    setChatHistory(prev => {
+      if (investigationMeta.kind !== 'new' && request) {
+        updatedHistory = [...prev, { request, result, trace, answer, stages, evidenceTimeline }];
+        return updatedHistory;
+      }
+      return [];
+    });
+
+    const payload = {
+      ...newRequest,
+      chat_history: updatedHistory.map(turn => ({
+        role: 'user', content: turn.request.question
+      })).concat(updatedHistory.map(turn => ({
+        role: 'assistant', content: turn.answer?.headline || ''
+      }))).sort((a, b) => 0) // simplistic merge - actually let's interleave them correctly
+    };
+    
+    // Better interleaving
+    payload.chat_history = updatedHistory.flatMap(turn => [
+      { role: 'user', content: turn.request.question },
+      { role: 'assistant', content: turn.answer?.headline + '\n' + (turn.answer?.detail || '') }
+    ]);
+
+    setRequest(payload);
     setStages({});
     setTrace([]);
     setAnswer(null);
@@ -77,7 +104,7 @@ export function InvestigationProvider({ children }) {
     startedAt.current = Date.now();
 
     try {
-      await runInvestigation(newRequest, {
+      await runInvestigation(payload, {
         signal: controller.signal,
         onEvent: (event) => {
           if (controllerRef.current !== controller) return;
@@ -132,6 +159,7 @@ export function InvestigationProvider({ children }) {
     stopInvestigation();
     setRequest(null);
     setStatus('idle');
+    setChatHistory([]);
     setMeta({ kind: 'new' });
   };
 
@@ -159,6 +187,7 @@ export function InvestigationProvider({ children }) {
         signals: { signals: stored.signals || [], count: (stored.signals || []).length },
         candidates: { candidates: stored.candidates || [] },
       });
+      setChatHistory([]);
       setTrace([]);
       setAnswer(stored.answer);
       setEvidenceTimeline({
@@ -180,7 +209,7 @@ export function InvestigationProvider({ children }) {
     <InvestigationContext.Provider
       value={{
         request, stages, trace, answer, evidenceTimeline, result,
-        status, elapsed, errorDetail, meta,
+        status, elapsed, errorDetail, meta, chatHistory,
         startInvestigation, stopInvestigation, clearInvestigation, loadInvestigation,
         setRequest,
       }}

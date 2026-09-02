@@ -47,6 +47,12 @@ export default function AnswerPanel({ answer, investigationId, onInvestigate }) 
       <h2 className="li-answer-headline">{answer.headline}</h2>
       {answer.detail && <p className="li-answer-detail">{answer.detail}</p>}
 
+      {answer.warning_analysis && (
+        <Section title="Warning Analysis">
+          <p className="li-answer-detail" style={{ marginTop: 0 }}>{answer.warning_analysis}</p>
+        </Section>
+      )}
+
       {(unresolved.length > 0 || unsupported.length > 0) && (
         <div className="li-answer-warning">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"

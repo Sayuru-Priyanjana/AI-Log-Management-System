@@ -22,7 +22,7 @@ export default function AgentPage() {
   const toast = useToast();
   const { formatClock, formatDay } = usePreferences();
   const {
-    request, result, status, meta, startInvestigation, loadInvestigation, clearInvestigation,
+    request, result, status, meta, chatHistory, startInvestigation, loadInvestigation, clearInvestigation,
   } = useInvestigation();
 
   const nav = location.state || {};
@@ -244,9 +244,24 @@ export default function AgentPage() {
               Fill in the investigation panel and click Ask AI.
             </div>
           ) : (
-            <InvestigationResults
-              onFollowUp={(question) => startInvestigation({ ...request, question, _at: Date.now() },
-                { kind: 'new' })} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {chatHistory && chatHistory.map((pastChat, idx) => (
+                <div key={idx} style={{ padding: '16px', background: 'var(--bg-card)', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <details>
+                    <summary style={{ fontWeight: 'bold', cursor: 'pointer' }}>
+                      Previous Turn: {pastChat.request?.question || 'Investigation'}
+                    </summary>
+                    <div style={{ marginTop: '10px' }}>
+                      <p><strong>Answer:</strong> {pastChat.answer?.headline || (pastChat.result?.answer?.headline)}</p>
+                      <p>{pastChat.answer?.detail || (pastChat.result?.answer?.detail)}</p>
+                    </div>
+                  </details>
+                </div>
+              ))}
+              <InvestigationResults
+                onFollowUp={(question) => startInvestigation({ ...request, question, _at: Date.now() },
+                  { kind: 'followup' })} />
+            </div>
           )}
         </section>
 

@@ -58,7 +58,7 @@ export default function App() {
             strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 19h16M7 16V9M12 16V5M17 16v-4" />
           </svg>
-          Log analysis
+          LogIntel
         </span>
 
         <span className="topbar-sep" />

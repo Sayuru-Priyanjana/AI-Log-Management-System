@@ -8,6 +8,8 @@ function getHeaders(custom = {}) {
   const token = localStorage.getItem('jwt');
   const headers = { ...custom };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const backend = localStorage.getItem('ui.agentBackend');
+  if (backend) headers['x-agent-backend'] = backend;
   return headers;
 }
 

@@ -32,7 +32,7 @@ const ZONES = [
  */
 export default function ConfigurationPanel() {
   const toast = useToast();
-  const { zone, setZone, setDefaultHours } = usePreferences();
+  const { zone, setZone, setDefaultHours, agentBackend, setAgentBackend } = usePreferences();
   const [fields, setFields] = useState(null);
   const [groups, setGroups] = useState([]);
   const [health, setHealth] = useState(null);
@@ -141,6 +141,25 @@ export default function ConfigurationPanel() {
           </div>
         </div>
       ))}
+
+      <div className="card">
+        <header>
+          <h3>Agent Backend</h3>
+          <p>Choose the AI agent backend to process investigations.</p>
+        </header>
+        <div className="card-body">
+          <div className="cfg-fields">
+            <div className="field">
+              <label>Agent Type <span className="src src--env">ui-preference</span></label>
+              <select className="input" value={agentBackend} onChange={(e) => setAgentBackend(e.target.value)}>
+                <option value="custom">Custom Agent (Deterministic Pipeline)</option>
+                <option value="langgraph">LangGraph Agent (Graph Workflow)</option>
+              </select>
+              <span className="hint">This immediately switches the backend for new investigations on this workstation.</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <Clusters data={clusters} onRefresh={async () => {
         try {
