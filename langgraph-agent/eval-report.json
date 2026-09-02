@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-09T21:50:18.018049+00:00",
+  "model": "qwen2.5-coder",
+  "num_ctx": 16384,
+  "scores": [
+    {
+      "scenario": "db-latency",
+      "expected_cause": "dependency_degradation",
+      "expected_signals": [
+        "LATENCY_DEGRADATION"
+      ],
+      "detected_signals": [
+        "LATENCY_DEGRADATION"
+      ],
+      "actual_cause": "dependency_degradation",
+      "actual_service": "payment-db",
+      "expected_service": "payment-db",
+      "confidence": 0.95,
+      "analyst": "llm",
+      "agreed_with_engine": true,
+      "duration_s": 35.65908796700387,
+      "error": null,
+      "investigation_id": "inv-485b2d2c12ce",
+      "recall": 1.0,
+      "cause_correct": true,
+      "missing_signals": []
+    }
+  ]
+}

@@ -10,6 +10,7 @@ app.use(cors());
 
 // The agent URL is provided via environment or defaults to the internal docker network name
 const AGENT_URL = process.env.AGENT_URL || 'http://agent:8000';
+const LANGGRAPH_AGENT_URL = process.env.LANGGRAPH_AGENT_URL || 'http://logintel-langgraph-agent:8000';
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-change-in-prod';
 const PORT = process.env.PORT || 3000;
 
@@ -531,6 +532,12 @@ app.delete('/api/admin/systems/:id', requireAuth, requireAdmin, async (req, res)
 
 const agentProxy = createProxyMiddleware({
   target: AGENT_URL,
+  router: function(req) {
+    if (req.headers['x-agent-backend'] === 'langgraph') {
+      return LANGGRAPH_AGENT_URL;
+    }
+    return AGENT_URL;
+  },
   changeOrigin: true,
   selfHandleResponse: true,
   onProxyReq: (proxyReq, req, res) => {
@@ -589,6 +596,12 @@ const agentProxy = createProxyMiddleware({
 // Since we need streaming to work for POST /api/investigations, we CANNOT use responseInterceptor for it.
 const streamingAgentProxy = createProxyMiddleware({
   target: AGENT_URL,
+  router: function(req) {
+    if (req.headers['x-agent-backend'] === 'langgraph') {
+      return LANGGRAPH_AGENT_URL;
+    }
+    return AGENT_URL;
+  },
   changeOrigin: true,
   onProxyReq: (proxyReq, req, res) => {
     if (req.body && Object.keys(req.body).length > 0 && req.method !== 'GET') {
