@@ -17,6 +17,9 @@ cd ../../../
 echo "Building and pushing logintel-ai-agent (ARM64)..."
 docker buildx build --platform linux/arm64 -t $REGISTRY/logintel-ai-agent:$TAG --push ./agent
 
+echo "Building and pushing ai-agent-langgraph (ARM64)..."
+docker buildx build --platform linux/arm64 -t $REGISTRY/ai-agent-langgraph:$TAG --push ./langgraph-agent
+
 echo "Building and pushing logintel-gateway (ARM64)..."
 docker buildx build --platform linux/arm64 -t $REGISTRY/logintel-gateway:$TAG --push ./gateway
 
