@@ -433,7 +433,7 @@ async function provisionSystem(clusterId, systemName) {
     name: `bucket-monitor-${safeName}`,
     monitor_type: "bucket_level_monitor",
     enabled: true,
-    schedule: { period: { interval: 3, unit: "MINUTES" } },
+    schedule: { period: { interval: 2, unit: "MINUTES" } },
     inputs: [{
       search: {
         indices: ["logintel-logs-*"],
@@ -443,19 +443,27 @@ async function provisionSystem(clusterId, systemName) {
             bool: {
               filter: [
                 { term: { "system.id": clusterId } },
-                { range: { "@timestamp": { from: "{{period_end}}||-3m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
+                { range: { "@timestamp": { from: "{{period_end}}||-2m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
               ],
               should: [
                 { match: { level: "error" } },
                 { match: { level: "ERROR" } },
+                { match: { level: "warn" } },
+                { match: { level: "WARN" } },
                 { match: { "log.level": "error" } },
+                { match: { "log.level": "warn" } },
                 { match: { status: "ERROR" } },
+                { match: { status: "WARN" } },
                 { match: { message: "error" } },
                 { match: { message: "fatal" } },
                 { match: { message: "critical" } },
+                { match: { message: "warn" } },
+                { match: { message: "warning" } },
                 { match: { "log.message": "error" } },
                 { match: { "log.message": "fatal" } },
-                { match: { "log.message": "critical" } }
+                { match: { "log.message": "critical" } },
+                { match: { "log.message": "warn" } },
+                { match: { "log.message": "warning" } }
               ],
               minimum_should_match: 1
             }
