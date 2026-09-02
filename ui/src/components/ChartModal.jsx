@@ -19,7 +19,9 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
   const [compareView, setCompareView] = useState('side-by-side'); // 'side-by-side' or 'overlay'
   
   // Service selection state
+  const [availableServices, setAvailableServices] = useState(services || []);
   const [selectedServices, setSelectedServices] = useState(services || []);
+  const [hiddenSeries, setHiddenSeries] = useState(new Set());
   const [isServicesOpen, setIsServicesOpen] = useState(false);
   const [serviceFilter, setServiceFilter] = useState('');
   const dropdownRef = useRef(null);
@@ -41,7 +43,9 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
       setPrimaryData(currentData || []);
       setModalStart(currentStart);
       setModalEnd(currentEnd);
+      setAvailableServices(services || []);
       setSelectedServices(services || []);
+      setHiddenSeries(new Set());
       setCompareMode('none');
       setCustomDate('');
     }
@@ -106,6 +110,40 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
   }, [compareMode, customDate, modalStart, modalEnd, isOpen, fetchComparisonData]);
 
 
+  // Update available and selected services when new primary data arrives
+  useEffect(() => {
+    if (isOpen && primaryData && primaryData.length > 0) {
+      const keys = new Set();
+      primaryData.forEach(pt => {
+        Object.keys(pt).forEach(k => {
+          if (k !== 'timestamp' && k !== 'time') keys.add(k);
+        });
+      });
+      const newAvailable = Array.from(keys);
+      
+      setAvailableServices(prevAvailable => {
+        const prevAvailableSet = new Set(prevAvailable);
+        
+        setSelectedServices(prevSelected => {
+          const selectedSet = new Set(prevSelected);
+          // Retain only services that are still available
+          const nextSelected = prevSelected.filter(svc => newAvailable.includes(svc));
+          
+          newAvailable.forEach(svc => {
+            // Auto-select newly discovered services
+            if (!prevAvailableSet.has(svc) && !selectedSet.has(svc)) {
+              nextSelected.push(svc);
+            }
+          });
+          
+          return nextSelected;
+        });
+        
+        return newAvailable;
+      });
+    }
+  }, [primaryData, isOpen]);
+
   if (!isOpen) return null;
 
   const handleServiceToggle = (svc) => {
@@ -114,12 +152,35 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
     } else {
       setSelectedServices([...selectedServices, svc]);
     }
+    // Reset any legend isolations when modifying via dropdown
+    setHiddenSeries(new Set());
   };
 
-  const filteredServices = services.filter(svc => svc.toLowerCase().includes(serviceFilter.toLowerCase()));
+  const handleLegendClick = (seriesName, visibleServices) => {
+    setHiddenSeries(prev => {
+      // If ONLY this series is currently visible, clicking it resets to show ALL
+      if (prev.size === visibleServices.length - 1 && !prev.has(seriesName)) {
+        return new Set();
+      }
+      
+      // Otherwise, isolate this series by hiding all other services
+      const next = new Set(visibleServices);
+      next.delete(seriesName);
+      return next;
+    });
+  };
 
-  const selectAll = () => setSelectedServices(Array.from(new Set([...selectedServices, ...filteredServices])));
-  const clearAll = () => setSelectedServices(selectedServices.filter(s => !filteredServices.includes(s)));
+  const filteredServices = availableServices.filter(svc => svc.toLowerCase().includes(serviceFilter.toLowerCase()));
+
+  const selectAll = () => {
+    setSelectedServices(Array.from(new Set([...selectedServices, ...filteredServices])));
+    setHiddenSeries(new Set());
+  };
+  
+  const clearAll = () => {
+    setSelectedServices(selectedServices.filter(s => !filteredServices.includes(s)));
+    setHiddenSeries(new Set());
+  };
 
   // Prepare overlaid data if needed
   const getMergedOverlayData = () => {
@@ -129,7 +190,7 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
       const mergedPt = { ...pt };
       const compPt = compareData[i];
       if (compPt) {
-        services.forEach(svc => {
+        availableServices.forEach(svc => {
           if (compPt[svc] !== undefined) {
             mergedPt[`${svc}_compare`] = compPt[svc];
           }
@@ -151,6 +212,8 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
         loading={isLoading}
         unit={unit}
         defaultTopN="all"
+        externalHiddenSeries={hiddenSeries}
+        onLegendClick={handleLegendClick}
       />
     </div>
   );
@@ -172,7 +235,7 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
                 onClick={() => setIsServicesOpen(!isServicesOpen)}
                 style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}
               >
-                Services ({selectedServices.length}/{services.length})
+                Services ({selectedServices.length}/{availableServices.length})
               </button>
               {isServicesOpen && (
                 <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: '4px', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '4px', padding: '8px', zIndex: 10, width: '260px', maxHeight: '400px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
