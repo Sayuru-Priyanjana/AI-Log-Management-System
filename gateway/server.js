@@ -464,7 +464,8 @@ async function provisionSystem(clusterId, systemName) {
             composite_agg: {
               composite: {
                 sources: [
-                  { error_pattern: { terms: { field: "log.message.keyword" } } }
+                  { service: { terms: { field: "service.name.keyword" } } },
+                  { error_pattern: { terms: { field: "log.message.keyword", missing_bucket: true } } }
                 ]
               }
             }

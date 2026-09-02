@@ -623,8 +623,8 @@ async def get_system_alerts(system_id: str, request: Request):
     container = deps(request)
     
     query = {
-        "size": 50,
-        "sort": [{"start_time": {"order": "desc"}}],
+        "size": 100,
+        "sort": [{"state": {"order": "asc"}}, {"start_time": {"order": "desc"}}],
         "query": {
             "match_all": {}
         }
@@ -662,10 +662,11 @@ async def get_system_alerts(system_id: str, request: Request):
                 "service": service_name
             })
             
-        return alerts
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=alerts, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     except Exception as exc:
         logger.error(f"Failed to fetch alerts: {exc}")
-        return []
+        return JSONResponse(content=[], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 @router.get("/systems/{system_id}/errors/top")
 async def get_top_errors(system_id: str, start: int, end: int, request: Request):
