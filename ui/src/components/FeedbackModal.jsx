@@ -14,9 +14,31 @@ export default function FeedbackModal({ onClose }) {
       const response = await fetch("https://default099ec11549494b43b2e571707cbb16.b4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/10/workflows/e7930ce8804e457cb950df1820115fd4/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ugTDvyn80QNdExCTLmuisz_GN4UCYHs2-HHmFHV-7Tc", {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          text: feedback, 
-          user: localStorage.getItem('username') || 'Anonymous' 
+        body: JSON.stringify({
+          type: "message",
+          attachments: [
+            {
+              contentType: "application/vnd.microsoft.card.adaptive",
+              content: {
+                $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+                type: "AdaptiveCard",
+                version: "1.4",
+                body: [
+                  {
+                    type: "TextBlock",
+                    text: `New Feedback from ${localStorage.getItem('username') || 'Anonymous'}`,
+                    weight: "Bolder",
+                    size: "Medium"
+                  },
+                  {
+                    type: "TextBlock",
+                    text: feedback,
+                    wrap: true
+                  }
+                ]
+              }
+            }
+          ]
         })
       });
       if (response.ok || response.status === 202) {
