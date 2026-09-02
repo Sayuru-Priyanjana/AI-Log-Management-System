@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 export default function FeedbackModal({ onClose }) {
   const [feedback, setFeedback] = useState('');
+  const [category, setCategory] = useState('General Feedback');
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState(null);
 
@@ -10,6 +11,10 @@ export default function FeedbackModal({ onClose }) {
     if (!feedback.trim()) return;
     setSubmitting(true);
     setStatus(null);
+    
+    const username = localStorage.getItem('username') || 'Anonymous';
+    const timestamp = new Date().toLocaleString();
+
     try {
       const response = await fetch("https://default099ec11549494b43b2e571707cbb16.b4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/10/workflows/e7930ce8804e457cb950df1820115fd4/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ugTDvyn80QNdExCTLmuisz_GN4UCYHs2-HHmFHV-7Tc", {
         method: 'POST',
@@ -25,9 +30,32 @@ export default function FeedbackModal({ onClose }) {
                 version: "1.4",
                 body: [
                   {
+                    type: "Container",
+                    style: "emphasis",
+                    padding: "10px",
+                    items: [
+                      {
+                        type: "TextBlock",
+                        text: "🔔 New System Feedback",
+                        weight: "Bolder",
+                        size: "Large",
+                        color: "Accent"
+                      }
+                    ]
+                  },
+                  {
+                    type: "FactSet",
+                    spacing: "Medium",
+                    facts: [
+                      { title: "Category:", value: category },
+                      { title: "Submitted By:", value: `**${username}**` },
+                      { title: "Time:", value: timestamp }
+                    ]
+                  },
+                  {
                     type: "TextBlock",
-                    text: `New Feedback from ${localStorage.getItem('username') || 'Anonymous'}`,
-                    weight: "Bolder",
+                    text: "**Message:**",
+                    spacing: "Medium",
                     size: "Medium"
                   },
                   {
@@ -82,18 +110,36 @@ export default function FeedbackModal({ onClose }) {
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', margin: 0 }}>
             <div className="modal-body" style={{ padding: '16px' }}>
               <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                Have a suggestion, found a bug, or need help? Send a message directly to the engineering team.
+                Please fill out the form below to send a structured message to the engineering team.
               </p>
-              <textarea 
-                rows="5"
-                value={feedback}
-                onChange={e => setFeedback(e.target.value)}
-                placeholder="Type your message here..."
-                required
-                className="input"
-                style={{ resize: 'vertical', width: '100%', minHeight: '100px' }}
-                autoFocus
-              />
+              
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '0.9rem', fontWeight: 500 }}>Category</label>
+                <select 
+                  className="input" 
+                  value={category} 
+                  onChange={e => setCategory(e.target.value)}
+                  style={{ width: '100%', padding: '8px' }}
+                >
+                  <option value="Bug Report">🐛 Bug Report</option>
+                  <option value="Feature Request">✨ Feature Request</option>
+                  <option value="General Feedback">💬 General Feedback</option>
+                  <option value="Question / Help">❓ Question / Help</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '0.9rem', fontWeight: 500 }}>Message</label>
+                <textarea 
+                  rows="5"
+                  value={feedback}
+                  onChange={e => setFeedback(e.target.value)}
+                  placeholder="Describe the issue or suggestion..."
+                  required
+                  className="input"
+                  style={{ resize: 'vertical', width: '100%', minHeight: '100px' }}
+                />
+              </div>
               
               {status === 'error' && (
                 <div style={{ marginTop: '12px', padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderLeft: '3px solid #ef4444', color: '#ef4444', borderRadius: '4px', fontSize: '0.85rem' }}>
