@@ -12,6 +12,7 @@ import WorkstationPage from './components/WorkstationPage';
 import Scheduler from './components/Scheduler';
 import DashboardPage from './components/DashboardPage';
 import LogsPage from './components/LogsPage';
+import FeedbackModal from './components/FeedbackModal';
 import { usePreferences } from './preferences';
 import './index.css';
 
@@ -32,6 +33,7 @@ export default function App() {
   const [role, setRole] = useState(() => localStorage.getItem('role'));
   const [username, setUsername] = useState(() => localStorage.getItem('username'));
   const [changingPassword, setChangingPassword] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
 
   const handleLogin = (nextRole, nextUsername) => {
     setToken(localStorage.getItem('jwt'));
@@ -65,7 +67,7 @@ export default function App() {
 
         <nav className="nav">
           <NavLink to="/" end className={navClass}>Workstation</NavLink>
-          <a href="/osd/" target="_blank" rel="noopener noreferrer">Dashboards</a>
+          <a href="/osd/" target="_blank" rel="noopener noreferrer">OpenSearch</a>
           {isAdmin && <NavLink to="/systems" className={navClass}>Systems</NavLink>}
           {isAdmin && <NavLink to="/users" className={navClass}>Users</NavLink>}
           {isAdmin && <NavLink to="/configuration" className={navClass}>Configuration</NavLink>}
@@ -76,6 +78,13 @@ export default function App() {
         <HealthBar />
         <span className="topbar-sep" />
         <span className="whoami"><strong>{username}</strong> · {role}</span>
+
+        <button type="button" className="btn" title="Send Feedback" onClick={() => setShowFeedback(true)} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+          </svg>
+          Feedback
+        </button>
 
         <button type="button" className="iconbtn" title="Change password"
           onClick={() => setChangingPassword(true)}>
@@ -110,6 +119,7 @@ export default function App() {
       </div>
 
       {changingPassword && <ChangePasswordModal onClose={() => setChangingPassword(false)} />}
+      {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
     </div>
   );
 }

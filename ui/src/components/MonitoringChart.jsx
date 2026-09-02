@@ -54,10 +54,11 @@ const CustomTooltip = ({ active, payload, label, unit }) => {
   return null;
 };
 
-export default function MonitoringChart({ title, data, services, compareServices = [], loading, unit, onClick, showControls = true, showLegend = true, defaultTopN = 10, emptyMessage }) {
-  const [hiddenSeries, setHiddenSeries] = useState(new Set());
+export default function MonitoringChart({ title, data, services, compareServices = [], loading, unit, onClick, showControls = true, showLegend = true, defaultTopN = 10, emptyMessage, externalHiddenSeries, onLegendClick }) {
+  const [internalHiddenSeries, setInternalHiddenSeries] = useState(new Set());
   const [topN, setTopN] = useState(defaultTopN);
   
+  const hiddenSeries = externalHiddenSeries || internalHiddenSeries;
   const safeData = data || [];
 
   // Zoom state
@@ -115,7 +116,12 @@ export default function MonitoringChart({ title, data, services, compareServices
   }, [data, services, topN]);
 
   const toggleSeries = (seriesName) => {
-    setHiddenSeries(prev => {
+    if (onLegendClick) {
+      onLegendClick(seriesName, visibleServices);
+      return;
+    }
+    
+    setInternalHiddenSeries(prev => {
       // If ONLY this series is currently visible, clicking it resets to show ALL
       if (prev.size === visibleServices.length - 1 && !prev.has(seriesName)) {
         return new Set();

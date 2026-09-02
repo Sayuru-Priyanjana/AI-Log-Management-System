@@ -627,20 +627,33 @@ async def get_system_alerts(system_id: str, request: Request):
     container = deps(request)
     
     query = {
-        "size": 50,
-        "sort": [{"start_time": {"order": "desc"}}],
+        "size": 100,
+        "sort": [{"state": {"order": "asc"}}, {"start_time": {"order": "desc"}}],
         "query": {
             "match_all": {}
         }
     }
     
     try:
-        result = await container.opensearch.search(".opendistro-alerting-alerts*", query)
+        # Search both active and historical alert indices
+        result = await container.opensearch.search(".opendistro-alerting-alert*", query)
         hits = result.get("hits", {}).get("hits", [])
         
         alerts = []
         for hit in hits:
             src = hit.get("_source", {})
+            
+            # Extract bucket-level alert details if present
+            agg_content = src.get("agg_alert_content", {})
+            bucket = agg_content.get("bucket", {})
+            bucket_key = bucket.get("key", {})
+            
+            # Determine service name and detailed error message
+            service_name = bucket_key.get("service") if bucket_key else None
+            error_message = src.get("error_message")
+            if not error_message and bucket_key:
+                error_message = bucket_key.get("error_pattern")
+                
             alerts.append({
                 "id": hit.get("_id"),
                 "monitor_name": src.get("monitor_name", "Unknown Monitor"),
@@ -649,14 +662,15 @@ async def get_system_alerts(system_id: str, request: Request):
                 "severity": src.get("severity", "1"),
                 "start_time": src.get("start_time"),
                 "end_time": src.get("end_time"),
-                "error_message": src.get("error_message")
+                "error_message": error_message,
+                "service": service_name
             })
             
-        return alerts
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=alerts, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     except Exception as exc:
         logger.error(f"Failed to fetch alerts: {exc}")
-        # If the index doesn't exist yet because no alerts fired, just return empty list
-        return []
+        return JSONResponse(content=[], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 @router.get("/systems/{system_id}/errors/top")
 async def get_top_errors(system_id: str, start: int, end: int, request: Request):

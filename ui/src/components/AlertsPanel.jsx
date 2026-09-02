@@ -26,7 +26,7 @@ export default function AlertsPanel({ system }) {
       const mappedAlerts = data.map(a => ({
         id: a.id,
         title: a.monitor_name,
-        service: 'cluster-wide',
+        service: a.service || 'cluster-wide',
         severity: a.severity === "1" ? 'high' : 'medium',
         timestamp: a.start_time || new Date().getTime(),
         status: 'pending',
