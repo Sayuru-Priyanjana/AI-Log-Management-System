@@ -1,0 +1,91 @@
+import urllib.request
+import json
+import time
+
+OS_URL = "http://opensearch.logintel-central.svc.cluster.local:9200"
+
+def put_json(url, payload):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), method='PUT', headers={'Content-Type': 'application/json'})
+    try:
+        res = urllib.request.urlopen(req, timeout=10)
+        return res.read().decode('utf-8')
+    except urllib.error.HTTPError as e:
+        return e.read().decode('utf-8')
+    except Exception as e:
+        return str(e)
+
+def post_json(url, payload):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), method='POST', headers={'Content-Type': 'application/json'})
+    try:
+        res = urllib.request.urlopen(req, timeout=10)
+        return res.read().decode('utf-8')
+    except urllib.error.HTTPError as e:
+        return e.read().decode('utf-8')
+    except Exception as e:
+        return str(e)
+
+def main():
+    print("Waiting for OpenSearch to be ready...")
+    # Wait for OpenSearch if we run this via a Job immediately after deploy
+    time.sleep(5) 
+    
+    print("1. Creating ISM Policy (logintel-logs-retention) for 5-day deletion...")
+    policy = {
+        "policy": {
+            "description": "Delete logs older than 5 days",
+            "default_state": "hot",
+            "states": [
+                {
+                    "name": "hot",
+                    "actions": [],
+                    "transitions": [
+                        {
+                            "state_name": "delete",
+                            "conditions": {
+                                "min_index_age": "5d"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "delete",
+                    "actions": [
+                        {
+                            "delete": {}
+                        }
+                    ],
+                    "transitions": []
+                }
+            ],
+            "ism_template": [
+                {
+                    "index_patterns": ["logintel-logs-*"],
+                    "priority": 200
+                }
+            ]
+        }
+    }
+    print(put_json(f"{OS_URL}/_plugins/_ism/policies/logintel-logs-retention", policy))
+
+    print("\n2. Creating Index Template (logintel-logs-template)...")
+    template = {
+        "index_patterns": ["logintel-logs-*"],
+        "template": {
+            "settings": {
+                "plugins.index_state_management.policy_id": "logintel-logs-retention"
+            },
+            "aliases": {
+                "logintel-logs": {}
+            }
+        }
+    }
+    print(put_json(f"{OS_URL}/_index_template/logintel-logs-template", template))
+
+    print("\n3. Applying policy to existing indices...")
+    add_policy = {
+        "policy_id": "logintel-logs-retention"
+    }
+    print(post_json(f"{OS_URL}/_plugins/_ism/add/logintel-logs-*", add_policy))
+
+if __name__ == "__main__":
+    main()

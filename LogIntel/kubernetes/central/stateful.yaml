@@ -176,6 +176,7 @@ spec:
         - "--config.file=/etc/prometheus/prometheus.yml"
         - "--storage.tsdb.path=/prometheus"
         - "--web.enable-remote-write-receiver"
+        - "--storage.tsdb.retention.time=7d"
         resources:
           requests:
             memory: "256Mi"
