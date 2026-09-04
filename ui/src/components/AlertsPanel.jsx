@@ -14,7 +14,7 @@ const SEVERITY_TONE = { high: 'err', medium: 'warn', low: '' };
 export default function AlertsPanel({ system }) {
   const navigate = useNavigate();
   const toast = useToast();
-  const { formatClock, formatStamp } = usePreferences();
+  const { formatClock, formatDay, formatStamp } = usePreferences();
   const [alerts, setAlerts] = useState([]);
   const [open, setOpen] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -133,7 +133,7 @@ export default function AlertsPanel({ system }) {
             </div>
             <div className="alert-card-meta">
               <span className="mono">{alert.service}</span>
-              <span>{formatClock(alert.timestamp)}</span>
+              <span>{formatDay(alert.timestamp)} {formatClock(alert.timestamp)}</span>
               <span className="spacer" />
               <select className="select-sm" value={alert.status}
                 onClick={(e) => e.stopPropagation()}
@@ -170,7 +170,7 @@ export default function AlertsPanel({ system }) {
                 <div className="kv-row"><dt>Service</dt><dd className="mono">{open.service}</dd></div>
                 <div className="kv-row"><dt>Severity</dt>
                   <dd><span className={`chip chip--${SEVERITY_TONE[open.severity] || ''}`}>{open.severity}</span></dd></div>
-                <div className="kv-row"><dt>Detected</dt><dd>{formatClock(open.timestamp)}</dd></div>
+                <div className="kv-row"><dt>Detected</dt><dd>{formatDay(open.timestamp)} {formatClock(open.timestamp)}</dd></div>
                 <div className="kv-row"><dt>Status</dt>
                   <dd>
                     <select className="select-sm" value={open.status}
