@@ -784,7 +784,7 @@ async def get_logs_context(system_id: str, timestamp: int, service: str, request
         return []
 
 @router.get("/systems/{system_id}/logs")
-async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, offset: int = 0, start: int = None, end: int = None):
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, cursor: str = None, start: int = None, end: int = None):
     container = deps(request)
     
     filter_clauses = [{"term": {"system.id": system_id}}]
@@ -822,20 +822,28 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
     
     es_query = {
         "size": limit,
-        "from": offset,
-        "sort": [{"@timestamp": {"order": "desc"}}],
+        "track_total_hits": True,
+        "sort": [{"@timestamp": {"order": "desc"}}, {"_id": {"order": "desc"}}],
         "query": {
             "bool": {
                 "filter": filter_clauses,
             }
         }
     }
+    
+    if cursor:
+        try:
+            es_query["search_after"] = json.loads(cursor)
+        except Exception as e:
+            logger.warning(f"Invalid cursor format: {e}")
+            
     if must_clauses:
         es_query["query"]["bool"]["must"] = must_clauses
         
     try:
         result = await container.opensearch.search(settings.opensearch_log_index, es_query)
         hits = result.get("hits", {}).get("hits", [])
+        total = result.get("hits", {}).get("total", {}).get("value", 0)
         
         logs = []
         for hit in hits:
@@ -891,14 +899,14 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                 "timestamp": src.get("@timestamp"),
                 "service": src.get("service", {}).get("name") or src.get("container_name") or "unknown",
                 "level": str(lvl),
-                "message": str(msg)
+                "message": str(msg),
+                "sort": hit.get("sort")
             })
             
         return {
-            "total": result.get("hits", {}).get("total", {}).get("value", 0),
+            "total": total,
             "logs": logs
         }
     except Exception as exc:
-        logger.error(f"Failed to fetch raw logs: {exc}")
+        logger.error(f"Failed to fetch logs: {exc}")
         return {"total": 0, "logs": []}
-

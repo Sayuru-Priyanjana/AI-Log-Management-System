@@ -10,6 +10,15 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
   const [currentLabel, setCurrentLabel] = useState(defaultLabel);
   const [quickNum, setQuickNum] = useState('15');
   const [quickUnit, setQuickUnit] = useState('minutes');
+  
+  // Format current date for datetime-local (YYYY-MM-DDThh:mm)
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  const nowStr = now.toISOString().slice(0, 16);
+  
+  const [absStart, setAbsStart] = useState(nowStr);
+  const [absEnd, setAbsEnd] = useState(nowStr);
+  
   const popoverRef = useRef(null);
 
   // Close popover when clicking outside
@@ -84,6 +93,16 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
     handleCommonClick(`Last ${num} ${quickUnit}`, seconds);
   };
 
+  const handleAbsoluteApply = () => {
+    if (!absStart || !absEnd) return;
+    const startUnix = Math.floor(new Date(absStart).getTime() / 1000);
+    const endUnix = Math.floor(new Date(absEnd).getTime() / 1000);
+    if (startUnix >= endUnix) return; // Invalid range
+
+    const label = `${new Date(startUnix * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })} to ${new Date(endUnix * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`;
+    applyTimeframe(label, startUnix, endUnix, true, false);
+  };
+
   return (
     <div style={{ position: 'relative', display: 'inline-block' }} ref={popoverRef}>
       <button 
@@ -153,16 +172,44 @@ export default function TimeframePicker({ onChange, defaultLabel = 'Last 24 hour
             </div>
           </div>
 
-          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '8px' }}>Commonly used</div>
+          <div style={{ marginBottom: '16px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '8px' }}>Absolute time range</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '12px', width: '40px' }}>From</span>
+                <input 
+                  type="datetime-local" 
+                  className="input input--sm" 
+                  value={absStart}
+                  onChange={e => setAbsStart(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '12px', width: '40px' }}>To</span>
+                <input 
+                  type="datetime-local" 
+                  className="input input--sm" 
+                  value={absEnd}
+                  onChange={e => setAbsEnd(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+              </div>
+              <button type="button" className="btn btn--sm btn--primary" style={{ alignSelf: 'flex-end', marginTop: '4px' }} onClick={handleAbsoluteApply}>Apply Time Range</button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '8px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>Commonly used</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-            <button type="button" className="btn-link" style={linkStyle} onClick={handleToday}>Today</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 24 hours', 86400)}>Last 24 hours</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={handleThisWeek}>This week</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 7 days', 86400 * 7)}>Last 7 days</button>
             <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 15 minutes', 900)}>Last 15 minutes</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 30 days', 86400 * 30)}>Last 30 days</button>
             <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 30 minutes', 1800)}>Last 30 minutes</button>
-            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 90 days', 86400 * 90)}>Last 90 days</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 1 hour', 3600)}>Last 1 hour</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 12 hours', 43200)}>Last 12 hours</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 24 hours', 86400)}>Last 24 hours</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={handleToday}>Today</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={handleThisWeek}>This week</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 5 days', 86400 * 5)}>Last 5 days (Logs limit)</button>
+            <button type="button" className="btn-link" style={linkStyle} onClick={() => handleCommonClick('Last 7 days', 86400 * 7)}>Last 7 days (Metrics limit)</button>
           </div>
         </div>
       )}

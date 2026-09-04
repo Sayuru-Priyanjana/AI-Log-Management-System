@@ -71,7 +71,7 @@ export default function ActivitiesPanel({ systemId, investigations }) {
           >
             <span className={`activity-tag activity-tag--${row.status}`} title={row.status} />
             <div className="activity-body">
-              <div className="activity-label">{row.label}</div>
+              <ActivityLabel text={row.label} />
               <div className="activity-meta">
                 <span className={`activity-kind ${row.kind === 'user' ? 'activity-kind--user' : ''}`}>
                   {row.kind === 'user' ? 'you' : 'auto'}
@@ -90,4 +90,23 @@ function activityStatus(investigation) {
   if (investigation.errors?.length) return 'failed';
   if (investigation.analysis?.confidence != null || investigation.analysis?.cause_summary) return 'done';
   return 'pending';
+}
+
+function ActivityLabel({ text }) {
+  if (typeof text !== 'string') return <div className="activity-label">{text}</div>;
+  const parts = text.split('Detection payload:\n');
+  if (parts.length === 2) {
+    return (
+      <div className="activity-label" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div>{parts[0].trim()}</div>
+        <div>
+          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Detection Payload</span>
+          <pre className="li-raw-pre" onClick={(e) => e.stopPropagation()} style={{ marginTop: '4px' }}>
+            {parts[1].trim()}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+  return <div className="activity-label">{text}</div>;
 }

@@ -13,13 +13,13 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
   const [level, setLevel] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [cursorHistory, setCursorHistory] = useState([null]); // index 0 is null (page 1)
   const limit = 100;
   
-  const fetchLogs = async (showLoading = true) => {
+  const fetchLogs = async (showLoading = true, currentCursor = null) => {
     if (!systemId) return;
     if (showLoading) setLoading(true);
     try {
-      const offset = (page - 1) * limit;
       
       let activeStart = timeframe?.start || fallbackStart;
       let activeEnd = timeframe?.end || fallbackEnd;
@@ -45,7 +45,9 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
         activeEnd = undefined; // Drop upper bound to never miss logs arriving exactly now
       }
 
-      const result = await getSystemLogs(systemId, { query, service, level, limit, offset, start: activeStart, end: activeEnd });
+      const cursorParam = currentCursor ? JSON.stringify(currentCursor) : null;
+      const result = await getSystemLogs(systemId, { query, service, level, limit, cursor: cursorParam, start: activeStart, end: activeEnd });
+      
       setLogs(result?.logs || []);
       setTotal(result?.total || 0);
     } catch (err) {
@@ -58,20 +60,16 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
 
   useEffect(() => {
     setPage(1);
-    fetchLogs(true);
+    setCursorHistory([null]);
+    fetchLogs(true, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemId, timeframe?.start, timeframe?.end, fallbackStart, fallbackEnd, query, service, level]);
-
-  useEffect(() => {
-    fetchLogs(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
 
   useEffect(() => {
     let interval;
     if (liveTail) {
       interval = setInterval(() => {
-        fetchLogs(false);
+        fetchLogs(false, null);
       }, 5000);
     }
     return () => clearInterval(interval);
@@ -81,7 +79,8 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
   const handleSearch = (e) => {
     e.preventDefault();
     setPage(1);
-    fetchLogs(true);
+    setCursorHistory([null]);
+    fetchLogs(true, null);
   };
 
   const getLevelColor = (lvl) => {
@@ -90,6 +89,28 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
     if (upper === 'WARN' || upper === 'WARNING') return 'var(--warn)';
     if (upper === 'INFO') return 'var(--ok)';
     return 'var(--text-3)';
+  };
+
+  const handlePrevPage = () => {
+    if (page === 1) return;
+    const newPage = page - 1;
+    setPage(newPage);
+    fetchLogs(true, cursorHistory[newPage - 1]);
+  };
+
+  const handleNextPage = () => {
+    if (logs.length === 0 || page >= Math.ceil(total / limit)) return;
+    const lastLog = logs[logs.length - 1];
+    const nextCursor = lastLog.sort || null;
+    
+    // Ensure we have room in the history array
+    const newHistory = [...cursorHistory];
+    newHistory[page] = nextCursor;
+    setCursorHistory(newHistory);
+    
+    const newPage = page + 1;
+    setPage(newPage);
+    fetchLogs(true, nextCursor);
   };
 
   return (
@@ -111,7 +132,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
             <option value="">All Services</option>
             {services.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select className="input input--sm" value={level} onChange={(e) => { setLevel(e.target.value); setPage(1); }} style={{ width: 'auto', backgroundColor: 'var(--surface)' }}>
+          <select className="input input--sm" value={level} onChange={(e) => { setLevel(e.target.value); setPage(1); setCursorHistory([null]); }} style={{ width: 'auto', backgroundColor: 'var(--surface)' }}>
             <option value="">All Levels</option>
             <option value="error">ERROR</option>
             <option value="warn">WARN</option>
@@ -178,7 +199,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
             <button 
               className="btn btn--sm" 
               disabled={page === 1}
-              onClick={() => setPage(p => Math.max(1, p - 1))}
+              onClick={handlePrevPage}
             >
               Previous
             </button>
@@ -188,7 +209,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
             <button 
               className="btn btn--sm" 
               disabled={page >= Math.ceil(total / limit)}
-              onClick={() => setPage(p => p + 1)}
+              onClick={handleNextPage}
             >
               Next
             </button>
