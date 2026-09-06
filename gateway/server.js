@@ -10,6 +10,7 @@ app.use(cors());
 
 // The agent URL is provided via environment or defaults to the internal docker network name
 const AGENT_URL = process.env.AGENT_URL || 'http://agent:8000';
+const LANGGRAPH_AGENT_URL = process.env.LANGGRAPH_AGENT_URL || 'http://logintel-langgraph-agent:8000';
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-change-in-prod';
 const PORT = process.env.PORT || 3000;
 
@@ -57,6 +58,56 @@ async function initDB() {
   }
 }
 initDB().catch(console.error);
+
+// ---------------------------------------------------------
+// INGESTION PROXY (WITH TOKEN ENFORCEMENT)
+// ---------------------------------------------------------
+const opensearchProxy = createProxyMiddleware({
+  target: process.env.OPENSEARCH_URL || 'http://opensearch:9200',
+  changeOrigin: true
+});
+
+const prometheusProxy = createProxyMiddleware({
+  target: process.env.PROMETHEUS_URL || 'http://prometheus:9090',
+  changeOrigin: true
+});
+
+const requireIngestAuth = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ detail: 'Missing authorization header' });
+  }
+  
+  let token = null;
+  if (authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (authHeader.startsWith('Basic ')) {
+    const b64 = authHeader.split(' ')[1];
+    const decoded = Buffer.from(b64, 'base64').toString('utf8');
+    const parts = decoded.split(':');
+    token = parts[1];
+  } else {
+    return res.status(401).json({ detail: 'Invalid authorization format' });
+  }
+
+  if (!token) return res.status(401).json({ detail: 'Missing token' });
+  
+  token = token.trim();
+  try {
+    const result = await pool.query('SELECT id FROM systems WHERE token = $1', [token]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ detail: 'Invalid ingestion token' });
+    }
+    req.systemId = result.rows[0].id;
+    next();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ detail: 'Internal Error during auth' });
+  }
+};
+
+app.post('/_bulk', requireIngestAuth, opensearchProxy);
+app.post('/api/v1/write', requireIngestAuth, prometheusProxy);
 
 app.use(express.json());
 
@@ -115,48 +166,6 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
-const requireIngestAuth = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  console.log('Received Ingest Auth Header:', authHeader);
-  if (!authHeader) {
-    return res.status(401).json({ detail: 'Missing authorization header' });
-  }
-  
-  let token = null;
-  if (authHeader.startsWith('Bearer ')) {
-    token = authHeader.split(' ')[1];
-  } else if (authHeader.startsWith('Basic ')) {
-    // Fluent Bit's HTTP_User / HTTP_Passwd sends Basic Auth.
-    // The token is sent in the password field.
-    const b64 = authHeader.split(' ')[1];
-    const decoded = Buffer.from(b64, 'base64').toString('utf8');
-    const parts = decoded.split(':');
-    token = parts[1]; // password field
-  } else {
-    return res.status(401).json({ detail: 'Invalid authorization format' });
-  }
-
-  if (!token) {
-    return res.status(401).json({ detail: 'Missing token' });
-  }
-  
-  token = token.trim();
-  console.log('Token after trim: "' + token + '"');
-
-  try {
-    const result = await pool.query('SELECT id FROM systems WHERE token = $1', [token]);
-    console.log('Query result rows:', result.rows.length);
-    if (result.rows.length === 0) {
-      return res.status(401).json({ detail: 'Invalid ingestion token' });
-    }
-    // Inject system ID for any downstream needs
-    req.systemId = result.rows[0].id;
-    next();
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ detail: 'Internal Error during auth' });
-  }
-};
 
 app.put('/api/auth/password', requireAuth, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
@@ -309,6 +318,18 @@ async function provisionSystem(clusterId, systemName) {
     })
   });
 
+  // 1.5 Ensure at least one document exists in the index pattern so detector creation doesn't fail
+  await makeReq(`${osUrl}/logintel-logs-init/_doc/1?refresh=true`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      "@timestamp": new Date().toISOString(),
+      "message": "Index initialization",
+      "system": { "id": "init" }
+    })
+  });
+
+
   // 2. Create Anomaly Detector for this cluster
   const safeName = systemName.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
   const detectorPayload = {
@@ -319,9 +340,21 @@ async function provisionSystem(clusterId, systemName) {
     filter_query: {
       bool: {
         filter: [
-          { term: { "system.id": clusterId } },
-          { terms: { "log.level": ["ERROR", "FATAL", "CRITICAL"] } }
-        ]
+          { term: { "system.id": clusterId } }
+        ],
+        should: [
+          { match: { level: "error" } },
+          { match: { level: "ERROR" } },
+          { match: { "log.level": "error" } },
+          { match: { status: "ERROR" } },
+          { match: { message: "error" } },
+          { match: { message: "fatal" } },
+          { match: { message: "critical" } },
+          { match: { "log.message": "error" } },
+          { match: { "log.message": "fatal" } },
+          { match: { "log.message": "critical" } }
+        ],
+        minimum_should_match: 1
       }
     },
     feature_attributes: [{
@@ -349,7 +382,126 @@ async function provisionSystem(clusterId, systemName) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
+
+    // 3. Create Anomaly Monitor attached to the detector
+    const anomalyMonitorPayload = {
+      type: "monitor",
+      name: `anomaly-monitor-${safeName}`,
+      monitor_type: "query_level_monitor",
+      enabled: true,
+      schedule: { period: { interval: 1, unit: "MINUTES" } },
+      inputs: [{
+        search: {
+          indices: [".opendistro-anomaly-results*"],
+          query: {
+            size: 1,
+            sort: [{ data_end_time: { order: "desc" } }],
+            query: {
+              bool: {
+                filter: [
+                  { term: { detector_id: createRes._id } },
+                  { range: { data_end_time: { from: "{{period_end}}||-2m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
+                ]
+              }
+            }
+          }
+        }
+      }],
+      triggers: [{
+        id: `trigger-anomaly-${safeName}`,
+        name: `High Anomaly Grade Trigger`,
+        severity: "2",
+        condition: {
+          script: {
+            lang: "painless",
+            source: "ctx.results[0].hits.hits.size() > 0 && ctx.results[0].hits.hits[0]._source.anomaly_grade > 0.7"
+          }
+        },
+        actions: []
+      }]
+    };
+    
+    await makeReq(`${osUrl}/_plugins/_alerting/monitors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(anomalyMonitorPayload)
+    });
   }
+
+  // 4. Create Bucket-Level Monitor for Top Error Patterns
+  const bucketMonitorPayload = {
+    type: "monitor",
+    name: `bucket-monitor-${safeName}`,
+    monitor_type: "bucket_level_monitor",
+    enabled: true,
+    schedule: { period: { interval: 2, unit: "MINUTES" } },
+    inputs: [{
+      search: {
+        indices: ["logintel-logs-*"],
+        query: {
+          size: 0,
+          query: {
+            bool: {
+              filter: [
+                { term: { "system.id": clusterId } },
+                { range: { "@timestamp": { from: "{{period_end}}||-2m", to: "{{period_end}}", include_lower: true, include_upper: true, format: "epoch_millis" } } }
+              ],
+              should: [
+                { match: { level: "error" } },
+                { match: { level: "ERROR" } },
+                { match: { level: "warn" } },
+                { match: { level: "WARN" } },
+                { match: { "log.level": "error" } },
+                { match: { "log.level": "warn" } },
+                { match: { status: "ERROR" } },
+                { match: { status: "WARN" } },
+                { match: { message: "error" } },
+                { match: { message: "fatal" } },
+                { match: { message: "critical" } },
+                { match: { message: "warn" } },
+                { match: { message: "warning" } },
+                { match: { "log.message": "error" } },
+                { match: { "log.message": "fatal" } },
+                { match: { "log.message": "critical" } },
+                { match: { "log.message": "warn" } },
+                { match: { "log.message": "warning" } }
+              ],
+              minimum_should_match: 1
+            }
+          },
+          aggregations: {
+            composite_agg: {
+              composite: {
+                sources: [
+                  { service: { terms: { field: "service.name" } } },
+                  { error_pattern: { terms: { field: "log.message.keyword", missing_bucket: true } } }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }],
+    triggers: [{
+      bucket_level_trigger: {
+        id: `trigger-bucket-${safeName}`,
+        name: `High Frequency Error Trigger`,
+        severity: "1",
+        condition: {
+          buckets_path: { count: "_count" },
+          parent_bucket_path: "composite_agg",
+          script: { source: "params.count > 50" }
+        },
+        actions: []
+      }
+    }]
+  };
+
+  await makeReq(`${osUrl}/_plugins/_alerting/monitors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bucketMonitorPayload)
+  });
 
   console.log(`Successfully initiated auto-provisioning for system ${clusterId}`);
 }
@@ -413,6 +565,12 @@ app.delete('/api/admin/systems/:id', requireAuth, requireAdmin, async (req, res)
 
 const agentProxy = createProxyMiddleware({
   target: AGENT_URL,
+  router: function(req) {
+    if (req.headers['x-agent-backend'] === 'langgraph') {
+      return LANGGRAPH_AGENT_URL;
+    }
+    return AGENT_URL;
+  },
   changeOrigin: true,
   selfHandleResponse: true,
   onProxyReq: (proxyReq, req, res) => {
@@ -471,6 +629,12 @@ const agentProxy = createProxyMiddleware({
 // Since we need streaming to work for POST /api/investigations, we CANNOT use responseInterceptor for it.
 const streamingAgentProxy = createProxyMiddleware({
   target: AGENT_URL,
+  router: function(req) {
+    if (req.headers['x-agent-backend'] === 'langgraph') {
+      return LANGGRAPH_AGENT_URL;
+    }
+    return AGENT_URL;
+  },
   changeOrigin: true,
   onProxyReq: (proxyReq, req, res) => {
     if (req.body && Object.keys(req.body).length > 0 && req.method !== 'GET') {
@@ -498,29 +662,12 @@ app.put('/api/settings', requireAuth, requireAdmin, agentProxy);
 app.post('/api/settings/test', requireAuth, requireAdmin, agentProxy);
 app.get('/api/clusters', requireAuth, requireAdmin, agentProxy);
 
-// ---------------------------------------------------------
-// INGESTION PROXY (WITH TOKEN ENFORCEMENT)
-// ---------------------------------------------------------
-
-const opensearchProxy = createProxyMiddleware({
-  target: process.env.OPENSEARCH_URL || 'http://opensearch:9200',
-  changeOrigin: true
-});
-
-const prometheusProxy = createProxyMiddleware({
-  target: process.env.PROMETHEUS_URL || 'http://prometheus:9090',
-  changeOrigin: true
-});
-
-// Expose these endpoints securely
-app.post('/_bulk', requireIngestAuth, opensearchProxy);
-app.post('/api/v1/write', requireIngestAuth, prometheusProxy);
 
 // Graceful fallback endpoints for critical UI routes when AI Agent is down
 app.get('/api/health', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const agentRes = await fetch(`${AGENT_URL}/api/health`, { signal: controller.signal });
     clearTimeout(timeout);
     if (agentRes.ok) {
@@ -544,7 +691,7 @@ app.get('/api/health', requireAuth, async (req, res) => {
 app.get('/api/systems', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     // Note: We don't forward auth headers to agent, it trusts gateway
     const agentRes = await fetch(`${AGENT_URL}/api/systems`, { signal: controller.signal });
     clearTimeout(timeout);

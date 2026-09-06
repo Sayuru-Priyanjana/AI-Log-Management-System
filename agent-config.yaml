@@ -1,0 +1,208 @@
+---
+# Source: logintel-agent/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logintel-agent-config
+  namespace: logintel
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+
+    # --- INPUTS ---
+    # 1. Container Logs
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            cri
+        DB                /var/log/flb_kube.db
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+
+
+
+    # 3. Kubernetes Events (Removed - now handled by dedicated event_collector deployment)
+
+    # --- FILTERS ---
+    # Add Kubernetes metadata to logs
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_processed
+
+    # Transform logs into exact LogIntel schema
+    [FILTER]
+        Name                lua
+        Match               kube.*
+        script              /fluent-bit/etc/normalize.lua
+        call                normalize
+        time_as_table       true
+
+    # Send application logs to central OpenSearch
+    [OUTPUT]
+        Name            opensearch
+        Match           kube.*
+        Host            logintel.inova.lk
+        Port            443
+        HTTP_User       logintel
+        HTTP_Passwd     logintel_tok_b5a8f9f98267b94dbcba932235300ee4
+        TLS             On
+        TLS.Verify      Off
+        Logstash_Format On
+        Logstash_Prefix logintel-logs
+        Time_Key        @timestamp
+        Time_Key_Format %Y-%m-%dT%H:%M:%S
+        Time_Key_Nanos  On
+        Suppress_Type_Name On
+        Replace_Dots    On
+        Generate_ID     On
+
+
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+
+    [PARSER]
+        Name cri
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep   On
+
+  normalize.lua: |
+    local function iso_to_epoch(value)
+      if type(value) ~= "string" then return nil, nil end
+      local y, mo, d, h, mi, s, frac = value:match("^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)")
+      if not y then return nil, nil end
+      local epoch = os.time({
+        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false
+      })
+      local nanos = 0
+      if frac ~= "" then nanos = tonumber((frac .. "000000000"):sub(1, 9)) or 0 end
+      return epoch, nanos
+    end
+
+    function normalize(tag, timestamp, record)
+      local kube = record["kubernetes"]
+      if kube == nil then return -1, 0, 0 end
+
+      local labels = kube["labels"] or {}
+      local out = {}
+
+      out["system"] = {
+        id   = "cls-7a2c1f83",
+        name = "shared-env"
+      }
+      out["environment"] = "testbed"
+      out["source"] = { type = "kubernetes", collector = "fluent-bit" }
+      out["kubernetes"] = {
+        cluster   = "cls-ed316702",
+        namespace = kube["namespace_name"],
+        pod       = { name = kube["pod_name"], uid = kube["pod_id"] },
+        container = { name = kube["container_name"], image = kube["container_image"] },
+        node      = { name = kube["host"] }
+      }
+
+      local body = record["log"]
+      local parsed = record["log_processed"]
+      local record_ts, record_ns = nil, nil
+
+      if type(parsed) == "table" then
+        if parsed["log"] ~= nil then
+          body = parsed["log"]
+        else
+          body = parsed
+        end
+        for k, v in pairs(parsed) do
+          if k ~= "log" and k ~= "kubernetes" and k ~= "@timestamp" then
+            out[k] = v
+          end
+        end
+        record_ts, record_ns = iso_to_epoch(parsed["@timestamp"])
+      end
+
+      if type(body) == "table" then
+        out["log"] = body
+        local lvl = body["level"]
+        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
+          local http_code = body["status"] or body["status_code"] or body["http_status"] or body["http.status_code"]
+          local resolved_lvl = "INFO"
+          if http_code ~= nil then
+            local code = tonumber(http_code)
+            if code ~= nil then
+              if code >= 500 then resolved_lvl = "ERROR"
+              elseif code >= 400 then resolved_lvl = "WARN"
+              elseif code >= 200 then resolved_lvl = "INFO"
+              end
+            end
+          end
+          out["log"]["level"] = resolved_lvl
+        end
+        if body["message"] == nil then out["log"]["message"] = "" end
+      else
+        local str_body = tostring(body or "")
+        local lvl = nil
+        -- Attempt to parse common Spring Boot log format
+        local ts, parsed_lvl, rest = str_body:match("^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)")
+        if ts ~= nil then
+          lvl = parsed_lvl
+          str_body = rest
+        else
+          lvl = str_body:match("%s+(ERROR)%s+") or str_body:match("%s+(WARN)%s+") or str_body:match("%s+(INFO)%s+") or str_body:match("%s+(DEBUG)%s+")
+        end
+
+        if lvl == nil or lvl == "UNKNOWN" or lvl == "" then
+          -- Try to find HTTP status code
+          local http_code = str_body:match("HTTP/%d%.%d\"?%s+(%d%d%d)")
+          if http_code == nil then http_code = str_body:match("status=(%d%d%d)") end
+          if http_code == nil then http_code = str_body:match("\"status\":%s*(%d%d%d)") end
+          
+          lvl = "INFO" -- default fallback
+          if http_code ~= nil then
+            local code = tonumber(http_code)
+            if code ~= nil then
+              if code >= 500 then lvl = "ERROR"
+              elseif code >= 400 then lvl = "WARN"
+              elseif code >= 200 then lvl = "INFO"
+              end
+            end
+          end
+        end
+        out["log"] = { level = lvl, message = str_body }
+      end
+
+        if out["service"] == nil then
+          local svc_name = labels["app.kubernetes.io/name"] or labels["app"] or labels["name"] or labels["k8s-app"]
+          if svc_name == nil and kube["container_name"] ~= nil then
+            svc_name = kube["container_name"]
+          end
+          if svc_name ~= nil then
+            out["service"] = { name = svc_name }
+          end
+        end
+
+      out["@timestamp"] = nil
+
+      if record_ts ~= nil then
+        return 2, { sec = record_ts, nsec = record_ns }, out
+      end
+      return 2, timestamp, out
+    end
+
+

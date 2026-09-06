@@ -107,6 +107,9 @@ export default function WorkstationPage() {
           </span>
         )}
 
+        <button type="button" className="btn" disabled={!selected} onClick={() => navigate('/logs')}>
+          Logs
+        </button>
         <button type="button" className="btn" disabled={!selected} onClick={() => navigate('/dashboard')}>
           Dashboard
         </button>

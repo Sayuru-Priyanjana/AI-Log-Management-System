@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from fastapi_cache.decorator import cache
 from pydantic import BaseModel, Field
 
 from app.agents.tool_bindings import ToolBindings
@@ -234,8 +236,12 @@ async def run_tool(investigation_id: str, payload: RunToolRequest,
         signals = SignalEngine(known_services=[]).detect(plan, windows, evidence)
         candidates = pipeline.hypotheses.generate(plan, windows, signals, evidence)
 
-        bindings = ToolBindings(plan, windows, evidence, signals, candidates)
-        result = bindings.execute(payload.tool, payload.tool_input)
+        # The log tool is passed so a replayed next step can use the live query
+        # tools too — a suggestion like "look at what payment-db logged at 14:29"
+        # is only actionable if the button behind it can actually go and look.
+        bindings = ToolBindings(plan, windows, evidence, signals, candidates,
+                                log_tool=pipeline.logs)
+        result = await bindings.execute(payload.tool, payload.tool_input)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -289,6 +295,7 @@ async def effective_config() -> dict:
     }
 
 @router.get("/systems/{system_id}/metrics/requests")
+@cache(expire=300)
 async def get_system_metrics_requests(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
@@ -310,6 +317,7 @@ async def get_system_metrics_requests(system_id: str, start: int, end: int, requ
     return sorted_data
 
 @router.get("/systems/{system_id}/metrics/ram")
+@cache(expire=300)
 async def get_system_metrics_ram(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
@@ -332,6 +340,7 @@ async def get_system_metrics_ram(system_id: str, start: int, end: int, request: 
     return sorted_data
 
 @router.get("/systems/{system_id}/metrics/logs")
+@cache(expire=300)
 async def get_system_metrics_logs(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     
@@ -359,7 +368,7 @@ async def get_system_metrics_logs(system_id: str, start: int, end: int, request:
         },
         "aggs": {
             "services": {
-                "terms": {"field": "service.name"},
+                "terms": {"field": "service.name", "size": 1000},
                 "aggs": {
                     "logs_over_time": {
                         "date_histogram": {
@@ -395,69 +404,124 @@ async def get_system_metrics_logs(system_id: str, start: int, end: int, request:
         logger.error(f"Failed to fetch log metrics: {exc}")
         return []
 
-@router.get("/systems/{system_id}/metrics/http_requests")
-async def get_system_metrics_http_requests(system_id: str, start: int, end: int, request: Request):
+@router.get("/systems/{system_id}/metrics/error_logs")
+@cache(expire=300)
+async def get_system_metrics_error_logs(system_id: str, start: int, end: int, request: Request):
+    container = deps(request)
+    
+    range_hours = (end - start) / 3600
+    if range_hours <= 1:
+        interval = "1m"
+    elif range_hours <= 6:
+        interval = "5m"
+    elif range_hours <= 24:
+        interval = "15m"
+    elif range_hours <= 72:
+        interval = "1h"
+    else:
+        interval = "4h"
+
+    query = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ],
+                "should": [
+                    {"match": {"level": "error"}},
+                    {"match": {"level": "ERROR"}},
+                    {"match": {"log.level": "error"}},
+                    {"match": {"status": "ERROR"}},
+                    {"match": {"message": "error"}},
+                    {"match": {"message": "fatal"}},
+                    {"match": {"message": "critical"}},
+                    {"match": {"log.message": "error"}},
+                    {"match": {"log.message": "fatal"}},
+                    {"match": {"log.message": "critical"}}
+                ],
+                "minimum_should_match": 1
+            }
+        },
+        "aggs": {
+            "services": {
+                "terms": {"field": "service.name", "size": 100},
+                "aggs": {
+                    "errors_over_time": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": interval,
+                            "min_doc_count": 0,
+                            "extended_bounds": {"min": start * 1000, "max": end * 1000}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, query)
+        
+        data_by_time = {}
+        buckets = result.get("aggregations", {}).get("services", {}).get("buckets", [])
+        for bucket in buckets:
+            svc = bucket.get("key", "unknown")
+            time_buckets = bucket.get("errors_over_time", {}).get("buckets", [])
+            for tb in time_buckets:
+                ts = tb.get("key")
+                val = tb.get("doc_count", 0)
+                if ts not in data_by_time:
+                    data_by_time[ts] = {"time": ts}
+                data_by_time[ts][svc] = val
+                
+        sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
+        return sorted_data
+    except Exception as exc:
+        logger.error(f"Failed to fetch error log metrics: {exc}")
+        return []
+
+@router.get("/systems/{system_id}/metrics/restarts")
+@cache(expire=300)
+async def get_system_metrics_restarts(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
     step = container.prometheus.step_for(window)
-    expression = f'sum by (service) (rate(http_requests_total{{system_id="{system_id}"}}[2m]))'
+    expression = f'sum by (container) (kube_pod_container_status_restarts_total{{system_id="{system_id}", container!="", container!="POD"}})'
     raw_series = await container.prometheus.query_range(expression, window, step)
     
     data_by_time = {}
     for series in raw_series:
-        svc = series.get("metric", {}).get("service", "unknown")
+        svc = series.get("metric", {}).get("container", "unknown")
         points = container.prometheus.to_points(series)
         for pt_time, val in points:
             ts = int(pt_time.timestamp()) * 1000
             if ts not in data_by_time:
                 data_by_time[ts] = {"time": ts}
-            data_by_time[ts][svc] = round(val, 2)
+            data_by_time[ts][svc] = int(val)
             
     sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
     return sorted_data
 
-@router.get("/systems/{system_id}/metrics/http_latency")
-async def get_system_metrics_http_latency(system_id: str, start: int, end: int, request: Request):
+@router.get("/systems/{system_id}/metrics/throttling")
+@cache(expire=300)
+async def get_system_metrics_throttling(system_id: str, start: int, end: int, request: Request):
     container = deps(request)
     window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
     step = container.prometheus.step_for(window)
-    expression = f'histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{{system_id="{system_id}"}}[2m])))'
+    expression = f'sum by (container) (rate(container_cpu_cfs_throttled_seconds_total{{system_id="{system_id}", container!="", container!="POD"}}[2m]))'
     raw_series = await container.prometheus.query_range(expression, window, step)
     
     data_by_time = {}
     for series in raw_series:
-        svc = series.get("metric", {}).get("service", "unknown")
+        svc = series.get("metric", {}).get("container", "unknown")
         points = container.prometheus.to_points(series)
         for pt_time, val in points:
             ts = int(pt_time.timestamp()) * 1000
             if ts not in data_by_time:
                 data_by_time[ts] = {"time": ts}
-            # Only include valid numbers (ignore NaNs from Prometheus histogram calculation when no requests)
-            if val == val and val != float('inf') and val != float('-inf'):
-                data_by_time[ts][svc] = round(val, 3)
-            else:
-                data_by_time[ts][svc] = 0
-            
-    sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
-    return sorted_data
-
-@router.get("/systems/{system_id}/metrics/http_errors")
-async def get_system_metrics_http_errors(system_id: str, start: int, end: int, request: Request):
-    container = deps(request)
-    window = TimeWindow(start=datetime.fromtimestamp(start, tz=timezone.utc), end=datetime.fromtimestamp(end, tz=timezone.utc))
-    step = container.prometheus.step_for(window)
-    expression = f'sum by (service) (rate(http_requests_total{{system_id="{system_id}", status=~"5.."}}[2m]))'
-    raw_series = await container.prometheus.query_range(expression, window, step)
-    
-    data_by_time = {}
-    for series in raw_series:
-        svc = series.get("metric", {}).get("service", "unknown")
-        points = container.prometheus.to_points(series)
-        for pt_time, val in points:
-            ts = int(pt_time.timestamp()) * 1000
-            if ts not in data_by_time:
-                data_by_time[ts] = {"time": ts}
-            data_by_time[ts][svc] = round(val, 2)
+            data_by_time[ts][svc] = round(val, 3)
             
     sorted_data = [data_by_time[k] for k in sorted(data_by_time.keys())]
     return sorted_data
@@ -471,6 +535,7 @@ async def get_system_snapshot(system_id: str, request: Request) -> dict:
     
     count_query = {
         "size": 0,
+        "track_total_hits": True,
         "query": {
             "bool": {
                 "filter": [
@@ -562,20 +627,33 @@ async def get_system_alerts(system_id: str, request: Request):
     container = deps(request)
     
     query = {
-        "size": 50,
-        "sort": [{"start_time": {"order": "desc"}}],
+        "size": 100,
+        "sort": [{"state": {"order": "asc"}}, {"start_time": {"order": "desc"}}],
         "query": {
             "match_all": {}
         }
     }
     
     try:
-        result = await container.opensearch.search(".opendistro-alerting-alerts*", query)
+        # Search both active and historical alert indices
+        result = await container.opensearch.search(".opendistro-alerting-alert*", query)
         hits = result.get("hits", {}).get("hits", [])
         
         alerts = []
         for hit in hits:
             src = hit.get("_source", {})
+            
+            # Extract bucket-level alert details if present
+            agg_content = src.get("agg_alert_content", {})
+            bucket = agg_content.get("bucket", {})
+            bucket_key = bucket.get("key", {})
+            
+            # Determine service name and detailed error message
+            service_name = bucket_key.get("service") if bucket_key else None
+            error_message = src.get("error_message")
+            if not error_message and bucket_key:
+                error_message = bucket_key.get("error_pattern")
+                
             alerts.append({
                 "id": hit.get("_id"),
                 "monitor_name": src.get("monitor_name", "Unknown Monitor"),
@@ -584,14 +662,15 @@ async def get_system_alerts(system_id: str, request: Request):
                 "severity": src.get("severity", "1"),
                 "start_time": src.get("start_time"),
                 "end_time": src.get("end_time"),
-                "error_message": src.get("error_message")
+                "error_message": error_message,
+                "service": service_name
             })
             
-        return alerts
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=alerts, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     except Exception as exc:
         logger.error(f"Failed to fetch alerts: {exc}")
-        # If the index doesn't exist yet because no alerts fired, just return empty list
-        return []
+        return JSONResponse(content=[], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 @router.get("/systems/{system_id}/errors/top")
 async def get_top_errors(system_id: str, start: int, end: int, request: Request):
@@ -609,7 +688,13 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
                     {"match": {"level": "error"}},
                     {"match": {"level": "ERROR"}},
                     {"match": {"log.level": "error"}},
-                    {"match": {"status": "ERROR"}}
+                    {"match": {"status": "ERROR"}},
+                    {"match": {"message": "error"}},
+                    {"match": {"message": "fatal"}},
+                    {"match": {"message": "critical"}},
+                    {"match": {"log.message": "error"}},
+                    {"match": {"log.message": "fatal"}},
+                    {"match": {"log.message": "critical"}}
                 ],
                 "minimum_should_match": 1
             }
@@ -617,8 +702,16 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
         "aggs": {
             "top_errors": {
                 "terms": {
-                    "field": "message.keyword",
+                    "field": "log.message.keyword",
                     "size": 5
+                },
+                "aggs": {
+                    "services": {
+                        "terms": {
+                            "field": "service.name",
+                            "size": 3
+                        }
+                    }
                 }
             }
         }
@@ -628,13 +721,22 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
         result = await container.opensearch.search(settings.opensearch_log_index, query)
         buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
         
-        # If message.keyword is empty, fallback to log.keyword
+        # If log.message.keyword is empty, fallback to message.keyword
         if not buckets:
-            query["aggs"]["top_errors"]["terms"]["field"] = "log.keyword"
+            query["aggs"]["top_errors"]["terms"]["field"] = "message.keyword"
             result = await container.opensearch.search(settings.opensearch_log_index, query)
             buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
 
-        errors = [{"message": b.get("key"), "count": b.get("doc_count")} for b in buckets]
+        errors = []
+        for b in buckets:
+            msg = b.get("key")
+            count = b.get("doc_count")
+            services = []
+            service_buckets = b.get("services", {}).get("buckets", [])
+            for sb in service_buckets:
+                services.append(sb.get("key"))
+            service_str = ", ".join(services) if services else "Unknown"
+            errors.append({"message": msg, "count": count, "service": service_str})
         return errors
     except Exception as exc:
         logger.error(f"Failed to fetch top errors: {exc}")
@@ -682,7 +784,7 @@ async def get_logs_context(system_id: str, timestamp: int, service: str, request
         return []
 
 @router.get("/systems/{system_id}/logs")
-async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, start: int = None, end: int = None):
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, cursor: str = None, start: int = None, end: int = None):
     container = deps(request)
     
     filter_clauses = [{"term": {"system.id": system_id}}]
@@ -720,19 +822,28 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
     
     es_query = {
         "size": limit,
-        "sort": [{"@timestamp": {"order": "desc"}}],
+        "track_total_hits": True,
+        "sort": [{"@timestamp": {"order": "desc"}}, {"_id": {"order": "desc"}}],
         "query": {
             "bool": {
                 "filter": filter_clauses,
             }
         }
     }
+    
+    if cursor:
+        try:
+            es_query["search_after"] = json.loads(cursor)
+        except Exception as e:
+            logger.warning(f"Invalid cursor format: {e}")
+            
     if must_clauses:
         es_query["query"]["bool"]["must"] = must_clauses
         
     try:
         result = await container.opensearch.search(settings.opensearch_log_index, es_query)
         hits = result.get("hits", {}).get("hits", [])
+        total = result.get("hits", {}).get("total", {}).get("value", 0)
         
         logs = []
         for hit in hits:
@@ -752,11 +863,9 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                 
             # Attempt to parse CRI format containing JSON: "timestamp stdout F {...}"
             if isinstance(msg, str):
-                import re
                 match = re.search(r'^[^\s]+\s+(?:stdout|stderr)\s+[FP]\s+(\{.*\})$', msg.strip())
                 if match:
                     try:
-                        import json
                         parsed = json.loads(match.group(1))
                         if "log" in parsed and isinstance(parsed["log"], dict):
                             inner_log = parsed["log"]
@@ -770,16 +879,34 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                     except Exception:
                         pass
                 
+            if lvl == "UNKNOWN" and isinstance(msg, str):
+                prefix = msg[:200].upper()
+                if re.search(r'\b(ERROR|FATAL|CRITICAL|ERR)\b', prefix):
+                    lvl = "ERROR"
+                elif re.search(r'\b(WARN|WARNING)\b', prefix):
+                    lvl = "WARN"
+                elif re.search(r'\b(INFO|NOTICE)\b', prefix):
+                    lvl = "INFO"
+                elif re.search(r'\b(DEBUG|TRACE)\b', prefix):
+                    lvl = "DEBUG"
+                elif re.search(r'HTTP/1\.[01]"\s+[23]\d{2}\b', prefix):
+                    lvl = "INFO"
+                elif re.search(r'HTTP/1\.[01]"\s+[45]\d{2}\b', prefix):
+                    lvl = "ERROR"
+                    
             logs.append({
                 "id": hit.get("_id"),
                 "timestamp": src.get("@timestamp"),
                 "service": src.get("service", {}).get("name") or src.get("container_name") or "unknown",
                 "level": str(lvl),
-                "message": str(msg)
+                "message": str(msg),
+                "sort": hit.get("sort")
             })
             
-        return logs
+        return {
+            "total": total,
+            "logs": logs
+        }
     except Exception as exc:
-        logger.error(f"Failed to fetch raw logs: {exc}")
-        return []
-
+        logger.error(f"Failed to fetch logs: {exc}")
+        return {"total": 0, "logs": []}

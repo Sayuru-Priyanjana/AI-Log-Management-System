@@ -35,7 +35,7 @@ export default function LoginPage({ onLogin }) {
             strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 19h16M7 16V9M12 16V5M17 16v-4" />
           </svg>
-          Log analysis
+          LogIntel
         </div>
 
         <div className="card">

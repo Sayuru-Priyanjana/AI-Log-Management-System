@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { getSystemLogs } from '../api';
 import { useToast } from '../toast';
 
-export default function LogExplorer({ systemId, services = [], start, end }) {
+export default function LogExplorer({ systemId, services = [], timeframe, start: fallbackStart, end: fallbackEnd }) {
   const toast = useToast();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -11,13 +11,45 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
   const [query, setQuery] = useState('');
   const [service, setService] = useState('');
   const [level, setLevel] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [cursorHistory, setCursorHistory] = useState([null]); // index 0 is null (page 1)
+  const limit = 100;
   
-  const fetchLogs = async (showLoading = true) => {
+  const fetchLogs = async (showLoading = true, currentCursor = null) => {
     if (!systemId) return;
     if (showLoading) setLoading(true);
     try {
-      const result = await getSystemLogs(systemId, { query, service, level, limit: 100, start, end });
-      setLogs(result || []);
+      
+      let activeStart = timeframe?.start || fallbackStart;
+      let activeEnd = timeframe?.end || fallbackEnd;
+      
+      if (timeframe?.isRelative) {
+        if (timeframe.relativeType?.type === 'seconds') {
+          activeEnd = Math.floor(Date.now() / 1000);
+          activeStart = activeEnd - timeframe.relativeType.value;
+        } else if (timeframe.relativeType?.type === 'today') {
+          const now = new Date();
+          activeEnd = Math.floor(now.getTime() / 1000);
+          activeStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+        } else if (timeframe.relativeType?.type === 'thisWeek') {
+          const now = new Date();
+          activeEnd = Math.floor(now.getTime() / 1000);
+          const day = now.getDay() || 7;
+          if (day !== 1) now.setHours(-24 * (day - 1));
+          activeStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+        }
+      }
+      
+      if (liveTail) {
+        activeEnd = undefined; // Drop upper bound to never miss logs arriving exactly now
+      }
+
+      const cursorParam = currentCursor ? JSON.stringify(currentCursor) : null;
+      const result = await getSystemLogs(systemId, { query, service, level, limit, cursor: cursorParam, start: activeStart, end: activeEnd });
+      
+      setLogs(result?.logs || []);
+      setTotal(result?.total || 0);
     } catch (err) {
       toast.error('Failed to fetch logs', { detail: err.message });
       setLiveTail(false);
@@ -27,32 +59,28 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
   };
 
   useEffect(() => {
-    fetchLogs(true);
+    setPage(1);
+    setCursorHistory([null]);
+    fetchLogs(true, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [systemId, start, end]);
+  }, [systemId, timeframe?.start, timeframe?.end, fallbackStart, fallbackEnd, query, service, level]);
 
   useEffect(() => {
     let interval;
     if (liveTail) {
       interval = setInterval(() => {
-        fetchLogs(false);
+        fetchLogs(false, null);
       }, 5000);
     }
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveTail, systemId, query, service, level]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchLogs(true);
-    }, 300);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, service, level]);
+  }, [liveTail, systemId, query, service, level, page]);
 
   const handleSearch = (e) => {
     e.preventDefault();
-    fetchLogs(true);
+    setPage(1);
+    setCursorHistory([null]);
+    fetchLogs(true, null);
   };
 
   const getLevelColor = (lvl) => {
@@ -63,8 +91,30 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
     return 'var(--text-3)';
   };
 
+  const handlePrevPage = () => {
+    if (page === 1) return;
+    const newPage = page - 1;
+    setPage(newPage);
+    fetchLogs(true, cursorHistory[newPage - 1]);
+  };
+
+  const handleNextPage = () => {
+    if (logs.length === 0 || page >= Math.ceil(total / limit)) return;
+    const lastLog = logs[logs.length - 1];
+    const nextCursor = lastLog.sort || null;
+    
+    // Ensure we have room in the history array
+    const newHistory = [...cursorHistory];
+    newHistory[page] = nextCursor;
+    setCursorHistory(newHistory);
+    
+    const newPage = page + 1;
+    setPage(newPage);
+    fetchLogs(true, nextCursor);
+  };
+
   return (
-    <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '500px', flexShrink: 0 }}>
+    <div className="card card--fill" style={{ display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0 }}>
       <header style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', flexWrap: 'nowrap', gap: '16px', backgroundColor: 'var(--surface-2)' }}>
         <h3 style={{ margin: 0, color: 'var(--text)' }}>Log Explorer</h3>
         <span className="spacer" />
@@ -82,7 +132,7 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
             <option value="">All Services</option>
             {services.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select className="input input--sm" value={level} onChange={(e) => setLevel(e.target.value)} style={{ width: 'auto', backgroundColor: 'var(--surface)' }}>
+          <select className="input input--sm" value={level} onChange={(e) => { setLevel(e.target.value); setPage(1); setCursorHistory([null]); }} style={{ width: 'auto', backgroundColor: 'var(--surface)' }}>
             <option value="">All Levels</option>
             <option value="error">ERROR</option>
             <option value="warn">WARN</option>
@@ -124,8 +174,8 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
                   <td style={{ padding: '8px 16px', color: 'var(--text-2)', fontSize: '12px', whiteSpace: 'nowrap' }}>
                     {new Date(log.timestamp).toLocaleString()}
                   </td>
-                  <td style={{ padding: '8px 16px', fontWeight: 600, fontSize: '12px', color: getLevelColor(log.level) }}>
-                    {(log.level || 'INFO').toUpperCase()}
+                  <td style={{ padding: '8px 16px', fontWeight: 600, fontSize: '12px', whiteSpace: 'nowrap', color: getLevelColor(log.level) }}>
+                    {log.level || <span style={{ color: 'var(--text-3)' }}>-</span>}
                   </td>
                   <td style={{ padding: '8px 16px', color: 'var(--text)', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {log.service}
@@ -139,6 +189,33 @@ export default function LogExplorer({ systemId, services = [], start, end }) {
           </table>
         )}
       </div>
+
+      {total > limit && (
+        <footer style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'var(--surface)' }}>
+          <div style={{ color: 'var(--text-2)', fontSize: '13px' }}>
+            Showing {((page - 1) * limit) + 1} to {Math.min(page * limit, total)} of {total} logs
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button 
+              className="btn btn--sm" 
+              disabled={page === 1}
+              onClick={handlePrevPage}
+            >
+              Previous
+            </button>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: '13px', color: 'var(--text)' }}>
+              Page {page} of {Math.ceil(total / limit)}
+            </span>
+            <button 
+              className="btn btn--sm" 
+              disabled={page >= Math.ceil(total / limit)}
+              onClick={handleNextPage}
+            >
+              Next
+            </button>
+          </div>
+        </footer>
+      )}
     </div>
   );
 }

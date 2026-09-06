@@ -36,6 +36,13 @@ spec:
           value: "/osd"
         - name: SERVER_REWRITEBASEPATH
           value: "true"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "800m"
         ports:
         - containerPort: 5601
           name: http
@@ -43,49 +50,87 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: logintel-agent
+  name: logintel-ai-agent
 spec:
   ports:
   - port: 8000
     name: http
     targetPort: 8000
   selector:
-    app: logintel-agent
+    app: logintel-ai-agent
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: logintel-agent
+  name: logintel-ai-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: logintel-agent
+      app: logintel-ai-agent
   template:
     metadata:
       labels:
-        app: logintel-agent
+        app: logintel-ai-agent
     spec:
       imagePullSecrets:
       - name: ghcr-secret
       containers:
       - name: agent
-        image: ghcr.io/sayuru-priyanjana/logintel-agent:latest
+        image: ghcr.io/sayuru-priyanjana/logintel-ai-agent:latest
         imagePullPolicy: Always
         env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
         - name: OPENSEARCH_URL
           value: "http://opensearch:9200"
         - name: PROMETHEUS_URL
           value: "http://prometheus:9090"
+        # Gemini, over its OpenAI-compatible surface. The key is a Secret
+        # (logintel-llm) and never appears in this file.
         - name: LLM_PROVIDER
-          value: "ollama"
-        # ⚠️ IMPORTANT: Replace this placeholder with your PC's actual VPN IP address! ⚠️
+          value: "gemini"
+        - name: LLM_MODEL
+          value: "gemini-3.5-flash-lite"
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: logintel-llm
+              key: api-key
+        - name: LLM_TIMEOUT
+          value: "180"
+        - name: LLM_MAX_OUTPUT_TOKENS
+          value: "4096"
+        # A hosted endpoint rate-limits and sheds load; without retries a single
+        # 429 or 503 ends an investigation that had already done all of its
+        # expensive work. Kept low because a retry is itself a request, and the
+        # free tier's budget is requests per minute.
+        - name: LLM_RETRY_ATTEMPTS
+          value: "2"
+        - name: LLM_RETRY_BASE_DELAY
+          value: "2.0"
+        # Each step is one LLM request. At 8 steps plus the planner an
+        # investigation costs 9 requests against a 15/minute budget, which two
+        # concurrent runs would exceed. Six keeps a single run at seven.
+        - name: REACT_MAX_STEPS
+          value: "6"
+        # Retained so switching back is a one-line change; unused while
+        # LLM_PROVIDER is gemini.
         - name: OLLAMA_BASE_URL
-          value: "http://10.125.224.8:11434"
+          value: "http://ollama:11434"
         - name: OLLAMA_MODEL
-          value: "qwen2.5-coder"
+          value: "qwen2.5-coder:3b"
+        - name: OLLAMA_TIMEOUT
+          value: "600"
         - name: LOG_LEVEL
           value: "INFO"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
         ports:
         - containerPort: 8000
           name: http
@@ -124,7 +169,7 @@ spec:
         imagePullPolicy: Always
         env:
         - name: AGENT_URL
-          value: "http://logintel-agent:8000"
+          value: "http://logintel-ai-agent:8000"
         - name: JWT_SECRET
           value: "super-secret-jwt-key"
         - name: PGHOST
@@ -137,6 +182,13 @@ spec:
           value: "postgres"
         - name: PGDATABASE
           value: "logintel"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "700m"
         ports:
         - containerPort: 3000
           name: http
@@ -173,6 +225,13 @@ spec:
       - name: ui
         image: ghcr.io/sayuru-priyanjana/logintel-ui:latest
         imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "500m"
         ports:
         - containerPort: 80
           name: http
@@ -204,3 +263,71 @@ spec:
           value: "http://prometheus:9090"
         - name: POLL_SECONDS
           value: "30"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logintel-langgraph-agent
+spec:
+  ports:
+  - port: 8000
+    name: http
+    targetPort: 8000
+  selector:
+    app: logintel-langgraph-agent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-langgraph-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-langgraph-agent
+  template:
+    metadata:
+      labels:
+        app: logintel-langgraph-agent
+    spec:
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: agent
+        image: ghcr.io/sayuru-priyanjana/ai-agent-langgraph:latest
+        imagePullPolicy: Always
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: OPENSEARCH_URL
+          value: "http://opensearch:9200"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus:9090"
+        - name: LLM_PROVIDER
+          value: "gemini"
+        - name: LLM_MODEL
+          value: "gemini-3.5-flash-lite"
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: logintel-llm
+              key: api-key
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        ports:
+        - containerPort: 8000
+          name: http

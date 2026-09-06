@@ -1,0 +1,23 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+  
+  # Static IP matched with the README architecture
+  config.vm.network "private_network", ip: "192.168.56.21"
+
+  # Forwarded ports for Prometheus and Incident Controller
+  config.vm.network "forwarded_port", guest: 30090, host: 30090, auto_correct: true
+  config.vm.network "forwarded_port", guest: 30099, host: 30099, auto_correct: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = "3072"
+    vb.cpus = 2
+  end
+
+  # Run the standard provisioning scripts in order
+  config.vm.provision "shell", path: "provision/00-base.sh"
+  config.vm.provision "shell", path: "provision/10-k3s.sh"
+  config.vm.provision "shell", path: "provision/20-deploy.sh"
+
+  # Run verify script on every `vagrant up`
+  config.vm.provision "shell", path: "provision/30-verify.sh", run: "always"
+end
