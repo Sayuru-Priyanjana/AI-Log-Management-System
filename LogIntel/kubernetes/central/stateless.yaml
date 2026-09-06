@@ -301,7 +301,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: agent
-        image: ghcr.io/sayuru-priyanjana/logintel-langgraph-agent:latest
+        image: ghcr.io/sayuru-priyanjana/ai-agent-langgraph:latest
         imagePullPolicy: Always
         env:
         - name: REDIS_URL
