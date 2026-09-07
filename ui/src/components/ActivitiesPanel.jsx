@@ -51,7 +51,7 @@ export default function ActivitiesPanel({ systemId, investigations }) {
   };
 
   return (
-    <div className="card card--fill">
+    <div className="card card--fill" style={{ width: '100%' }}>
       <header>
         <h3>Activities</h3>
         <span className="spacer" />
