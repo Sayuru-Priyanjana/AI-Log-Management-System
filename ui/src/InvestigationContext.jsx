@@ -28,6 +28,51 @@ function writeMeta(id, meta) {
   localStorage.setItem(META_KEY, JSON.stringify(all));
 }
 
+/**
+ * The thread, in the shape the agent reads it.
+ *
+ * Three things matter here beyond "put the turns in a list":
+ *
+ *  - it is bounded. Every turn is prepended to a prompt that already carries
+ *    the evidence, and this agent's context window is a real ceiling: Ollama
+ *    truncates past it silently, dropping the *head* of the prompt, so an
+ *    unbounded history does not degrade the answer gradually — it removes the
+ *    schema and the evidence and leaves the model answering from the tail.
+ *    Only the most recent turns are carried, each one trimmed.
+ *  - the assistant turn carries the conclusion, not the prose. Headline plus a
+ *    trimmed detail plus the service that was blamed is what a follow-up like
+ *    "why did that happen?" actually needs; the full narrative would crowd out
+ *    the evidence for the question being asked now.
+ *  - a turn that never produced an answer still says so. Dropping it would let
+ *    "and the one before that?" refer to a turn the model was never told about.
+ */
+function buildChatHistory(turns, { maxTurns = 6, maxAnswerChars = 700 } = {}) {
+  return turns.slice(-maxTurns).flatMap((turn) => {
+    const question = turn.request?.question?.trim();
+    if (!question) return [];
+
+    const answer = turn.answer || turn.result?.answer;
+    let content;
+    if (answer?.headline) {
+      const parts = [answer.headline.trim()];
+      if (answer.root_cause_service) parts.push(`Service identified: ${answer.root_cause_service}.`);
+      if (answer.detail) parts.push(trim(answer.detail.trim(), maxAnswerChars));
+      content = parts.join(' ');
+    } else {
+      content = 'This question did not produce an answer.';
+    }
+    return [
+      { role: 'user', content: question },
+      { role: 'assistant', content },
+    ];
+  });
+}
+
+function trim(text, limit) {
+  return text.length <= limit ? text : `${text.slice(0, limit).trimEnd()}…`;
+}
+
+
 export function InvestigationProvider({ children }) {
   const [request, setRequest] = useState(null);
   const [stages, setStages] = useState({});
@@ -35,6 +80,14 @@ export function InvestigationProvider({ children }) {
   const [answer, setAnswer] = useState(null);
   const [evidenceTimeline, setEvidenceTimeline] = useState(null);
   const [result, setResult] = useState(null);
+  // What the model cost this run: request count, model name, context window.
+  // Streamed as its own stage so it is on screen even when a run is stopped
+  // before it is stored.
+  const [llmUsage, setLlmUsage] = useState(null);
+  // The agent workflow's shape, sent once at the start of a run, plus which
+  // nodes have finished so far. Only the LangGraph backend streams branch
+  // decisions; the deterministic one has no branches to record.
+  const [graph, setGraph] = useState(null);
   const [status, setStatus] = useState('idle'); // idle, connecting, streaming, complete, error
   const [elapsed, setElapsed] = useState(0);
   const [errorDetail, setErrorDetail] = useState(null);
@@ -46,6 +99,22 @@ export function InvestigationProvider({ children }) {
   const startedAt = useRef(0);
   const controllerRef = useRef(null);
   const metaRef = useRef({ kind: 'new' });
+
+  // The thread, held in a ref as well as in state.
+  //
+  // `chatHistory` state is what renders; this is what the next request is built
+  // from, and it has to be readable *synchronously*. The previous version
+  // computed the outgoing history inside a `setChatHistory` updater and read
+  // the local it assigned on the next line — but React does not run an updater
+  // synchronously, so that local was still `[]` every time and no follow-up
+  // ever carried the earlier turns. The model was answering each question in
+  // the thread as if it were the first. StrictMode made it worse: when the
+  // updater did run, it ran twice, appending the same turn twice.
+  const historyRef = useRef([]);
+  // A live mirror of the turn currently on screen, so snapshotting it does not
+  // depend on which render's closure `startInvestigation` was created in.
+  const liveTurnRef = useRef(null);
+
 
   useEffect(() => {
     const tick = setInterval(() => {
@@ -59,36 +128,38 @@ export function InvestigationProvider({ children }) {
     return () => clearInterval(tick);
   }, []);
 
+  useEffect(() => {
+    if (!request) { liveTurnRef.current = null; return; }
+    liveTurnRef.current = {
+      request, result, trace, answer, stages, evidenceTimeline, llmUsage, graph,
+      meta, status,
+      startedAt: startedAt.current,
+      elapsedMs: elapsed,
+    };
+  }, [request, result, trace, answer, stages, evidenceTimeline, llmUsage, graph,
+      meta, status, elapsed]);
+
   const startInvestigation = async (newRequest, investigationMeta = { kind: 'new' }) => {
     if (controllerRef.current) controllerRef.current.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
 
-    // If it's a follow-up on the SAME system and environment, append to chatHistory
-    // Otherwise, clear the chatHistory
-    let updatedHistory = [];
-    setChatHistory(prev => {
-      if (investigationMeta.kind !== 'new' && request) {
-        updatedHistory = [...prev, { request, result, trace, answer, stages, evidenceTimeline }];
-        return updatedHistory;
-      }
-      return [];
-    });
+    // Only an explicit follow-up continues the thread. Testing for "not new"
+    // instead would fold an alert or a scheduled scan into whatever conversation
+    // happened to be on screen — an unrelated incident appended as turn 4, and
+    // its answer handed to the agent as context for the next question.
+    const continuing = investigationMeta.kind === 'followup' && Boolean(liveTurnRef.current);
+    if (continuing) {
+      historyRef.current = [...historyRef.current, liveTurnRef.current];
+    } else {
+      historyRef.current = [];
+    }
+    setChatHistory(historyRef.current);
 
     const payload = {
       ...newRequest,
-      chat_history: updatedHistory.map(turn => ({
-        role: 'user', content: turn.request.question
-      })).concat(updatedHistory.map(turn => ({
-        role: 'assistant', content: turn.answer?.headline || ''
-      }))).sort((a, b) => 0) // simplistic merge - actually let's interleave them correctly
+      chat_history: buildChatHistory(historyRef.current),
     };
-    
-    // Better interleaving
-    payload.chat_history = updatedHistory.flatMap(turn => [
-      { role: 'user', content: turn.request.question },
-      { role: 'assistant', content: turn.answer?.headline + '\n' + (turn.answer?.detail || '') }
-    ]);
 
     setRequest(payload);
     setStages({});
@@ -96,6 +167,8 @@ export function InvestigationProvider({ children }) {
     setAnswer(null);
     setResult(null);
     setEvidenceTimeline(null);
+    setLlmUsage(null);
+    setGraph(null);
     setStatus('connecting');
     setErrorDetail(null);
     setElapsed(0);
@@ -119,12 +192,17 @@ export function InvestigationProvider({ children }) {
 
           if (stage === 'reasoning') {
             setTrace((prev) => [...prev, data]);
+          } else if (stage === 'graph') {
+            setGraph(data);
+          } else if (stage === 'llm') {
+            setLlmUsage(data);
           } else if (stage === 'answer') {
             setAnswer(data);
           } else if (stage === 'evidence_timeline') {
             setEvidenceTimeline(data);
           } else if (stage === 'result') {
             setResult(data);
+            if (data?.llm) setLlmUsage(data.llm);
             // The id only exists now. Record what kind of run this was against
             // it, so reopening it later from history still shows the right title.
             if (data?.id && metaRef.current.kind !== 'new') {
@@ -157,6 +235,8 @@ export function InvestigationProvider({ children }) {
 
   const clearInvestigation = () => {
     stopInvestigation();
+    historyRef.current = [];
+    liveTurnRef.current = null;
     setRequest(null);
     setStatus('idle');
     setChatHistory([]);
@@ -169,8 +249,15 @@ export function InvestigationProvider({ children }) {
   // what carries the reasoning here.
   const loadInvestigation = async (id) => {
     stopInvestigation();
+    // Reopening a stored run starts a fresh thread: only its final answer was
+    // persisted, so there is no earlier turn to carry forward and pretending
+    // otherwise would send the model a history it cannot see the evidence for.
+    historyRef.current = [];
+    liveTurnRef.current = null;
     setStatus('connecting');
     setErrorDetail(null);
+    setLlmUsage(null);
+    setGraph(null);
     try {
       const stored = await getInvestigation(id);
       const savedMeta = readMeta()[id] || { kind: 'new' };
@@ -197,6 +284,14 @@ export function InvestigationProvider({ children }) {
         collapsed_from: stored.evidence_summary?.logs?.total_documents,
       });
       setResult(stored);
+      setLlmUsage(stored.llm || null);
+      // The stored run keeps which nodes ran and why each branch was taken;
+      // the shape itself is fetched by the graph panel, so a reopened run draws
+      // the same picture as a live one.
+      setGraph((stored.graph_path || []).length
+        ? { engine: 'langgraph', path: stored.graph_path,
+            decisions: stored.graph_decisions || [] }
+        : null);
       setElapsed(Object.values(stored.timings_ms || {}).reduce((a, b) => a + b, 0));
       setStatus('complete');
     } catch (err) {
@@ -209,6 +304,7 @@ export function InvestigationProvider({ children }) {
     <InvestigationContext.Provider
       value={{
         request, stages, trace, answer, evidenceTimeline, result,
+        llmUsage, graph,
         status, elapsed, errorDetail, meta, chatHistory,
         startInvestigation, stopInvestigation, clearInvestigation, loadInvestigation,
         setRequest,

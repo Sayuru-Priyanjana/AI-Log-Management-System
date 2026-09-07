@@ -10,7 +10,22 @@ app.use(cors());
 
 // The agent URL is provided via environment or defaults to the internal docker network name
 const AGENT_URL = process.env.AGENT_URL || 'http://agent:8000';
+// Defaults to the Kubernetes service name, because that is the deployment
+// where nothing sets this: the gateway Deployment in `logintel-central`
+// carries AGENT_URL only. Compose uses a shorter service name and sets the
+// variable explicitly, so neither environment relies on the other's default.
 const LANGGRAPH_AGENT_URL = process.env.LANGGRAPH_AGENT_URL || 'http://logintel-langgraph-agent:8000';
+
+// Which backend a request belongs to. The UI sets `x-agent-backend` from the
+// Agent Type dropdown, and this is the ONLY place that header is read: the
+// routes below that bypass the proxy and call the agent with `fetch` were
+// hard-coded to AGENT_URL, so selecting the LangGraph backend sent
+// investigations to one container while the health bar, the system list and
+// every dropdown behind them kept reporting the other. The UI then showed a
+// healthy custom agent beside a LangGraph investigation that was failing.
+function agentUrlFor(req) {
+  return req.headers['x-agent-backend'] === 'langgraph' ? LANGGRAPH_AGENT_URL : AGENT_URL;
+}
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-change-in-prod';
 const PORT = process.env.PORT || 3000;
 
@@ -563,16 +578,32 @@ app.delete('/api/admin/systems/:id', requireAuth, requireAdmin, async (req, res)
 // However, the proxy middleware handles body streaming differently.
 // So we use it below.
 
+// A backend that is not running must say so. Without this, an unreachable
+// agent surfaced as a socket hang-up with no body: the UI reported
+// "Investigation failed" with an empty message, which reads as a bug in the
+// agent rather than as "the container you selected is not deployed".
+function proxyErrorHandler(err, req, res) {
+  const target = agentUrlFor(req);
+  const backend = req.headers['x-agent-backend'] === 'langgraph' ? 'LangGraph' : 'Custom';
+  console.error(`Proxy error -> ${target} (${req.method} ${req.originalUrl}): ${err.message}`);
+  if (res.headersSent || res.writableEnded) {
+    try { res.end(); } catch { /* the client is already gone */ }
+    return;
+  }
+  res.status(502).json({
+    detail: `The ${backend} agent at ${target} is unreachable (${err.code || err.message}). `
+      + `Check that the backend selected in Configuration -> Agent Type is deployed and healthy.`,
+    backend: req.headers['x-agent-backend'] || 'custom',
+    target,
+  });
+}
+
 const agentProxy = createProxyMiddleware({
   target: AGENT_URL,
-  router: function(req) {
-    if (req.headers['x-agent-backend'] === 'langgraph') {
-      return LANGGRAPH_AGENT_URL;
-    }
-    return AGENT_URL;
-  },
+  router: agentUrlFor,
   changeOrigin: true,
   selfHandleResponse: true,
+  onError: proxyErrorHandler,
   onProxyReq: (proxyReq, req, res) => {
     // If it's a POST/PUT, we need to restream the body since express.json() consumed it
     if (req.body && Object.keys(req.body).length > 0 && req.method !== 'GET') {
@@ -629,13 +660,9 @@ const agentProxy = createProxyMiddleware({
 // Since we need streaming to work for POST /api/investigations, we CANNOT use responseInterceptor for it.
 const streamingAgentProxy = createProxyMiddleware({
   target: AGENT_URL,
-  router: function(req) {
-    if (req.headers['x-agent-backend'] === 'langgraph') {
-      return LANGGRAPH_AGENT_URL;
-    }
-    return AGENT_URL;
-  },
+  router: agentUrlFor,
   changeOrigin: true,
+  onError: proxyErrorHandler,
   onProxyReq: (proxyReq, req, res) => {
     if (req.body && Object.keys(req.body).length > 0 && req.method !== 'GET') {
       const bodyData = JSON.stringify(req.body);
@@ -668,7 +695,7 @@ app.get('/api/health', requireAuth, async (req, res) => {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
-    const agentRes = await fetch(`${AGENT_URL}/api/health`, { signal: controller.signal });
+    const agentRes = await fetch(`${agentUrlFor(req)}/api/health`, { signal: controller.signal });
     clearTimeout(timeout);
     if (agentRes.ok) {
       const data = await agentRes.json();
@@ -693,7 +720,7 @@ app.get('/api/systems', requireAuth, async (req, res) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     // Note: We don't forward auth headers to agent, it trusts gateway
-    const agentRes = await fetch(`${AGENT_URL}/api/systems`, { signal: controller.signal });
+    const agentRes = await fetch(`${agentUrlFor(req)}/api/systems`, { signal: controller.signal });
     clearTimeout(timeout);
     if (agentRes.ok) {
       let data = await agentRes.json();

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePreferences } from '../preferences';
 import { useToast } from '../toast';
 import { getSystemIntegrations, notifyIntegrations, getSystemAlerts } from '../api';
+import { alertCard } from '../teams';
 import { useInvestigation } from '../InvestigationContext';
 
 const STATUSES = ['pending', 'investigating', 'handled'];
@@ -18,6 +19,12 @@ export default function AlertsPanel({ system }) {
   const [alerts, setAlerts] = useState([]);
   const [open, setOpen] = useState(null);
   const [scanning, setScanning] = useState(false);
+  // Which alert ids have already been posted, so a detection is announced once
+  // and not re-announced every 15 seconds by the refresh below.
+  const notified = useRef(new Set());
+  // The first load is a snapshot of what already exists, not news. Without this
+  // opening the page posts every standing alert to the channel at once.
+  const seeded = useRef(false);
   const { startInvestigation, setRequest, setMeta, setStatus } = useInvestigation();
 
   const fetchAlerts = async () => {
@@ -37,12 +44,47 @@ export default function AlertsPanel({ system }) {
         }
       }));
       setAlerts(mappedAlerts);
+      announce(mappedAlerts);
     } catch (err) {
       console.error("Failed to fetch alerts", err);
     }
   };
 
-  useEffect(() => { 
+  /**
+   * Posts newly seen detections to the channel.
+   *
+   * `notify_on_alert_enabled` has existed in the settings — and in the settings
+   * UI — with nothing behind it: turning it on did nothing at all. This is the
+   * sender. It is deliberately quiet about its own failures: a webhook that is
+   * misconfigured should not bury the alert list under error toasts every
+   * refresh cycle.
+   */
+  const announce = async (list) => {
+    if (!seeded.current) {
+      seeded.current = true;
+      list.forEach((a) => notified.current.add(a.id));
+      return;
+    }
+    const fresh = list.filter((a) => !notified.current.has(a.id));
+    if (!fresh.length) return;
+    // Marked before sending, so a slow webhook cannot be posted to twice by the
+    // next refresh landing mid-flight.
+    fresh.forEach((a) => notified.current.add(a.id));
+    try {
+      const { values } = await getSystemIntegrations(system.id);
+      if (!values?.notify_on_alert_enabled) return;
+      for (const alert of fresh) {
+        await notifyIntegrations(system.id,
+          alertCard({ alert, systemName: system.name, systemId: system.id, formatStamp }));
+      }
+    } catch (err) {
+      console.warn('Could not post alerts to integrations:', err.message);
+    }
+  };
+
+  useEffect(() => {
+    seeded.current = false;
+    notified.current = new Set();
     fetchAlerts(); 
     
     // Auto-refresh alerts every 15 seconds

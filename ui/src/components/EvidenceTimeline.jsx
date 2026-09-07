@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Collapsible from './Collapsible';
 import { usePreferences } from '../preferences';
 import { useInvestigation } from '../InvestigationContext';
 import { getLogsContext } from '../api';
@@ -23,7 +24,6 @@ export default function EvidenceTimeline({ data }) {
   const { request } = useInvestigation();
   const [onlyNotable, setOnlyNotable] = useState(false);
   const [kinds, setKinds] = useState({ log: true, event: true, metric: true });
-  const [collapsed, setCollapsed] = useState(false);
   const systemId = request?.system_id;
 
   const entries = data?.entries || [];
@@ -39,24 +39,13 @@ export default function EvidenceTimeline({ data }) {
   }, {});
 
   return (
-    <div className="glass-panel li-evtl">
-      <button type="button" className="li-trace-head" onClick={() => setCollapsed(!collapsed)}>
-        <span className="li-trace-title">Evidence timeline</span>
-        <span className="li-muted">
-          {entries.length} distinct entries
-          {data.collapsed_from ? ` folded from ${data.collapsed_from.toLocaleString()} documents` : ''}
-          {notableCount ? ` · ${notableCount} notable` : ''}
-        </span>
-        <span className="li-spacer" />
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          strokeWidth="2.4"
-          style={{ transform: collapsed ? 'none' : 'rotate(180deg)', transition: 'transform .2s' }}>
-          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-
-      {!collapsed && (
-        <>
+    <Collapsible
+      title="Evidence timeline"
+      summary={`${entries.length} distinct entries`
+        + (data.collapsed_from ? ` folded from ${data.collapsed_from.toLocaleString()} documents` : '')
+        + (notableCount ? ` · ${notableCount} notable` : '')}
+    >
+      <>
           <div className="li-evtl-controls">
             <button type="button"
               className={`li-filter ${onlyNotable ? 'li-filter--on' : ''}`}
@@ -85,9 +74,8 @@ export default function EvidenceTimeline({ data }) {
               Nothing matches the current filters.
             </p>
           )}
-        </>
-      )}
-    </div>
+      </>
+    </Collapsible>
   );
 }
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.agents.tool_bindings import ToolBindings
 from app.config import settings
 from app.llm.factory import (
-    describe_endpoint, describe_model, describe_provider,
+    describe_context_window, describe_endpoint, describe_model, describe_provider,
 )
 from datetime import datetime, timezone
 from app.models.domain import TimeWindow
@@ -144,6 +144,76 @@ async def refresh_systems(request: Request) -> dict:
     discovered = await container.registry.refresh()
     return {"refreshed": len(discovered), "systems": sorted(discovered)}
 
+
+
+@router.get("/agent/graph")
+async def agent_graph() -> dict:
+    """The workflow's shape.
+
+    The deterministic backend runs a fixed sequence with no branches, so this is
+    a straight line. It is served anyway, and in the same shape as the LangGraph
+    backend's, so the UI draws whichever backend answered without having to know
+    which one it asked.
+    """
+    return {
+        "engine": "custom",
+        "nodes": [
+            {"id": "plan", "label": "Plan", "kind": "llm", "row": 0, "emits": "plan",
+             "detail": "Classify the question into an intent, a service and a window."},
+            {"id": "windows", "label": "Resolve window", "kind": "deterministic",
+             "row": 1, "emits": "windows",
+             "detail": "Find the onset and a clean baseline to compare against."},
+            {"id": "evidence", "label": "Collect evidence", "kind": "io", "row": 2,
+             "emits": "evidence",
+             "detail": "Logs, Kubernetes events and metrics, gathered concurrently."},
+            {"id": "signals", "label": "Detect signals", "kind": "deterministic",
+             "row": 3, "emits": "signals",
+             "detail": "Measure departures from baseline, before the model runs."},
+            {"id": "candidates", "label": "Rank candidates", "kind": "deterministic",
+             "row": 4, "emits": "candidates",
+             "detail": "Rule-generated explanations, scored."},
+            {"id": "reason", "label": "Reasoning loop", "kind": "llm", "row": 5,
+             "emits": "reasoning",
+             "detail": "ReAct: think, call a tool, read the observation, repeat."},
+            {"id": "verify", "label": "Verify answer", "kind": "guard", "row": 6,
+             "emits": "answer",
+             "detail": "Check every citation against the evidence actually exposed."},
+            {"id": "finish", "label": "Assemble result", "kind": "terminal", "row": 7,
+             "emits": "result", "detail": "Fold the evidence into a timeline and store."},
+        ],
+        "edges": [
+            {"from": "__start__", "to": "plan"},
+            {"from": "plan", "to": "windows"},
+            {"from": "windows", "to": "evidence"},
+            {"from": "evidence", "to": "signals"},
+            {"from": "signals", "to": "candidates"},
+            {"from": "candidates", "to": "reason"},
+            {"from": "reason", "to": "verify"},
+            {"from": "verify", "to": "finish"},
+            {"from": "finish", "to": "__end__"},
+        ],
+    }
+
+
+@router.get("/agent/identity")
+async def agent_identity(request: Request) -> dict:
+    """Which backend answered, and with which model.
+
+    Exists because the backend switch is a request header: when the gateway
+    routes to the wrong container, or to one that is not running, every symptom
+    shows up somewhere else entirely. One call that names the engine settles it.
+    """
+    container = deps(request)
+    llm = getattr(container.pipeline, "llm", None) or container.llm
+    return {
+        "engine": "custom",
+        "llm": {
+            "provider": describe_provider(llm),
+            "model": describe_model(llm),
+            "endpoint": describe_endpoint(llm),
+            "context_window": describe_context_window(llm),
+        },
+    }
 
 
 @router.post("/investigations")

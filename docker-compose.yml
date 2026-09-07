@@ -121,6 +121,54 @@ services:
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # Only needed for a hosted model whose window app/llm/factory.py does not
+      # know; 0 reports the prompt size with the window marked unknown.
+      LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-0}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder}
+      # Load-bearing: Ollama defaults this to 2048 and silently truncates
+      # longer prompts, keeping only the tail.
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
+
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+
+  # The same investigation, run as an explicit LangGraph state machine rather
+  # than a straight-line pipeline. Selected per request by the UI's Agent Type
+  # dropdown, which sets `x-agent-backend: langgraph` and makes the gateway
+  # route here instead. It was missing from this file entirely: the gateway had
+  # always known how to route to it, so switching backends produced an
+  # unreachable-host error the UI reported as a failed investigation.
+  #
+  # Deliberately shares OpenSearch with the custom agent. Both write to
+  # `logintel-investigations`, so a run is readable from history whichever
+  # backend produced it, and `analysis.analyst` records which one did.
+  langgraph-agent:
+    build: ./langgraph-agent
+    image: log-agent-langgraph:latest
+    container_name: log-agent-langgraph
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./langgraph-agent:/app
+    ports:
+      - "${LANGGRAPH_AGENT_PORT:-8001}:8000"
+    environment:
+      OPENSEARCH_URL: http://opensearch:9200
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # Only needed for a hosted model whose window app/llm/factory.py does not
+      # know; 0 reports the prompt size with the window marked unknown.
+      LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-0}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder}
       # Load-bearing: Ollama defaults this to 2048 and silently truncates
@@ -173,6 +221,9 @@ services:
     # Removed exposed port 3000: Nginx now proxies /api to this internal port
     environment:
       AGENT_URL: http://agent:8000
+      # Must match the service name above. The gateway picks between the two per
+      # request, from the `x-agent-backend` header the UI sets.
+      LANGGRAPH_AGENT_URL: http://langgraph-agent:8000   # compose service name above
       JWT_SECRET: super-secret-jwt-key
       PGHOST: postgres
       PGPORT: 5432
@@ -182,6 +233,7 @@ services:
     depends_on:
       - postgres
       - agent
+      - langgraph-agent
 
   # ------------------------------------------------------------------ extras
   # Copies a fixed set of Prometheus series into OpenSearch so Dashboards can

@@ -109,13 +109,21 @@ class OllamaClient(LLMClient):
             model=self.model,
         )
 
-        if prompt_tokens and prompt_tokens >= self.num_ctx - _TRUNCATION_MARGIN:
-            result.truncated = True
-            raise PromptTruncated(
+        result.truncated = bool(
+            prompt_tokens and prompt_tokens >= self.num_ctx - _TRUNCATION_MARGIN)
+
+        if result.truncated:
+            failure = PromptTruncated(
                 f"Ollama evaluated {prompt_tokens} prompt tokens against a context window of "
                 f"{self.num_ctx} — the prompt was truncated and the model did not see all of "
                 f"the evidence. Raise OLLAMA_NUM_CTX, or lower the max_prompt_* evidence budgets."
             )
+            # Carried on the exception so the run's token accounting keeps the
+            # figures from the one call that most needs them: this is the
+            # largest prompt the investigation sent, and it is the reason the
+            # answer was abandoned.
+            failure.llm_response = result
+            raise failure
 
         logger.info("LLM call: %d prompt tokens, %d output tokens, %.0fms",
                     result.prompt_tokens, result.output_tokens, result.duration_ms)

@@ -8,6 +8,16 @@ pytest==8.3.4
 pytest-asyncio==0.25.0
 tzdata==2025.2
 fastapi-cache2[redis]==0.2.2
-langgraph
-langchain-core
-langchain-openai
+
+# The graph runtime. Pinned like everything else here: an unpinned langgraph
+# moved its checkpoint and `add_conditional_edges` surfaces between minor
+# releases, and an image that rebuilds green today and red tomorrow is worse
+# than one that is explicit about what it was tested against.
+langgraph==0.2.62
+langgraph-checkpoint==2.0.9
+
+# langchain-core and langchain-openai were listed but never imported: the model
+# is reached through this project's own LLMClient (app/llm/), which is what
+# gives every provider the same truncation detection, retry policy and
+# telemetry. Pulling a second, parallel model client into the image would mean
+# two ways to call Ollama that behave differently under a long prompt.
