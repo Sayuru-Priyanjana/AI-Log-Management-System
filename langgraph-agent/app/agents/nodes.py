@@ -25,6 +25,7 @@ from app.agents.graph import EventQueue
 from app.llm import telemetry
 from app.models.analysis import Analysis, CauseCategory, InvestigationResult
 from app.models.answer import MODE_BY_INTENT, AnswerMode, DataTable, StructuredAnswer
+from app.models.plan import ChatMessage
 from app.models.domain import TimeWindow, ensure_utc
 from app.pipeline.answer_check import verify_answer
 from app.pipeline.signals import SignalEngine
@@ -64,13 +65,30 @@ class GraphNodes:
 
     # ---------------------------------------------------------------- nodes
     async def plan(self, state: dict) -> dict:
+        """Classify the question, with the conversation in hand.
+
+        The history comes from two places and they are merged rather than
+        chosen between: the graph's own `memory` channel, restored by the
+        checkpointer for this thread, and whatever the caller sent. The graph's
+        copy is authoritative when it has one — it cannot be truncated or
+        forgotten by a browser tab — and the caller's fills the gap when this
+        process has never seen the thread, which is the case after a restart or
+        on a second replica.
+        """
         telemetry.set_stage("plan")
         started = time.perf_counter()
-        plan = await self._p.orchestrator.plan(state["request"], state["system"])
+
+        request = state["request"]
+        remembered = state.get("memory") or []
+        if remembered and len(remembered) >= len(request.chat_history or []):
+            request = request.model_copy(update={"chat_history": remembered})
+
+        plan = await self._p.orchestrator.plan(request, state["system"])
         mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
         await self._emit("plan", {**plan.model_dump(mode="json"),
-                                  "answer_mode": mode.value})
-        return {"investigation_plan": plan, "mode": mode,
+                                  "answer_mode": mode.value,
+                                  "remembered_turns": len(remembered) // 2})
+        return {"investigation_plan": plan, "mode": mode, "request": request,
                 "visited": self._enter(state, "plan"),
                 "timings_ms": self._timed(state, "plan", started)}
 
@@ -252,8 +270,20 @@ class GraphNodes:
         })
 
         visited = self._enter(state, "finish")
+
+        # What the next question in this thread will be told about this one.
+        # Bounded and trimmed for the same reason the client's copy is: every
+        # remembered turn is prepended to a prompt that already carries the
+        # evidence, and this agent's context window is a real ceiling.
+        remembered = [
+            ChatMessage(role="user", content=state["request"].question.strip()[:400]),
+            ChatMessage(role="assistant", content=_summarise(answer)),
+        ]
+
         result = InvestigationResult(
             id=state["investigation_id"],
+            # A question with no thread opens one, named after itself.
+            thread_id=state["request"].thread_id or state["investigation_id"],
             question=state["request"].question,
             plan=state["investigation_plan"],
             windows=windows,
@@ -284,7 +314,7 @@ class GraphNodes:
             graph_path=visited,
             graph_decisions=state.get("decisions") or [],
         )
-        return {"result": result, "visited": visited}
+        return {"result": result, "visited": visited, "memory": remembered}
 
     # ------------------------------------------------------------- routing
     # Routers are pure: LangGraph calls them to pick an edge and discards
@@ -296,6 +326,22 @@ class GraphNodes:
 
     def route_after_reason(self, state: dict) -> str:
         return reason_route(state)[0]
+
+
+def _summarise(answer) -> str:
+    """One turn of the agent's side of the conversation.
+
+    The conclusion, the component it named and a trimmed detail — which is what
+    a follow-up like "why did that happen?" actually needs to resolve. The full
+    narrative would crowd out the evidence for the question being asked now.
+    """
+    parts = [(answer.headline or "").strip()]
+    if answer.root_cause_service:
+        parts.append(f"Service identified: {answer.root_cause_service}.")
+    if answer.detail:
+        detail = answer.detail.strip()
+        parts.append(detail if len(detail) <= 700 else detail[:700].rstrip() + "…")
+    return " ".join(p for p in parts if p) or "This question did not produce an answer."
 
 
 def evidence_route(state: dict) -> tuple[str, str]:

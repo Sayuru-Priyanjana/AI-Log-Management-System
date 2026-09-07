@@ -8,6 +8,15 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
+# `InMemorySaver` is the name in langgraph-checkpoint >= 2.1; the version this
+# image pins (2.0.9) calls the same class `MemorySaver`. Importing the new name
+# only works on a machine that happens to have the newer package — which is how
+# this shipped broken: the local venv had it, the built image did not.
+try:  # pragma: no cover - one branch runs per installed version
+    from langgraph.checkpoint.memory import InMemorySaver
+except ImportError:
+    from langgraph.checkpoint.memory import MemorySaver as InMemorySaver
+
 from app.agents.graph import TOPOLOGY, EventQueue, build_graph
 from app.agents.nodes import GraphNodes
 from app.agents.orchestrator import OrchestratorAgent
@@ -76,6 +85,10 @@ class InvestigationPipeline:
         # TypeError ever since.
         self.metric_tool = metric_tool
         self.hypotheses = HypothesisEngine()
+        # One checkpointer for the process, so a thread's memory is shared
+        # across the investigations that belong to it rather than being rebuilt
+        # (and emptied) with every graph.
+        self._checkpointer = InMemorySaver()
 
     async def run(self, request: InvestigationRequest) -> AsyncIterator[StageEvent]:
         """Executes the graph, forwarding what its nodes emit as it happens.
@@ -100,8 +113,16 @@ class InvestigationPipeline:
 
         queue = EventQueue()
         nodes = GraphNodes(self, queue, metrics_tool)
-        graph = build_graph(nodes)
+        graph = build_graph(nodes, checkpointer=self._checkpointer)
 
+        # Every per-run channel is reset explicitly.
+        #
+        # With a checkpointer, invoking the same thread again starts from the
+        # *saved* channel values, so anything not overwritten here would be
+        # inherited from the previous question: last turn's errors, last turn's
+        # timings, and a `visited` list that grows until the drawn graph claims
+        # every node ran nine times. `memory` is the one channel deliberately
+        # left out, because accumulating is exactly what it is for.
         initial: dict = {
             "investigation_id": investigation_id,
             "request": request,
@@ -110,6 +131,14 @@ class InvestigationPipeline:
             "timings_ms": {},
             "visited": [],
             "decisions": [],
+            "raw_answer": {},
+            "exposed_ids": set(),
+            "table": None,
+            "steps_used": 0,
+            "degraded": None,
+            "answer": None,
+            "result": None,
+            "search_histogram": [],
         }
 
         # The shape first, so the UI can draw the graph before a single node has
@@ -129,7 +158,14 @@ class InvestigationPipeline:
             try:
                 # `recursion_limit` bounds the whole run, not one node: without
                 # it a routing bug becomes an investigation that never returns.
-                final = await graph.ainvoke(initial, {"recursion_limit": 32})
+                # The thread is what the checkpointer keys memory on. A request
+                # without one gets this run's own id, so a single question is a
+                # conversation of one rather than sharing a bucket with every
+                # other thread-less run.
+                final = await graph.ainvoke(initial, {
+                    "recursion_limit": 32,
+                    "configurable": {"thread_id": request.thread_id or investigation_id},
+                })
             except BaseException as exc:            # noqa: BLE001 - reported below
                 failure = exc
             finally:

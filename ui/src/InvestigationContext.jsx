@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useRef, useEffect } from 'react';
-import { getInvestigation, runInvestigation } from './api';
+import { getInvestigation, getInvestigationThread, runInvestigation } from './api';
 
 const InvestigationContext = createContext(null);
 
@@ -111,6 +111,13 @@ export function InvestigationProvider({ children }) {
   // the thread as if it were the first. StrictMode made it worse: when the
   // updater did run, it ran twice, appending the same turn twice.
   const historyRef = useRef([]);
+  // The conversation these turns belong to, server-side.
+  //
+  // Without it every turn was stored as an unrelated document: a seven-question
+  // conversation came back as seven entries in Recent chats, and reopening any
+  // of them replayed that turn alone. The thread only ever existed in the tab
+  // that created it, so it did not survive a reload — let alone the next day.
+  const threadRef = useRef(null);
   // A live mirror of the turn currently on screen, so snapshotting it does not
   // depend on which render's closure `startInvestigation` was created in.
   const liveTurnRef = useRef(null);
@@ -156,8 +163,16 @@ export function InvestigationProvider({ children }) {
     }
     setChatHistory(historyRef.current);
 
+    // A follow-up stays in the thread; anything else opens one. The id is
+    // provisional until the first turn is stored, at which point the backend
+    // echoes back the thread it actually used.
+    if (!continuing || !threadRef.current) {
+      threadRef.current = `thr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
     const payload = {
       ...newRequest,
+      thread_id: threadRef.current,
       chat_history: buildChatHistory(historyRef.current),
     };
 
@@ -203,6 +218,7 @@ export function InvestigationProvider({ children }) {
           } else if (stage === 'result') {
             setResult(data);
             if (data?.llm) setLlmUsage(data.llm);
+            if (data?.thread_id) threadRef.current = data.thread_id;
             // The id only exists now. Record what kind of run this was against
             // it, so reopening it later from history still shows the right title.
             if (data?.id && metaRef.current.kind !== 'new') {
@@ -237,63 +253,105 @@ export function InvestigationProvider({ children }) {
     stopInvestigation();
     historyRef.current = [];
     liveTurnRef.current = null;
+    threadRef.current = null;
     setRequest(null);
     setStatus('idle');
     setChatHistory([]);
     setMeta({ kind: 'new' });
   };
 
-  // Reopens a finished run from storage rather than re-asking the model. The
-  // raw ReAct trace (thoughts, tool calls) is not persisted server-side — only
-  // the final answer is — so `trace` stays empty and the answer panel is
-  // what carries the reasoning here.
-  const loadInvestigation = async (id) => {
+  /**
+   * Turns one stored run into the shape a rendered turn expects.
+   *
+   * The raw ReAct trace is not persisted — only the verified answer is — so
+   * `trace` stays empty and the answer panel carries the reasoning. Everything
+   * else survives, which is why a reopened turn still shows its window, its
+   * signals, its evidence timeline and what the model cost.
+   */
+  const turnFromStored = (stored) => ({
+    request: {
+      system_id: stored.plan?.system_id,
+      environment: stored.plan?.environment,
+      question: stored.question,
+      service_hint: stored.plan?.service,
+    },
+    stages: {
+      plan: stored.plan,
+      windows: stored.windows,
+      signals: { signals: stored.signals || [], count: (stored.signals || []).length },
+      candidates: { candidates: stored.candidates || [] },
+    },
+    trace: [],
+    answer: stored.answer,
+    evidenceTimeline: {
+      window: stored.windows?.incident,
+      baseline: stored.windows?.baseline,
+      entries: stored.evidence_timeline || [],
+      collapsed_from: stored.evidence_summary?.logs?.total_documents,
+    },
+    result: stored,
+    llmUsage: stored.llm || null,
+    graph: (stored.graph_path || []).length
+      ? { engine: 'langgraph', path: stored.graph_path, decisions: stored.graph_decisions || [] }
+      : null,
+    status: 'complete',
+    startedAt: stored.created_at ? new Date(stored.created_at).getTime() : 0,
+    elapsedMs: Object.values(stored.timings_ms || {}).reduce((a, b) => a + b, 0),
+    errorDetail: null,
+    meta: { kind: 'new' },
+  });
+
+  const applyTurn = (turn) => {
+    setRequest(turn.request);
+    setStages(turn.stages);
+    setTrace(turn.trace);
+    setAnswer(turn.answer);
+    setEvidenceTimeline(turn.evidenceTimeline);
+    setResult(turn.result);
+    setLlmUsage(turn.llmUsage);
+    setGraph(turn.graph);
+    setElapsed(turn.elapsedMs);
+    setStatus('complete');
+  };
+
+  /**
+   * Reopens a whole conversation, not just one of its questions.
+   *
+   * Accepts either a single investigation id or the list of turn ids a Recent
+   * chats row carries. Loading one turn of a seven-question thread and calling
+   * it "the chat" is what made yesterday's conversation look like it had lost
+   * everything but its last answer.
+   */
+  const loadInvestigation = async (idOrIds) => {
     stopInvestigation();
-    // Reopening a stored run starts a fresh thread: only its final answer was
-    // persisted, so there is no earlier turn to carry forward and pretending
-    // otherwise would send the model a history it cannot see the evidence for.
+    const ids = Array.isArray(idOrIds) ? idOrIds.filter(Boolean) : [idOrIds];
     historyRef.current = [];
     liveTurnRef.current = null;
+    threadRef.current = null;
     setStatus('connecting');
     setErrorDetail(null);
     setLlmUsage(null);
     setGraph(null);
     try {
-      const stored = await getInvestigation(id);
-      const savedMeta = readMeta()[id] || { kind: 'new' };
-      setMeta(savedMeta);
-      setRequest({
-        system_id: stored.plan?.system_id,
-        environment: stored.plan?.environment,
-        question: stored.question,
-        service_hint: stored.plan?.service,
-      });
-      setStages({
-        plan: stored.plan,
-        windows: stored.windows,
-        signals: { signals: stored.signals || [], count: (stored.signals || []).length },
-        candidates: { candidates: stored.candidates || [] },
-      });
-      setChatHistory([]);
+      const stored = ids.length > 1
+        ? (await getInvestigationThread(ids)).turns || []
+        : [await getInvestigation(ids[0])];
+      if (!stored.length) throw new Error('That conversation could not be found');
+
+      const turns = stored.map(turnFromStored);
+      const last = turns[turns.length - 1];
+
+      // The earlier turns become the thread; the most recent one is what the
+      // page shows as current, exactly as if it had just finished running.
+      historyRef.current = turns.slice(0, -1);
+      liveTurnRef.current = last;
+      threadRef.current = stored[stored.length - 1]?.thread_id || null;
+      setChatHistory(historyRef.current);
+
+      const lastId = stored[stored.length - 1]?.id;
+      setMeta(readMeta()[lastId] || { kind: 'new' });
       setTrace([]);
-      setAnswer(stored.answer);
-      setEvidenceTimeline({
-        window: stored.windows?.incident,
-        baseline: stored.windows?.baseline,
-        entries: stored.evidence_timeline || [],
-        collapsed_from: stored.evidence_summary?.logs?.total_documents,
-      });
-      setResult(stored);
-      setLlmUsage(stored.llm || null);
-      // The stored run keeps which nodes ran and why each branch was taken;
-      // the shape itself is fetched by the graph panel, so a reopened run draws
-      // the same picture as a live one.
-      setGraph((stored.graph_path || []).length
-        ? { engine: 'langgraph', path: stored.graph_path,
-            decisions: stored.graph_decisions || [] }
-        : null);
-      setElapsed(Object.values(stored.timings_ms || {}).reduce((a, b) => a + b, 0));
-      setStatus('complete');
+      applyTurn(last);
     } catch (err) {
       setStatus('error');
       setErrorDetail(err.message || 'Could not load that investigation');

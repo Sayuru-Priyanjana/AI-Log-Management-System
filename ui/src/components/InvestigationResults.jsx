@@ -5,6 +5,8 @@ import AnswerPanel from './AnswerPanel';
 import LlmUsage from './LlmUsage';
 import EvidenceTimeline from './EvidenceTimeline';
 import ReasoningTrace from './ReasoningTrace';
+import RunSummary from './RunSummary';
+import Collapsible from './Collapsible';
 import SignalsPanel from './SignalsPanel';
 
 // The stages that run before the model does. Shown as a compact strip rather
@@ -109,22 +111,13 @@ export default function InvestigationResults({ onFollowUp, turn, showHeader = tr
       )}
 
 
-      <WindowBanner windows={stages.windows} />
+      {/* The run, in one line above the answer. The four panels this replaces —
+          window, workflow, stage strip, token usage — are all still available
+          under "Run details" below; what they are not is a screen of
+          scaffolding between the question and its answer. */}
+      <RunSummary stages={stages} llmUsage={source.llmUsage} graph={source.graph}
+        result={result} />
 
-      {/* The workflow sits above the stage strip: the strip says which stages
-          finished, the graph says which route the run took to get there, and
-          on the LangGraph backend those are not the same thing. */}
-      <AgentGraph turn={turn} />
-
-      <PrepStrip stages={stages} />
-
-      <SignalsPanel signals={stages.signals?.signals}
-        formatClock={formatClock} />
-
-      <LlmUsage turn={turn} />
-
-      {/* The answer sits above the trace once it exists: the conclusion is what
-          most readers want, and the working is there for when they doubt it. */}
       {answer && (
         <div className="glass-panel li-answer-panel">
           {/* The id only exists once the run is stored, so tool buttons appear
@@ -134,9 +127,25 @@ export default function InvestigationResults({ onFollowUp, turn, showHeader = tr
         </div>
       )}
 
+      <Collapsible title="Run details"
+        summary="window analysed, workflow taken, stages, model usage">
+        <div className="li-run-details">
+          <WindowBanner windows={stages.windows} />
+          <AgentGraph turn={turn} />
+          <PrepStrip stages={stages} />
+          <LlmUsage turn={turn} />
+        </div>
+      </Collapsible>
+
       <EvidenceTimeline data={evidenceTimeline} />
 
       <ReasoningTrace steps={trace} live={status === 'streaming' && !answer} />
+
+      {/* Last, because it is the widest of the supporting sections and the one
+          least often opened: the answer already names the signals it rests on,
+          and this is where you go to check the ones it did not. */}
+      <SignalsPanel signals={stages.signals?.signals}
+        formatClock={formatClock} />
 
       {!answer && status === 'streaming' && trace.length === 0 && (
         <div className="glass-panel li-waiting">
@@ -306,7 +315,7 @@ function PrepStrip({ stages }) {
       {stages.signals && (
         <span className="li-muted" style={{ paddingLeft: 8 }}>
           {signals.length
-            ? `${signals.length} signal${signals.length === 1 ? '' : 's'} — see Signal detection below`
+            ? `${signals.length} signal${signals.length === 1 ? '' : 's'} — see the signals section below`
             : 'nothing crossed a threshold'}
         </span>
       )}

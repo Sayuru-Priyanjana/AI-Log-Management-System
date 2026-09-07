@@ -16,18 +16,15 @@
  *    the phrase "root cause" mislabels "no root cause was found" as an incident.
  *  - the card carries the facts a reader needs to act without opening the app:
  *    which system, which service, when, how confident, and what it rests on.
- *  - MessageCard is strict. It silently drops a message containing HTML, and it
- *    renders code fences badly, so every string goes through `plain()`.
+ *  - the card is described, not rendered. Teams has two incompatible webhook
+ *    flavours — the legacy connector takes a MessageCard, the Power Automate
+ *    Workflows webhook that Teams creates today takes an Adaptive Card and
+ *    silently posts nothing when handed a MessageCard — and only the agent
+ *    knows which URL is configured. So this builds a neutral card and
+ *    `app/integrations/teams.py` renders it for whichever is in use.
+ *  - both dialects mangle HTML and code fences, so every string goes through
+ *    `plain()` before it leaves here.
  */
-
-const THEME = {
-  critical: 'D13438',
-  high: 'E81123',
-  medium: 'F7A501',
-  low: '0078D4',
-  none: '107C10',
-  info: '5B5FC7',
-};
 
 const SEVERITY_LABEL = {
   critical: '🔴 Critical', high: '🔴 High', medium: '🟠 Medium',
@@ -58,15 +55,11 @@ function fact(name, value) {
 
 function card({ title, summary, severity = 'info', facts = [], sections = [] }) {
   return {
-    '@type': 'MessageCard',
-    '@context': 'http://schema.org/extensions',
-    summary: plain(summary || title, 120) || 'LogIntel notification',
-    themeColor: THEME[severity] || THEME.info,
     title,
-    sections: [
-      { facts: facts.filter(Boolean), markdown: true },
-      ...sections.filter(Boolean),
-    ],
+    summary: plain(summary || title, 120) || 'LogIntel notification',
+    severity,
+    facts: facts.filter(Boolean),
+    sections: sections.filter(Boolean),
   };
 }
 
@@ -120,21 +113,13 @@ export function investigationCard({ result, systemName, systemId, label, formatS
       fact('Investigation', result?.id),
     ],
     sections: [
-      answer.detail && {
-        activityTitle: '**What happened**',
-        text: plain(answer.detail),
-        markdown: true,
-      },
+      answer.detail && { heading: 'What happened', text: plain(answer.detail) },
       topSignals && {
         activityTitle: `**Measured signals** (${signals.length})`,
         text: topSignals + (signals.length > 4 ? `\n- _…and ${signals.length - 4} more_` : ''),
         markdown: true,
       },
-      steps && {
-        activityTitle: '**Suggested next steps**',
-        text: steps,
-        markdown: true,
-      },
+      steps && { heading: 'Suggested next steps', text: steps },
       (answer.limitations || []).length > 0 && {
         activityTitle: '**What this does not establish**',
         text: answer.limitations.slice(0, 3).map((l) => `- ${plain(l, 200)}`).join('\n'),
@@ -167,15 +152,9 @@ export function alertCard({ alert, systemName, systemId, formatStamp }) {
       fact('State', payload.state),
     ],
     sections: [
-      payload.details && {
-        activityTitle: '**What fired**',
-        text: plain(payload.details, 800),
-        markdown: true,
-      },
-      {
-        text: '_Open LogIntel and use “Investigate with agent” to get a root-cause analysis for this detection._',
-        markdown: true,
-      },
+      payload.details && { heading: 'What fired', text: plain(payload.details, 800) },
+      { text: 'Open LogIntel and use “Investigate with agent” to get a root-cause '
+        + 'analysis for this detection.' },
     ],
   });
 }

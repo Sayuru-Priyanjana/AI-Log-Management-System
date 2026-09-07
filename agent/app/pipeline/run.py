@@ -234,6 +234,8 @@ class InvestigationPipeline:
 
             result = InvestigationResult(
                 id=investigation_id,
+                # A question with no thread opens one, named after itself.
+                thread_id=request.thread_id or investigation_id,
                 question=request.question,
                 plan=plan,
                 windows=windows,

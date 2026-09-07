@@ -29,8 +29,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
+# `InMemorySaver` is the name in langgraph-checkpoint >= 2.1; the version this
+# image pins (2.0.9) calls the same class `MemorySaver`. Importing the new name
+# only works on a machine that happens to have the newer package — which is how
+# this shipped broken: the local venv had it, the built image did not.
+try:  # pragma: no cover - one branch runs per installed version
+    from langgraph.checkpoint.memory import InMemorySaver
+except ImportError:
+    from langgraph.checkpoint.memory import MemorySaver as InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 logger = logging.getLogger(__name__)
@@ -99,6 +107,17 @@ TOPOLOGY: dict[str, Any] = {
 }
 
 
+def _append(existing: list | None, incoming: list | None) -> list:
+    """The reducer behind `memory`: turns accumulate, they do not replace.
+
+    Written out rather than using `operator.add` so a node returning `None`
+    (which every node that does not touch memory does) cannot wipe the thread.
+    """
+    if not incoming:
+        return existing or []
+    return (existing or []) + list(incoming)
+
+
 class GraphState(TypedDict, total=False):
     """Everything a node may read or write.
 
@@ -111,6 +130,14 @@ class GraphState(TypedDict, total=False):
     investigation_id: str
     request: Any
     system: Any
+
+    # The conversation, accumulated by the graph itself.
+    #
+    # Every other channel is overwritten on each turn; this one appends, and the
+    # checkpointer restores it when the same `thread_id` comes back. That is
+    # what makes a follow-up's memory a property of the agent rather than of
+    # whichever browser tab happened to send the history along with it.
+    memory: Annotated[list, _append]
 
     # Named apart from the nodes that produce them. LangGraph refuses a node
     # whose name is also a state key ("'plan' is already being used as a state
@@ -140,7 +167,7 @@ class GraphState(TypedDict, total=False):
     decisions: list
 
 
-def build_graph(nodes: "GraphNodes") -> Any:
+def build_graph(nodes: "GraphNodes", checkpointer: Any = None) -> Any:
     """Compiles `TOPOLOGY` against a set of bound node callables.
 
     `nodes` carries the pipeline's tools and clients; keeping it separate from
@@ -172,13 +199,18 @@ def build_graph(nodes: "GraphNodes") -> Any:
     workflow.add_edge("verify", "finish")
     workflow.add_edge("finish", END)
 
-    # No checkpointer. The previous stub opened a SQLite file from a container
-    # with a read-only filesystem and an unprivileged user, using an import
-    # (`langgraph.checkpoint.sqlite`) that ships in a package the requirements
-    # never listed. An investigation is a single streamed request that is
-    # persisted to OpenSearch when it finishes; there is no interrupt to resume
-    # from, so a checkpointer here would be a write that nothing ever reads.
-    return workflow.compile()
+    # The checkpointer is what gives a conversation memory inside the agent.
+    # Invoking with the same `thread_id` restores the previous turn's channels,
+    # so `memory` accumulates and a follow-up can be answered with the earlier
+    # questions in hand even if the caller sends none.
+    #
+    # In-memory rather than on disk: this container runs unprivileged with
+    # nothing writable, and the durable record of an investigation is the
+    # document written to OpenSearch when it finishes. The consequence is
+    # honest and worth stating — thread memory is per-process, so a restart or a
+    # second replica loses it, and the client's own `chat_history` is merged in
+    # (see `GraphNodes.plan`) precisely so a cold agent is never amnesiac.
+    return workflow.compile(checkpointer=checkpointer or InMemorySaver())
 
 
 class EventQueue:

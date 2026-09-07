@@ -1,5 +1,25 @@
 import { useState } from 'react';
+import '../answer.css';
+import Collapsible from './Collapsible';
 import NextSteps from './NextSteps';
+
+/**
+ * The answer, and the case for it.
+ *
+ * The redesign is built around one order, because it is the order a reader
+ * actually needs: **what the answer is**, then **how it was reached**, then
+ * **what was assumed rather than shown**. Everything else — the citations, the
+ * confidence factors, the limitations — hangs off those three.
+ *
+ * The previous layout put a row of small chips and a percentage above the
+ * headline, set the conclusion at roughly the size of the body text, and ran
+ * reasoning, assumptions and limitations together as three near-identical
+ * lists. Scanning it meant reading it. Here the verdict is typographically
+ * unmissable, the reasoning is a numbered chain, and assumptions are visually
+ * *unlike* reasoning — amber, flagged, and stating what breaks if they are
+ * wrong — because the difference between "this was measured" and "this was
+ * assumed" is the single most important distinction on the page.
+ */
 
 const MODE_LABEL = {
   root_cause: 'Root cause',
@@ -9,20 +29,18 @@ const MODE_LABEL = {
   explanation: 'Explanation',
 };
 
+const KIND_LABEL = {
+  observation: 'measured',
+  inference: 'inferred',
+  elimination: 'ruled out',
+};
+
 function confidenceTone(value) {
-  if (value >= 0.7) return { color: 'var(--success)', word: 'well supported' };
-  if (value >= 0.45) return { color: 'var(--warning)', word: 'partly supported' };
-  return { color: 'var(--error)', word: 'weakly supported' };
+  if (value >= 0.7) return { key: 'strong', word: 'Well supported' };
+  if (value >= 0.45) return { key: 'partial', word: 'Partly supported' };
+  return { key: 'weak', word: 'Weakly supported' };
 }
 
-/**
- * The verified answer.
- *
- * Everything the pipeline checked is shown rather than summarised away: which
- * citations resolved and which did not, what raised and lowered the confidence,
- * and which reasoning steps rest on nothing. A reader who can see the weak parts
- * can decide how far to trust the strong ones.
- */
 export default function AnswerPanel({ answer, investigationId, onInvestigate }) {
   if (!answer) return null;
 
@@ -33,174 +51,258 @@ export default function AnswerPanel({ answer, investigationId, onInvestigate }) 
   );
 
   return (
-    <div className="li-answer animate-fade-in">
-      <div className="li-answer-head">
-        <span className="li-chip li-chip--mode">{MODE_LABEL[answer.mode] || answer.mode}</span>
-        {answer.root_cause_service && (
-          <span className="li-chip li-chip--service">{answer.root_cause_service}</span>
-        )}
-        <span className="li-spacer" />
-        <ConfidenceMeter value={answer.confidence} tone={tone}
-          factors={answer.confidence_factors} />
-      </div>
+    <article className="li-ans animate-fade-in">
+      {/* 1 — the answer itself, at a size that says it is the answer. */}
+      <header className={`li-ans-verdict li-ans-verdict--${tone.key}`}>
+        <div className="li-ans-tags">
+          <span className="li-ans-mode">{MODE_LABEL[answer.mode] || answer.mode}</span>
+          {answer.root_cause_service && (
+            <span className="li-ans-service" title="The component named as the cause">
+              {answer.root_cause_service}
+            </span>
+          )}
+        </div>
 
-      <h2 className="li-answer-headline">{answer.headline}</h2>
-      {answer.detail && <p className="li-answer-detail">{answer.detail}</p>}
+        <h2 className="li-ans-headline">{answer.headline}</h2>
 
-      {answer.warning_analysis && (
-        <Section title="Warning Analysis">
-          <p className="li-answer-detail" style={{ marginTop: 0 }}>{answer.warning_analysis}</p>
-        </Section>
-      )}
+        {answer.detail && <p className="li-ans-detail">{answer.detail}</p>}
+
+        <Confidence value={answer.confidence} tone={tone} factors={answer.confidence_factors} />
+      </header>
 
       {(unresolved.length > 0 || unsupported.length > 0) && (
-        <div className="li-answer-warning">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            strokeWidth="2.2" style={{ flexShrink: 0, marginTop: 2 }}>
-            <path d="M12 9v4M12 17h.01M10.3 3.9L2.7 17a2 2 0 001.7 3h15.2a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"
-              strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <div>
-            {unresolved.length > 0 && (
-              <div>{unresolved.length} citation{unresolved.length > 1 ? 's' : ''} pointed at
-                evidence that does not exist and {unresolved.length > 1 ? 'were' : 'was'} rejected.</div>
-            )}
-            {unsupported.length > 0 && (
-              <div>{unsupported.length} reasoning step{unsupported.length > 1 ? 's' : ''} cite
-                no evidence.</div>
-            )}
-          </div>
-        </div>
+        <Caveat unresolved={unresolved} unsupported={unsupported} />
       )}
 
-      {answer.table && <DataTable table={answer.table} />}
+      {answer.warning_analysis && (
+        <Block title="Warnings in this window">
+          <p className="li-ans-body">{answer.warning_analysis}</p>
+        </Block>
+      )}
 
+      {/* 2 — how it got there. */}
       {answer.reasoning?.length > 0 && (
-        <Section title="How it reached this">
-          <ol className="li-reasoning">
+        <Block title="How it reached this"
+          hint="Each step, and the evidence it rests on">
+          <ol className="li-ans-chain">
             {answer.reasoning.map((step, i) => (
-              <li key={i} className={step.evidence_ids?.length ? '' : 'li-reasoning--bare'}>
-                <div className="li-reasoning-claim">
-                  <span className={`li-kind li-kind--${step.kind || 'inference'}`}>
-                    {step.kind || 'inference'}
-                  </span>
-                  {step.claim}
-                </div>
-                {step.because && (
-                  <div className="li-reasoning-because">because {step.because}</div>
-                )}
-                <EvidenceRow ids={step.evidence_ids} citations={answer.citations} />
-              </li>
+              <ReasoningStep key={i} step={step} index={i + 1} citations={answer.citations} />
             ))}
           </ol>
-        </Section>
+        </Block>
       )}
 
+      {/* 3 — and what it took for granted to get there. */}
       {answer.assumptions?.length > 0 && (
-        <Section title="Assumed, not proven">
-          <ul className="li-assumptions">
+        <Block title="Assumed, not proven" tone="warn"
+          hint="Taken as true without evidence — if one of these is wrong, the answer changes">
+          <ul className="li-ans-assumptions">
             {answer.assumptions.map((a, i) => (
-              <li key={i}>
-                <strong>{a.statement}</strong>
-                {a.basis && <div className="li-muted">Basis: {a.basis}</div>}
+              <li key={i} className="li-ans-assumption">
+                <p className="li-ans-assumption-text">{a.statement}</p>
+                {a.basis && (
+                  <p className="li-ans-assumption-line">
+                    <span className="li-ans-tag">Why it is reasonable</span>{a.basis}
+                  </p>
+                )}
                 {a.impact_if_wrong && (
-                  <div className="li-assumption-risk">If wrong: {a.impact_if_wrong}</div>
+                  <p className="li-ans-assumption-line li-ans-assumption-line--risk">
+                    <span className="li-ans-tag li-ans-tag--risk">If it is wrong</span>
+                    {a.impact_if_wrong}
+                  </p>
                 )}
               </li>
             ))}
           </ul>
-        </Section>
+        </Block>
       )}
 
       {answer.limitations?.length > 0 && (
-        <Section title="What this does not establish">
-          <ul className="li-notelist">
+        <Block title="What this does not establish"
+          hint="Questions this investigation cannot answer">
+          <ul className="li-ans-limits">
             {answer.limitations.map((l, i) => <li key={i}>{l}</li>)}
           </ul>
-        </Section>
+        </Block>
       )}
 
       <NextSteps steps={answer.next_steps} investigationId={investigationId}
         onInvestigate={onInvestigate} />
-    </div>
+
+      {/* Last, and folded away — unless the table *is* the answer.
+          A root-cause run can attach thirty rows of supporting records, and
+          sitting them between the conclusion and the reasoning pushed the
+          working off the screen entirely. For an extraction or an aggregation
+          the rows are what was asked for, so those open. */}
+      {answer.table && (
+        <DataTable table={answer.table}
+          open={answer.mode === 'data_extraction' || answer.mode === 'aggregation'} />
+      )}
+    </article>
   );
 }
 
-function Section({ title, children }) {
+/** A titled block. Not collapsible: these are the case for the answer. */
+function Block({ title, hint, tone, children }) {
   return (
-    <div className="li-section" style={{ marginTop: '1.5rem' }}>
-      <h4>{title}</h4>
+    <section className={`li-ans-block${tone ? ` li-ans-block--${tone}` : ''}`}>
+      <h3 className="li-ans-block-title">
+        {title}
+        {hint && <span className="li-ans-block-hint">{hint}</span>}
+      </h3>
       {children}
-    </div>
+    </section>
   );
 }
 
-function EvidenceRow({ ids, citations }) {
-  if (!ids?.length) {
-    return <div className="li-evidence-row li-evidence-row--empty">no evidence cited</div>;
+/**
+ * One link in the chain, on one line where it fits.
+ *
+ * These were full cards — a circled number, a badge, a 15.5px claim, a separate
+ * "because" paragraph and a row of chips, boxed and spaced. Four steps filled a
+ * screen, which buried the assumptions underneath them. The chain is the
+ * *support* for the answer, not the answer, so it is dense by default: claim and
+ * reason run together on one line, the evidence sits inline at the end, and the
+ * steps are tied together by a rail rather than by four separate boxes.
+ *
+ * A step that cites nothing keeps its full weight — that is the one thing here
+ * worth interrupting a scan for.
+ */
+function ReasoningStep({ step, index, citations }) {
+  const ids = step.evidence_ids || [];
+  const kind = step.kind || 'inference';
+  const bare = kind !== 'observation' && ids.length === 0;
+
+  return (
+    <li className={`li-ans-step${bare ? ' li-ans-step--bare' : ''}`}>
+      <span className={`li-ans-step-dot li-ans-step-dot--${kind}`} aria-hidden="true">
+        {index}
+      </span>
+      <div className="li-ans-step-body">
+        <p className="li-ans-step-line">
+          <span className={`li-ans-kind li-ans-kind--${kind}`}>{KIND_LABEL[kind] || kind}</span>
+          <span className="li-ans-step-claim">{step.claim}</span>
+          {step.because && (
+            <span className="li-ans-step-because"> — {step.because}</span>
+          )}
+          <Evidence ids={ids} citations={citations} bare={bare} />
+        </p>
+      </div>
+    </li>
+  );
+}
+
+function Evidence({ ids, citations, bare }) {
+  if (!ids.length) {
+    // Only the unsupported case is worth words; "directly observed" on a
+    // measurement is a label for something the badge already said.
+    return bare
+      ? <span className="li-ans-evidence-none">no evidence cited</span>
+      : null;
   }
   const byId = Object.fromEntries((citations || []).map((c) => [c.id, c]));
   return (
-    <div className="li-evidence-row">
+    <span className="li-ans-evidence">
       {ids.map((id) => {
         const citation = byId[id];
         const bad = citation?.status === 'unresolved';
         return (
-          <span key={id}
-            className={`li-idchip ${bad ? 'li-idchip--bad' : 'li-idchip--good'}`}
-            title={bad ? (citation?.detail || 'Does not resolve') : (citation?.label || id)}>
-            {bad ? '✕ ' : ''}{id}
+          <span key={id} className={`li-ans-cite${bad ? ' li-ans-cite--bad' : ''}`}
+            title={bad ? (citation?.detail || 'This id does not resolve to any evidence')
+              : (citation?.label || id)}>
+            {bad && <span aria-hidden="true">✕ </span>}{id}
           </span>
         );
       })}
-    </div>
+    </span>
   );
 }
 
-function ConfidenceMeter({ value, tone, factors }) {
+/**
+ * The confidence, as a sentence rather than a bare percentage.
+ *
+ * "78%" answers nothing on its own; "Well supported — 78%" plus the reasons the
+ * figure was raised or lowered is something a reader can weigh.
+ */
+function Confidence({ value, tone, factors }) {
   const [open, setOpen] = useState(false);
   const pct = Math.round((value || 0) * 100);
+  const list = factors || [];
+
   return (
-    <div className="li-confidence-block">
-      <button type="button" className="li-confidence-toggle" onClick={() => setOpen(!open)}
-        title="Why this confidence?">
-        <span className="li-confidence-value" style={{ color: tone.color }}>{pct}%</span>
-        <span className="li-muted">{tone.word}</span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          strokeWidth="2.5"
-          style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>
-          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+    <div className="li-ans-conf">
+      <div className="li-ans-conf-bar" role="img"
+        aria-label={`Confidence ${pct} percent, ${tone.word}`}>
+        <span className={`li-ans-conf-fill li-ans-conf-fill--${tone.key}`}
+          style={{ width: `${pct}%` }} />
+      </div>
+      <button type="button" className="li-ans-conf-line" onClick={() => setOpen(!open)}
+        aria-expanded={open}>
+        <strong className={`li-ans-conf-word li-ans-conf-word--${tone.key}`}>{tone.word}</strong>
+        <span className="li-ans-conf-pct">{pct}% confidence</span>
+        <span className="li-ans-conf-more">{open ? 'Hide why' : 'Why?'}</span>
       </button>
       {open && (
-        <div className="li-confidence-factors">
-          {(factors || []).length === 0 && (
-            <div className="li-muted">Nothing adjusted the model's own estimate.</div>
+        <ul className="li-ans-factors">
+          {list.length === 0 && (
+            <li className="li-ans-factor">Nothing adjusted the model's own estimate.</li>
           )}
-          {(factors || []).map((f, i) => (
-            <div key={i} className={`li-factor li-factor--${f.direction}`}>
-              <span>{f.direction === 'raises' ? '▲' : '▼'}</span>
-              <span>{f.factor}</span>
-            </div>
+          {list.map((f, i) => (
+            <li key={i} className={`li-ans-factor li-ans-factor--${f.direction}`}>
+              <span className="li-ans-factor-dir" aria-hidden="true">
+                {f.direction === 'raises' ? '▲' : '▼'}
+              </span>
+              {f.factor}
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );
 }
 
-function DataTable({ table }) {
-  if (!table?.rows?.length) return null;
+/** Citations that pointed at nothing, and steps that cited nothing at all. */
+function Caveat({ unresolved, unsupported }) {
   return (
-    <div className="li-section" style={{ marginTop: '1.5rem' }}>
-      <div className="li-section-head">
-        <h4>{table.query_description || 'Results'}</h4>
-        <span className="li-muted">
-          {table.total_matched} matched{table.truncated ? ' (showing the first rows)' : ''}
-        </span>
+    <div className="li-ans-caveat">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="2.2" aria-hidden="true">
+        <path d="M12 9v4M12 17h.01M10.3 3.9L2.7 17a2 2 0 001.7 3h15.2a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"
+          strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <div>
+        <strong>Read this answer with care.</strong>
+        <ul>
+          {unresolved.length > 0 && (
+            <li>
+              {unresolved.length} citation{unresolved.length > 1 ? 's' : ''} pointed at evidence
+              that does not exist and {unresolved.length > 1 ? 'were' : 'was'} rejected.
+            </li>
+          )}
+          {unsupported.length > 0 && (
+            <li>
+              {unsupported.length} reasoning step{unsupported.length > 1 ? 's' : ''}{' '}
+              {unsupported.length > 1 ? 'cite' : 'cites'} no evidence at all.
+            </li>
+          )}
+        </ul>
       </div>
-      <div className="li-table-wrap">
-        <table className="li-table">
+    </div>
+  );
+}
+
+function DataTable({ table, open }) {
+  if (!table?.rows?.length) return null;
+  const shown = table.rows.length;
+  return (
+    <Collapsible
+      title={table.query_description || 'Records found'}
+      summary={`${table.total_matched} matched`
+        + (table.truncated ? ` · showing the first ${shown}` : '')}
+      defaultOpen={Boolean(open)}
+    >
+      <div className="li-ans-table-wrap">
+        <table className="li-ans-table">
           <thead>
             <tr>{table.columns.map((c) => <th key={c}>{c}</th>)}</tr>
           </thead>
@@ -211,6 +313,6 @@ function DataTable({ table }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </Collapsible>
   );
 }

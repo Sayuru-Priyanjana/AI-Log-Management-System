@@ -18,6 +18,37 @@ import { Resizer, useResizableWidth } from './ResizablePane';
  * or an alert's "Investigate with agent" (a run started immediately, seeded
  * with that alert's payload).
  */
+/**
+ * Conversations bucketed into Today / Yesterday / the day they happened.
+ *
+ * A flat list of forty rows makes "the conversation I had yesterday" a
+ * scrolling exercise — and yesterday is exactly how people refer to a past
+ * investigation. The list is already newest-first, so a single pass keeps that
+ * order within each day.
+ */
+function groupByDay(chats, formatDay) {
+  const today = new Date().toDateString();
+  const yesterday = new Date(Date.now() - 86400000).toDateString();
+  const groups = [];
+  const seen = new Map();
+
+  for (const chat of chats) {
+    const when = chat.created_at ? new Date(chat.created_at) : null;
+    const day = when ? when.toDateString() : 'unknown';
+    const label = day === today ? 'Today'
+      : day === yesterday ? 'Yesterday'
+        : (when ? formatDay(chat.created_at) : 'Earlier');
+    let group = seen.get(label);
+    if (!group) {
+      group = { label, items: [] };
+      seen.set(label, group);
+      groups.push(group);
+    }
+    group.items.push(chat);
+  }
+  return groups;
+}
+
 export default function AgentPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -35,6 +66,11 @@ export default function AgentPage() {
   const [chats, setChats] = useState([]);
   const [loadingChats, setLoadingChats] = useState(true);
   const autoStarted = useRef(false);
+  const [openThread, setOpenThread] = useState(null);
+  // The ask form is shown when there is no conversation on screen — the way a
+  // chat app shows its empty state and then gets out of the way. "New chat"
+  // clears the conversation, which brings it back.
+  const composing = !request;
   const notifiedRef = useRef(null);
 
   useEffect(() => {
@@ -115,11 +151,12 @@ export default function AgentPage() {
     }
   }, [status, result, meta, systemId]);
 
-  const sendResultToIntegrations = async () => {
-    if (!result) return;
+  const sendResultToIntegrations = async (which) => {
+    const target = which || result;
+    if (!target) return;
     try {
       const response = await notifyIntegrations(systemId, investigationCard({
-        result,
+        result: target,
         systemName: selected?.name,
         systemId,
         label: meta?.label,
@@ -143,20 +180,31 @@ export default function AgentPage() {
     return selected ? `Investigate ${selected.name}` : 'Investigate';
   }, [meta, request, selected, systemId]);
 
-  const startNew = (payload) => startInvestigation(payload, { kind: 'new' });
-
-  const openChat = (id) => {
-    if (request?.id === id) return;
-    loadInvestigation(id);
+  const startNew = (payload) => {
+    // A new question is not part of whichever conversation is open.
+    setOpenThread(null);
+    return startInvestigation(payload, { kind: 'new' });
   };
 
-  const removeChat = async (event, id) => {
+  // A row is a conversation. Opening it replays every turn it holds, so a
+  // seven-question thread comes back as seven turns rather than its last one.
+  const openChat = (chat) => {
+    const ids = chat.ids?.length ? chat.ids : [chat.id];
+    if (openThread === chat.id) return;
+    setOpenThread(chat.id);
+    loadInvestigation(ids);
+  };
+
+  const removeChat = async (event, chat) => {
     event.stopPropagation();
+    const ids = chat.ids?.length ? chat.ids : [chat.id];
     try {
-      await deleteInvestigation(id);
-      setChats((c) => c.filter((i) => i.id !== id));
-      if (result?.id === id) clearInvestigation();
-      toast.success('Deleted');
+      // Deleting a conversation deletes its turns; leaving the others behind
+      // would resurrect the thread as loose fragments on the next refresh.
+      await Promise.all(ids.map((id) => deleteInvestigation(id)));
+      setChats((c) => c.filter((i) => i.id !== chat.id));
+      if (openThread === chat.id) { setOpenThread(null); clearInvestigation(); }
+      toast.success(ids.length > 1 ? `Deleted ${ids.length} questions` : 'Deleted');
     } catch (err) {
       toast.error('Could not delete', { detail: err.message });
     }
@@ -171,11 +219,6 @@ export default function AgentPage() {
         {meta?.kind === 'alert' && nav.serviceLabel && (
           <span className="chip">{nav.serviceLabel}</span>
         )}
-        {status === 'complete' && result && (
-          <button type="button" className="btn btn--sm" onClick={sendResultToIntegrations}>
-            Send result to integrations
-          </button>
-        )}
         {chats.length > 0 && (
           <button type="button" className="btn btn--sm" onClick={() => clearInvestigation()}>
             New chat
@@ -184,24 +227,54 @@ export default function AgentPage() {
       </div>
 
       <div className="agent-body"
-        style={{ gridTemplateColumns:
-          `${chatsPane.width}px 6px minmax(0, 1fr) 6px ${entryPane.width}px` }}>
+        style={{ gridTemplateColumns: composing
+          ? `${chatsPane.width}px 6px minmax(0, 1fr) 6px ${entryPane.width}px`
+          : `${chatsPane.width}px 6px minmax(0, 1fr)` }}>
         <aside className="agent-chats">
-          <div className="ws-side-head"><h4>Recent chats</h4></div>
+          <header className="agent-chats-head">
+            <h4>Conversations</h4>
+            <button type="button" className="agent-chats-new" onClick={() => {
+              setOpenThread(null);
+              clearInvestigation();
+            }} title="Start a new conversation">+ New chat</button>
+          </header>
           <div className="agent-chats-list">
             {loadingChats && <div className="empty">Loading…</div>}
-            {!loadingChats && chats.length === 0 && <div className="empty">No investigations yet.</div>}
-            {chats.map((chat) => (
-              <button key={chat.id} type="button"
-                className={`agent-chat-item ${request?.id === chat.id ? 'is-active' : ''}`}
-                onClick={() => openChat(chat.id)}>
-                <div className="agent-chat-label">{chat.question || 'Investigation'}</div>
-                <div className="agent-chat-meta">
-                  {formatDay(chat.created_at)} {formatClock(chat.created_at)}
-                </div>
-                <span className="agent-chat-delete" role="button" tabIndex={-1}
-                  onClick={(e) => removeChat(e, chat.id)} title="Delete">×</span>
-              </button>
+            {!loadingChats && chats.length === 0 && (
+              <div className="empty">No conversations yet.<br />Ask a question to start one.</div>
+            )}
+            {/* Grouped by day. A flat list of forty rows makes "the one I had
+                yesterday" a scrolling exercise, and yesterday is exactly how
+                people refer to a past investigation. */}
+            {groupByDay(chats, formatDay).map(({ label, items }) => (
+              <div key={label} className="agent-chats-group">
+                <div className="agent-chats-day">{label}</div>
+                {items.map((chat) => (
+                  <button key={chat.id} type="button"
+                    className={`agent-chat-item ${openThread === chat.id ? 'is-active' : ''}`}
+                    onClick={() => openChat(chat)}>
+                    <div className="agent-chat-top">
+                      <span className={`agent-chat-dot agent-chat-dot--${
+                        chat.analysis?.incident_detected ? (chat.analysis.severity || 'high') : 'none'}`}
+                        aria-hidden="true" />
+                      <span className="agent-chat-label">{chat.question || 'Investigation'}</span>
+                    </div>
+                    <div className="agent-chat-meta">
+                      <span>{formatClock(chat.created_at)}</span>
+                      {/* What tells a conversation apart from a one-off. */}
+                      {chat.turn_count > 1 && (
+                        <span className="agent-chat-turns">{chat.turn_count} questions</span>
+                      )}
+                      {chat.service && <span className="agent-chat-svc">{chat.service}</span>}
+                    </div>
+                    <span className="agent-chat-delete" role="button" tabIndex={-1}
+                      onClick={(e) => removeChat(e, chat)}
+                      title={chat.turn_count > 1
+                        ? `Delete this conversation (${chat.turn_count} questions)`
+                        : 'Delete'}>×</span>
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         </aside>
@@ -219,32 +292,40 @@ export default function AgentPage() {
               onAsk={(question) => startInvestigation(
                 { ...request, question, _at: Date.now() }, { kind: 'followup' })}
               onFollowUp={(question) => startInvestigation(
-                { ...request, question, _at: Date.now() }, { kind: 'followup' })} />
+                { ...request, question, _at: Date.now() }, { kind: 'followup' })}
+              onSend={sendResultToIntegrations} />
           )}
         </section>
 
-        <Resizer handle={entryPane} edge="right" label="Resize the investigation panel" />
-
-        <aside className="agent-entry">
-          <h3 style={{ marginBottom: 10 }}>Investigation</h3>
-          {!selected ? (
-            <div className="empty">No system selected.</div>
-          ) : (
-            <>
-              {systems.length > 1 && (
-                <div className="field" style={{ marginBottom: 10 }}>
-                  <label htmlFor="agent-system">System</label>
-                  <select id="agent-system" className="input" value={systemId}
-                    onChange={(e) => { setSystemId(e.target.value); localStorage.setItem('lastSystemId', e.target.value); }}>
-                    {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-              )}
-              <InvestigationForm onSubmit={startNew} lockedSystem={selected}
-                initial={status === 'idle' ? nav : undefined} submitLabel="Ask AI" />
-            </>
-          )}
-        </aside>
+        {composing && (
+          <>
+            <Resizer handle={entryPane} edge="right" label="Resize the investigation panel" />
+            <aside className="agent-entry">
+              <header className="agent-entry-head">
+                <h3>New investigation</h3>
+              </header>
+              <div className="agent-entry-body">
+                {!selected ? (
+                  <div className="empty">No system selected.</div>
+                ) : (
+                  <>
+                    {systems.length > 1 && (
+                      <div className="field" style={{ marginBottom: 12 }}>
+                        <label htmlFor="agent-system">System</label>
+                        <select id="agent-system" className="input" value={systemId}
+                          onChange={(e) => { setSystemId(e.target.value); localStorage.setItem('lastSystemId', e.target.value); }}>
+                          {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    <InvestigationForm onSubmit={startNew} lockedSystem={selected}
+                      initial={status === 'idle' ? nav : undefined} submitLabel="Ask AI" />
+                  </>
+                )}
+              </div>
+            </aside>
+          </>
+        )}
       </div>
     </div>
   );

@@ -118,6 +118,13 @@ class InvestigationWindows(BaseModel):
 
 class InvestigationResult(BaseModel):
     id: str
+    # The conversation this run is a turn of.
+    #
+    # Every turn used to be stored as an unrelated document, so a seven-question
+    # conversation came back as seven separate entries in Recent chats and
+    # reopening any of them showed that turn alone — the thread existed only in
+    # the browser tab that created it and was gone on the next page load.
+    thread_id: str = ""
     created_at: datetime = Field(default_factory=utcnow)
     question: str
     plan: InvestigationPlan

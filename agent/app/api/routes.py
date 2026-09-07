@@ -247,6 +247,19 @@ async def recent_investigations(request: Request, limit: int = 20,
     return {"investigations": await container.store.recent(limit=limit, system_id=system_id)}
 
 
+@router.get("/investigations/thread")
+async def investigation_thread(request: Request, ids: str = "") -> dict:
+    """Every turn of one conversation, oldest first.
+
+    Declared above `/investigations/{investigation_id}` on purpose: FastAPI
+    matches in definition order, and the other way round "thread" is read as an
+    investigation id and this never runs.
+    """
+    container = deps(request)
+    wanted = [part for part in (ids or "").split(",") if part.strip()]
+    return {"turns": await container.store.by_ids(wanted)}
+
+
 @router.get("/investigations/{investigation_id}")
 async def get_investigation(investigation_id: str, request: Request) -> dict:
     container = deps(request)

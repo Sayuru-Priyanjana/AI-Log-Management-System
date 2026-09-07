@@ -1,0 +1,236 @@
+/* =============================================================== the answer
+   Built around one order, because it is the order a reader needs: what the
+   answer is, how it was reached, and what was assumed rather than shown.
+
+   The previous layout led with a row of small chips and a bare percentage, set
+   the conclusion at roughly body size, and ran reasoning, assumptions and
+   limitations together as three near-identical lists — so the page had to be
+   read rather than scanned. Type here is deliberately larger than the rest of
+   the app: this is the thing the whole investigation exists to produce. */
+.li-ans { display: flex; flex-direction: column; gap: 18px; }
+
+/* --- 1. the verdict ------------------------------------------------------ */
+.li-ans-verdict {
+  padding: 16px 18px 14px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-left: 5px solid var(--border-strong);
+}
+.li-ans-verdict--strong { border-left-color: var(--ok); }
+.li-ans-verdict--partial { border-left-color: var(--warn); }
+.li-ans-verdict--weak { border-left-color: var(--err); }
+
+.li-ans-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.li-ans-mode, .li-ans-service {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  padding: 3px 9px; border-radius: 999px;
+}
+.li-ans-mode {
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-border);
+}
+.li-ans-service {
+  background: var(--surface-3); color: var(--text); font-family: var(--mono);
+  text-transform: none; letter-spacing: 0;
+}
+
+/* The conclusion. Still the largest thing on the page, and still the first
+   thing read — but sized to sit inside a chat reply rather than to announce
+   itself: 24px made a two-line headline into a banner that pushed the rest of
+   the answer under the fold. */
+.li-ans-headline {
+  margin: 0; font-size: 17px; line-height: 1.36; font-weight: 700;
+  letter-spacing: -.01em; color: var(--text);
+}
+.li-ans-detail {
+  /* Full card width. A 74ch measure is the right call for a page of prose, but
+     this paragraph sits in a card whose width the reader already chose by
+     dragging the panes — capping it left a ragged column with dead space beside
+     it and made a four-line summary five. */
+  margin: 9px 0 0; font-size: 14px; line-height: 1.6; color: var(--text-2);
+}
+
+/* --- confidence ---------------------------------------------------------- */
+.li-ans-conf { margin-top: 14px; }
+.li-ans-conf-bar {
+  height: 7px; border-radius: 999px; background: var(--surface-3); overflow: hidden;
+}
+.li-ans-conf-fill { display: block; height: 100%; border-radius: 999px; transition: width .3s; }
+.li-ans-conf-fill--strong { background: var(--ok); }
+.li-ans-conf-fill--partial { background: var(--warn); }
+.li-ans-conf-fill--weak { background: var(--err); }
+.li-ans-conf-line {
+  display: flex; align-items: baseline; gap: 10px; width: 100%; margin-top: 7px;
+  background: none; border: 0; padding: 0; cursor: pointer; color: inherit;
+  text-align: left; font: inherit;
+}
+.li-ans-conf-word { font-size: 14px; font-weight: 700; }
+.li-ans-conf-word--strong { color: var(--ok); }
+.li-ans-conf-word--partial { color: var(--warn); }
+.li-ans-conf-word--weak { color: var(--err); }
+.li-ans-conf-pct { font-size: 12.5px; color: var(--text-3); }
+.li-ans-conf-more { margin-left: auto; font-size: 12px; font-weight: 650; color: var(--accent); }
+.li-ans-factors {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.li-ans-factor { font-size: 12.5px; color: var(--text-2); display: flex; gap: 7px; }
+.li-ans-factor--raises .li-ans-factor-dir { color: var(--ok); }
+.li-ans-factor--lowers .li-ans-factor-dir { color: var(--err); }
+
+/* --- caveat -------------------------------------------------------------- */
+.li-ans-caveat {
+  display: flex; gap: 11px; padding: 13px 15px; border-radius: 10px;
+  background: var(--err-soft); border: 1px solid var(--err-border); color: var(--err);
+  font-size: 13px; line-height: 1.55;
+}
+.li-ans-caveat svg { flex-shrink: 0; margin-top: 1px; }
+.li-ans-caveat ul { margin: 5px 0 0; padding-left: 18px; }
+
+/* --- 2 and 3. the case for it -------------------------------------------- */
+.li-ans-block { display: flex; flex-direction: column; gap: 10px; }
+.li-ans-block-title {
+  margin: 0; font-size: 13px; font-weight: 700; letter-spacing: -.005em; color: var(--text);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 9px;
+  padding-bottom: 7px; border-bottom: 1px solid var(--border);
+}
+.li-ans-block-hint { font-size: 11.5px; font-weight: 450; color: var(--text-3); }
+.li-ans-body { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text-2); }
+
+/* The chain, dense.
+   These were full cards — circled number, badge, 15.5px claim, separate
+   "because" paragraph, row of chips — and four of them filled a screen, which
+   pushed the assumptions below the fold. The chain supports the answer rather
+   than being it, so claim, reason and evidence run together on one line and a
+   rail ties the steps into a sequence instead of four boxes. */
+.li-ans-chain {
+  list-style: none; margin: 0; padding: 0 0 0 4px;
+  display: flex; flex-direction: column;
+}
+.li-ans-step { position: relative; display: flex; gap: 11px; padding: 7px 0 7px 0; }
+/* The rail: one line down the numbers, broken after the last step. */
+.li-ans-step::before {
+  content: ''; position: absolute; left: 9px; top: 26px; bottom: -7px;
+  width: 1.5px; background: var(--border);
+}
+.li-ans-step:last-child::before { display: none; }
+
+.li-ans-step-dot {
+  position: relative; z-index: 1; flex-shrink: 0;
+  width: 19px; height: 19px; margin-top: 2px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  background: var(--surface); color: var(--text-3);
+  border: 1.5px solid var(--border-strong);
+}
+.li-ans-step-dot--observation { border-color: var(--ok); color: var(--ok); }
+.li-ans-step-dot--inference { border-color: var(--accent); color: var(--accent); }
+
+.li-ans-step-body { min-width: 0; flex: 1; }
+/* Claim, reason and evidence are one paragraph, so a short step is one line. */
+.li-ans-step-line { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+.li-ans-step-claim { font-weight: 650; color: var(--text); }
+.li-ans-step-because { color: var(--text-3); }
+
+/* An unsupported step is the one thing here worth interrupting a scan for. */
+.li-ans-step--bare { background: var(--warn-soft); border-radius: 7px;
+  padding: 7px 10px; margin: 2px 0; }
+.li-ans-step--bare::before { display: none; }
+.li-ans-step--bare .li-ans-step-dot { border-color: var(--warn); color: var(--warn); }
+
+/* measured / inferred / ruled out — the distinction the reader is here for. */
+.li-ans-kind {
+  display: inline-block; margin-right: 7px; padding: 1px 6px; border-radius: 4px;
+  font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px;
+  vertical-align: 2px;
+}
+.li-ans-kind--observation { background: var(--ok-soft); color: var(--ok); }
+.li-ans-kind--inference { background: var(--accent-soft); color: var(--accent); }
+.li-ans-kind--elimination { background: var(--surface-3); color: var(--text-2); }
+
+.li-ans-tag {
+  display: inline-block; margin-right: 7px; font-size: 10.5px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .6px; color: var(--text-3);
+}
+.li-ans-tag--risk { color: var(--err); }
+
+.li-ans-evidence { display: inline; margin-left: 6px; }
+.li-ans-cite {
+  display: inline-block; font-family: var(--mono); font-size: 10.5px;
+  padding: 0 6px; margin: 0 3px 2px 0; border-radius: 4px;
+  background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok-border);
+  overflow-wrap: anywhere; vertical-align: 1px;
+}
+.li-ans-cite--bad {
+  background: var(--err-soft); color: var(--err); border-color: var(--err-border);
+  text-decoration: line-through;
+}
+.li-ans-evidence-none {
+  margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--warn);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+
+/* Assumptions look nothing like reasoning, on purpose: the difference between
+   "this was measured" and "this was assumed" is the most important distinction
+   on the page. */
+.li-ans-block--warn .li-ans-block-title { border-bottom-color: var(--warn); }
+.li-ans-assumptions {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.li-ans-assumption {
+  padding: 12px 14px; border-radius: 9px;
+  background: var(--warn-soft); border: 1px solid var(--warn-border);
+  border-left: 4px solid var(--warn);
+}
+.li-ans-assumption-text {
+  margin: 0; font-size: 14px; line-height: 1.5; font-weight: 650; color: var(--text);
+}
+.li-ans-assumption-line {
+  margin: 7px 0 0; font-size: 13px; line-height: 1.55; color: var(--text-2);
+}
+.li-ans-assumption-line--risk { color: var(--text); }
+
+.li-ans-limits {
+  margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px;
+}
+.li-ans-limits li { font-size: 13.5px; line-height: 1.55; color: var(--text-2); }
+
+/* --- table ---------------------------------------------------------------
+   Every cell used to be `nowrap`, so a "what was measured" column ran off the
+   right edge and its sentence was simply unreadable — the reader had to
+   horizontally scroll a table to find out what a signal meant. Cells wrap now,
+   the body scrolls vertically past about a dozen rows instead of taking the
+   page, and the header stays put while it does. */
+.li-ans-table-wrap {
+  overflow: auto; max-height: 420px;
+  border: 1px solid var(--border); border-radius: 9px;
+}
+.li-ans-table {
+  /* Wide enough that seven columns are not crushed into a word-per-line.
+     `overflow-wrap: anywhere` everywhere broke short tokens mid-word —
+     "NEW_ERR / OR_PATTE / RN" — so the table is given room and the wrapper
+     scrolls sideways when the pane is narrower than that. */
+  width: 100%; min-width: 780px; border-collapse: collapse; font-size: 12.5px;
+}
+.li-ans-table th, .li-ans-table td {
+  padding: 7px 10px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  white-space: normal;
+}
+/* Sentences wrap at spaces; only the id column, which has none, may break
+   inside a token. */
+.li-ans-table td:not(:first-child) { overflow-wrap: normal; word-break: normal; }
+.li-ans-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface-2); font-weight: 700; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .4px; color: var(--text-3);
+  white-space: nowrap;
+}
+.li-ans-table tr:last-child td { border-bottom: 0; }
+/* The evidence id: monospaced, and allowed to break rather than stretch the
+   column to the width of the longest one. */
+.li-ans-table td:first-child {
+  font-family: var(--mono); font-size: 11px; color: var(--text-3);
+  overflow-wrap: anywhere; min-width: 170px; max-width: 250px;
+}
+/* The measured-value column carries whole sentences and gets the slack. */
+.li-ans-table td:last-child { min-width: 260px; }

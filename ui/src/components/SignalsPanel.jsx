@@ -19,7 +19,8 @@ export default function SignalsPanel({ signals, formatClock }) {
 
   if (!list.length) {
     return (
-      <Collapsible title="Signal detection" summary="nothing crossed a threshold">
+      <Collapsible title="Signals detected across all services"
+        summary="nothing crossed a threshold">
         <p className="li-empty">
           No measurement departed from its baseline by enough to be reported. That is a
           result, not a failure to look — the same thresholds that would have fired did
@@ -40,47 +41,46 @@ export default function SignalsPanel({ signals, formatClock }) {
     .map(([sev, n]) => `${n} ${sev}`).join(' · ');
 
   return (
-    <Collapsible title="Signal detection"
+    <Collapsible title="Signals detected across all services"
       summary={`${list.length} signal${list.length === 1 ? '' : 's'} · ${summary}`}
       right={<SeverityDots counts={bySeverity} />}>
       <ul className="li-signals">
         {sorted.map((signal) => (
           <li key={signal.id} className={`li-signal li-signal--${signal.severity}`}>
-            <div className="li-signal-top">
+            {/* Two lines. Twenty-nine of these were four-row cards — chips,
+                then a description, then a magnitude, then an id — which is a
+                page and a half of scrolling to answer "what fired?". What it
+                is and where now share a line with what it means; the numbers
+                and the id share the next. */}
+            <p className="li-signal-line" title={signal.description}>
               <span className={`li-chip li-chip--${signal.severity}`}>{signal.type}</span>
               {signal.service && (
                 <span className="li-chip li-chip--service">{signal.service}</span>
               )}
-              <span className="li-spacer" />
-              {signal.onset && formatClock && (
-                <span className="li-muted li-signal-onset">began {formatClock(signal.onset)}</span>
-              )}
-            </div>
-
-            <p className="li-signal-desc">{signal.description}</p>
-
-            {/* The comparison, not just the value. "180 errors/min" means
-                nothing without the baseline it is being judged against. */}
-            {signal.magnitude && (
-              <div className="li-signal-mag">
-                <span className="li-signal-mag-val">
-                  {fmt(signal.magnitude.incident)} {signal.magnitude.unit}
-                </span>
-                {signal.magnitude.baseline !== undefined && signal.magnitude.baseline !== null && (
-                  <>
-                    <span className="li-muted"> vs </span>
+              <span className="li-signal-desc">{signal.description}</span>
+            </p>
+            <p className="li-signal-meta">
+              {signal.magnitude && (
+                <>
+                  <span className="li-signal-mag-val">
+                    {fmt(signal.magnitude.incident)} {signal.magnitude.unit}
+                  </span>
+                  {signal.magnitude.baseline !== undefined
+                    && signal.magnitude.baseline !== null && (
                     <span className="li-signal-mag-base">
-                      {fmt(signal.magnitude.baseline)} {signal.magnitude.unit} at baseline
+                      {' vs '}{fmt(signal.magnitude.baseline)} at baseline
                     </span>
-                  </>
-                )}
-                {ratio(signal.magnitude) && (
-                  <span className="li-signal-ratio">{ratio(signal.magnitude)}</span>
-                )}
-              </div>
-            )}
-
-            <code className="li-signal-id">{signal.id}</code>
+                  )}
+                  {ratio(signal.magnitude) && (
+                    <span className="li-signal-ratio">{ratio(signal.magnitude)}</span>
+                  )}
+                </>
+              )}
+              {signal.onset && formatClock && (
+                <span className="li-signal-onset">began {formatClock(signal.onset)}</span>
+              )}
+              <code className="li-signal-id">{signal.id}</code>
+            </p>
           </li>
         ))}
       </ul>

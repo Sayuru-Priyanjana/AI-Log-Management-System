@@ -106,7 +106,8 @@ function Row({ entry, short, systemId }) {
 
   return (
     <li className={`li-evtl-row li-evtl-row--${entry.kind}`
-      + (entry.notable ? ' li-evtl-row--notable' : '')}>
+      + (entry.notable ? ' li-evtl-row--notable' : '')
+      + (open ? ' li-evtl-row--open' : '')}>
       <time className="li-evtl-time">{short(entry.first_seen)}</time>
 
       <span className={`li-evtl-badge li-evtl-badge--${level || entry.kind}`}>
@@ -114,7 +115,11 @@ function Row({ entry, short, systemId }) {
       </span>
 
       <div className="li-evtl-body">
+        {/* Service, title and count on one line. They were a title row and a
+            meta row, so thirty-seven entries were seventy-four lines before a
+            single one was expanded. */}
         <div className="li-evtl-title">
+          {entry.service && <span className="li-evtl-service">{entry.service}</span>}
           {entry.title}
           {entry.occurrences > 1 && (
             <span className="li-evtl-count" title={spanLabel(entry, short)}>
@@ -124,7 +129,6 @@ function Row({ entry, short, systemId }) {
         </div>
 
         <div className="li-evtl-meta">
-          {entry.service && <span className="li-evtl-service">{entry.service}</span>}
           {entry.occurrences > 1 && entry.last_seen && (
             <span>{short(entry.first_seen)} → {short(entry.last_seen)}</span>
           )}

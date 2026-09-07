@@ -66,6 +66,11 @@ class InvestigationRequest(BaseModel):
     service_hint: str | None = None
     chat_history: list[ChatMessage] = Field(default_factory=list)
 
+    # Which conversation this question belongs to. Absent means "start a new
+    # one", and the run's own id becomes the thread id — a single question is a
+    # conversation of one, which keeps every stored run addressable the same way.
+    thread_id: str | None = None
+
 
 class InvestigationPlan(BaseModel):
     intent: Intent

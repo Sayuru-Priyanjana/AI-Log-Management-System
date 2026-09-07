@@ -101,6 +101,9 @@ export const getRecentInvestigations = (limit = 20, systemId) => {
   return getJSON(`/api/investigations?${params}`);
 };
 export const getInvestigation = (id) => getJSON(`/api/investigations/${id}`);
+// Every turn of one conversation, in one request rather than one per turn.
+export const getInvestigationThread = (ids) =>
+  getJSON(`/api/investigations/thread?ids=${encodeURIComponent((ids || []).join(','))}`);
 export const deleteInvestigation = (id) =>
   deleteJSON(`/api/investigations/${id}`);
 

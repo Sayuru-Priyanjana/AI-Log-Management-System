@@ -19,15 +19,15 @@ import InvestigationResults from './InvestigationResults';
  * conclusion, because a thread of four complete investigations is a lot of page
  * and the conclusion is what you scan for; one click restores the detail.
  */
-export default function ConversationThread({ onFollowUp, onAsk }) {
+export default function ConversationThread({ onFollowUp, onAsk, onSend }) {
   return (
     <div className="li-conversation">
-      <Thread onFollowUp={onFollowUp} onAsk={onAsk} />
+      <Thread onFollowUp={onFollowUp} onAsk={onAsk} onSend={onSend} />
     </div>
   );
 }
 
-function Thread({ onFollowUp, onAsk }) {
+function Thread({ onFollowUp, onAsk, onSend }) {
   const { chatHistory, request, status, result, answer } = useInvestigation();
   const turns = chatHistory || [];
   const liveIndex = turns.length;
@@ -53,12 +53,12 @@ function Thread({ onFollowUp, onAsk }) {
       <div className="li-thread">
         {turns.map((turn, i) => (
           <TurnCard key={i} index={i} total={liveIndex + 1} turn={turn}
-            onFollowUp={onFollowUp} />
+            onFollowUp={onFollowUp} onSend={onSend} />
         ))}
 
         <div ref={liveRef}>
           <TurnCard index={liveIndex} total={liveIndex + 1} live
-            onFollowUp={onFollowUp} />
+            onFollowUp={onFollowUp} onSend={onSend} />
         </div>
       </div>
 
@@ -69,7 +69,19 @@ function Thread({ onFollowUp, onAsk }) {
   );
 }
 
-function TurnCard({ index, total, turn, live, onFollowUp }) {
+/**
+ * One exchange, laid out as a chat.
+ *
+ * The turn used to be a document section: a numbered heading, the question set
+ * as a title, and the analysis beneath it. That reads as a report, not as a
+ * conversation, and a thread of them gives no sense of who said what.
+ *
+ * Here the question is a message from the person and the analysis is a reply
+ * from the agent, each with a speaker. It is the same information — the turn
+ * number, the time, how long it took, whether it is still running — but placed
+ * where a chat puts it, so the thread scans as an exchange.
+ */
+function TurnCard({ index, total, turn, live, onFollowUp, onSend }) {
   const { formatClock } = usePreferences();
   const liveCtx = useInvestigation();
   const source = live ? liveCtx : turn;
@@ -82,70 +94,98 @@ function TurnCard({ index, total, turn, live, onFollowUp }) {
   const status = live ? liveCtx.status : (answer ? 'complete' : 'error');
   const failed = status === 'error';
   const seconds = ((live ? liveCtx.elapsed : source.elapsedMs) || 0) / 1000;
+  const asked = source.startedAt
+    ? formatClock(new Date(source.startedAt).toISOString()) : null;
+  const working = live && (status === 'streaming' || status === 'connecting');
 
   return (
     <section className={`li-turn${live ? ' li-turn--live' : ''}`}>
-      <header className="li-turn-head">
-        <span className="li-turn-index" aria-hidden="true">{index + 1}</span>
-        <div className="li-turn-question">
-          <div className="li-turn-q-label">
-            {index === 0 ? 'Asked' : 'Follow-up'} · {index + 1} of {total}
-            {source.startedAt ? ` · ${formatClock(new Date(source.startedAt).toISOString())}` : ''}
-            {seconds > 0 ? ` · ${seconds.toFixed(1)}s` : ''}
+      {/* the question, from the person asking */}
+      <div className="li-msg li-msg--user">
+        <span className="li-msg-avatar li-msg-avatar--user" aria-hidden="true">You</span>
+        <div className="li-msg-body">
+          <div className="li-msg-meta">
+            <span className="li-msg-who">You</span>
+            {asked && <span>{asked}</span>}
+            <span>·</span>
+            <span>{index === 0 ? 'first question' : `follow-up ${index}`} of {total}</span>
           </div>
-          <p className="li-turn-q-text">{question}</p>
+          <p className="li-msg-bubble">{question}</p>
         </div>
-        <span className="li-spacer" />
-        <StatusChip status={status} live={live} />
-        {live && (status === 'streaming' || status === 'connecting') && (
-          <button type="button" className="li-turn-toggle li-turn-stop"
-            onClick={liveCtx.stopInvestigation}>
-            Stop
-          </button>
-        )}
-        {!live && (
-          <button type="button" className="li-turn-toggle" onClick={() => setOpen(!open)}
-            aria-expanded={open}>
-            {open ? 'Collapse' : 'Show analysis'}
-          </button>
-        )}
-      </header>
+      </div>
 
-      {/* Collapsed, an earlier turn still shows its conclusion — that is what
-          makes a thread scannable. What it hides is the working. */}
-      {!live && !open && (
-        <div className={`li-turn-summary${failed ? ' li-turn-summary--failed' : ''}`}>
-          <p className="li-turn-headline">
-            {answer?.headline
-              || source.errorDetail
-              || 'This question did not produce an answer.'}
-          </p>
-          <div className="li-turn-facts">
-            {answer?.root_cause_service && (
-              <span className="li-chip li-chip--service">{answer.root_cause_service}</span>
+      {/* and the agent's reply */}
+      <div className="li-msg li-msg--agent">
+        <span className={`li-msg-avatar li-msg-avatar--agent${working ? ' is-working' : ''}`}
+          aria-hidden="true">AI</span>
+        <div className="li-msg-body">
+          <div className="li-msg-meta">
+            <span className="li-msg-who">LogIntel agent</span>
+            {seconds > 0 && <span>answered in {seconds.toFixed(1)}s</span>}
+            <StatusChip status={status} live={live} />
+            <span className="li-spacer" />
+            {working && (
+              <button type="button" className="li-turn-toggle li-turn-stop"
+                onClick={liveCtx.stopInvestigation}>
+                Stop
+              </button>
             )}
-            {typeof answer?.confidence === 'number' && (
-              <span className="li-muted">confidence {(answer.confidence * 100).toFixed(0)}%</span>
+            {onSend && source.result && answer && (
+              <button type="button" className="li-turn-toggle li-turn-send"
+                onClick={() => onSend(source.result)}
+                title="Post this answer to the configured Teams channel">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                </svg>
+                Send
+              </button>
             )}
-            {source.llmUsage?.requests > 0 && (
-              <span className="li-muted">{source.llmUsage.requests} LLM request
-                {source.llmUsage.requests === 1 ? '' : 's'}</span>
-            )}
-            {source.trace?.length > 0 && (
-              <span className="li-muted">
-                {source.trace.filter((t) => t.type === 'action').length} tool call(s)
-              </span>
+            {!live && (
+              <button type="button" className="li-turn-toggle" onClick={() => setOpen(!open)}
+                aria-expanded={open}>
+                {open ? 'Collapse' : 'Show analysis'}
+              </button>
             )}
           </div>
-        </div>
-      )}
 
-      {(live || open) && (
-        <div className="li-turn-body">
-          <InvestigationResults turn={live ? undefined : turn} onFollowUp={onFollowUp}
-            showHeader={false} />
+          {/* Collapsed, an earlier reply still shows its conclusion — that is
+              what makes a thread scannable. What it hides is the working. */}
+          {!live && !open && (
+            <div className={`li-turn-summary${failed ? ' li-turn-summary--failed' : ''}`}>
+              <p className="li-turn-headline">
+                {answer?.headline
+                  || source.errorDetail
+                  || 'This question did not produce an answer.'}
+              </p>
+              <div className="li-turn-facts">
+                {answer?.root_cause_service && (
+                  <span className="li-chip li-chip--service">{answer.root_cause_service}</span>
+                )}
+                {typeof answer?.confidence === 'number' && (
+                  <span className="li-muted">confidence {(answer.confidence * 100).toFixed(0)}%</span>
+                )}
+                {source.llmUsage?.requests > 0 && (
+                  <span className="li-muted">{source.llmUsage.requests} LLM request
+                    {source.llmUsage.requests === 1 ? '' : 's'}</span>
+                )}
+                {source.trace?.length > 0 && (
+                  <span className="li-muted">
+                    {source.trace.filter((t) => t.type === 'action').length} tool call(s)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {(live || open) && (
+            <div className="li-turn-body">
+              <InvestigationResults turn={live ? undefined : turn} onFollowUp={onFollowUp}
+                showHeader={false} />
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </section>
   );
 }
@@ -206,25 +246,45 @@ function FollowUpComposer({ onAsk, busy, carries }) {
 
   return (
     <form className="li-followup" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-      <label className="li-followup-label" htmlFor="li-followup-input">
-        Ask a follow-up
-        {carries > 0 && (
-          <span className="li-muted">
-            {' '}· the agent is given the previous {carries} answer{carries === 1 ? '' : 's'} as context
-          </span>
-        )}
-      </label>
-      <div className="li-followup-row">
-        <textarea id="li-followup-input" className="input li-followup-box" rows={1}
+      <div className="li-followup-box-wrap">
+        <textarea id="li-followup-input" className="li-followup-box" rows={1}
           ref={(el) => { boxRef.current = el; grow(el); }}
           value={text} disabled={busy} onKeyDown={onKeyDown}
           placeholder={busy
             ? 'Waiting for the current answer…'
-            : 'e.g. why did that service start failing? (Enter to send, Shift+Enter for a new line)'}
+            : 'Ask a follow-up about this investigation…'}
           onChange={(e) => { setText(e.target.value); grow(e.target); }} />
-        <button type="submit" className="btn btn--primary" disabled={busy || !text.trim()}>
-          Ask
+        <button type="submit" className="li-followup-send"
+          disabled={busy || !text.trim()} aria-label="Send">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
         </button>
+      </div>
+      <div className="li-followup-foot">
+        {carries > 0 && (
+          <span className="li-followup-memory" title={
+            'Each follow-up is sent with the questions and answers above, and the '
+            + 'agent keeps its own copy of the thread, so it can resolve "that '
+            + 'service" or "why did that happen". The run summary reports how many '
+            + 'turns it recalled.'}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2.4" aria-hidden="true">
+              <path d="M21 12a9 9 0 11-6.2-8.6" strokeLinecap="round" />
+              <path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {/* "the previous 1 answer" reads as though an earlier turn is
+                being recalled, when on the first question the one answer it
+                means is the one on screen. Say what the next question will
+                actually carry. */}
+            {carries === 1
+              ? 'Your next question includes the answer above'
+              : `Your next question includes all ${carries} answers above`}
+          </span>
+        )}
+        <span className="li-spacer" />
+        <span className="li-followup-kbd">Enter to send · Shift+Enter for a new line</span>
       </div>
     </form>
   );
