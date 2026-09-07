@@ -236,8 +236,12 @@ async def run_tool(investigation_id: str, payload: RunToolRequest,
         signals = SignalEngine(known_services=[]).detect(plan, windows, evidence)
         candidates = pipeline.hypotheses.generate(plan, windows, signals, evidence)
 
-        bindings = ToolBindings(plan, windows, evidence, signals, candidates)
-        result = bindings.execute(payload.tool, payload.tool_input)
+        # The log tool is passed so a replayed next step can use the live query
+        # tools too — a suggestion like "look at what payment-db logged at 14:29"
+        # is only actionable if the button behind it can actually go and look.
+        bindings = ToolBindings(plan, windows, evidence, signals, candidates,
+                                log_tool=pipeline.logs)
+        result = await bindings.execute(payload.tool, payload.tool_input)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

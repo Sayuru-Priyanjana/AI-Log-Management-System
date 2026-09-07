@@ -22,7 +22,7 @@ export default function AgentPage() {
   const toast = useToast();
   const { formatClock, formatDay } = usePreferences();
   const {
-    request, result, status, meta, startInvestigation, loadInvestigation, clearInvestigation,
+    request, result, status, meta, chatHistory, startInvestigation, loadInvestigation, clearInvestigation,
   } = useInvestigation();
 
   const nav = location.state || {};
@@ -127,13 +127,36 @@ export default function AgentPage() {
 
       if (text.length > 2000) text = text.substring(0, 2000) + "\n\n... (truncated for Teams)";
       
+      const isIncident = rawText.toLowerCase().includes("incident detected") || rawText.toLowerCase().includes("root cause");
+      const statusColor = isIncident ? "E81123" : "107C10";
+      const statusText = isIncident ? "🔴 Incident Detected" : "🟢 No Anomalies";
+
       const payload = {
         "@type": "MessageCard",
         "@context": "http://schema.org/extensions",
-        "themeColor": "1F6FEB",
+        "themeColor": statusColor,
         "summary": "Agent Investigation Result",
         "title": `Agent Result: ${meta?.label || 'Investigation'}`,
-        "text": text,
+        "sections": [
+          {
+            "facts": [
+              {
+                "name": "Status:",
+                "value": statusText
+              },
+              {
+                "name": "Target:",
+                "value": selected?.name || systemId || 'Unknown'
+              }
+            ],
+            "markdown": true
+          },
+          {
+            "activityTitle": "**Executive Summary**",
+            "text": text,
+            "markdown": true
+          }
+        ]
       };
       const response = await notifyIntegrations(systemId, payload);
       if (response && response.ok === false) {
@@ -221,9 +244,24 @@ export default function AgentPage() {
               Fill in the investigation panel and click Ask AI.
             </div>
           ) : (
-            <InvestigationResults
-              onFollowUp={(question) => startInvestigation({ ...request, question, _at: Date.now() },
-                { kind: 'new' })} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {chatHistory && chatHistory.map((pastChat, idx) => (
+                <div key={idx} style={{ padding: '16px', background: 'var(--bg-card)', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <details>
+                    <summary style={{ fontWeight: 'bold', cursor: 'pointer' }}>
+                      Previous Turn: {pastChat.request?.question || 'Investigation'}
+                    </summary>
+                    <div style={{ marginTop: '10px' }}>
+                      <p><strong>Answer:</strong> {pastChat.answer?.headline || (pastChat.result?.answer?.headline)}</p>
+                      <p>{pastChat.answer?.detail || (pastChat.result?.answer?.detail)}</p>
+                    </div>
+                  </details>
+                </div>
+              ))}
+              <InvestigationResults
+                onFollowUp={(question) => startInvestigation({ ...request, question, _at: Date.now() },
+                  { kind: 'followup' })} />
+            </div>
           )}
         </section>
 

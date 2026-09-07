@@ -21,7 +21,7 @@ prometheus:
   image: "prom/prometheus:v2.53.0"
   resources:
     limits:
-      memory: 256Mi
+      memory: 400Mi
     requests:
       cpu: 10m
       memory: 64Mi
