@@ -10,6 +10,10 @@ from pydantic import BaseModel
 
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.react import ReActAgent
+from app.llm import telemetry
+from app.llm.factory import (
+    describe_context_window, describe_endpoint, describe_model, describe_provider,
+)
 from app.models.analysis import Analysis, CauseCategory, InvestigationResult, InvestigationWindows
 from app.models.answer import MODE_BY_INTENT, AnswerMode, DataTable, StructuredAnswer
 from app.models.domain import TimeWindow, ensure_utc
@@ -50,11 +54,16 @@ class InvestigationPipeline:
                  registry: SystemRegistry,
                  system_settings: SystemSettingsStore | None = None,
                  metric_tool: MetricTool | None = None,
-                 prometheus_client=None) -> None:
+                 prometheus_client=None, llm=None) -> None:
         self.logs = log_tool
         self.events = event_tool
         self.orchestrator = orchestrator
         self.react_agent = react_agent
+        # Held for telemetry only — the stages reach the model through the
+        # orchestrator and the loop, not through this. Defaults to the
+        # orchestrator's client so a caller that does not pass it still reports
+        # the right model name rather than "unknown".
+        self.llm = llm if llm is not None else getattr(orchestrator, "_llm", None)
         self.registry = registry
         self.system_settings = system_settings
         self.prometheus_client = prometheus_client
@@ -71,6 +80,17 @@ class InvestigationPipeline:
         timings: dict[str, float] = {}
         errors: list[str] = []
 
+        # Bound for the whole run so every provider round trip made underneath —
+        # the planner's, and one per reasoning step — is counted against this
+        # investigation and nothing else.
+        meter = telemetry.LLMMeter(
+            provider=describe_provider(self.llm),
+            model=describe_model(self.llm),
+            endpoint=describe_endpoint(self.llm),
+            context_window=describe_context_window(self.llm),
+        )
+        meter_token = telemetry.bind(meter)
+
         def mark(stage: str, started: float) -> None:
             timings[stage] = round((time.perf_counter() - started) * 1000, 1)
 
@@ -83,6 +103,7 @@ class InvestigationPipeline:
 
         try:
             # -- 1. plan -------------------------------------------------------
+            telemetry.set_stage("plan")
             started = time.perf_counter()
             plan = await self.orchestrator.plan(request, system)
             mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
@@ -125,6 +146,7 @@ class InvestigationPipeline:
             })
 
             # -- 6. reasoning loop ---------------------------------------------
+            telemetry.set_stage("reasoning")
             started = time.perf_counter()
             raw_answer: dict = {}
             exposed_ids: set[str] = set()
@@ -241,10 +263,14 @@ class InvestigationPipeline:
                 evidence_summary=self._evidence_summary(evidence),
                 timings_ms=timings,
                 errors=errors,
+                llm=meter.snapshot(),
             )
+            # Streamed separately as well as stored, so the figures are on
+            # screen even when a run is stopped before it is persisted.
+            yield StageEvent(stage="llm", data=meter.snapshot())
             yield StageEvent(stage="result", data=result.model_dump(mode="json"))
         finally:
-            pass
+            telemetry.unbind(meter_token)
 
     async def run_collect(self, request: InvestigationRequest) -> InvestigationResult:
         final: dict | None = None

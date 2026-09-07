@@ -139,3 +139,14 @@ class InvestigationResult(BaseModel):
     evidence_summary: dict = Field(default_factory=dict)
     timings_ms: dict[str, float] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+
+    # What the model cost: how many round trips, against which model, and how
+    # close the largest prompt came to the context window. Stored with the run
+    # because it is not recoverable afterwards — the same answer can come from
+    # one call or from eight, and only one of those is worth trusting.
+    llm: dict = Field(default_factory=dict)
+
+    # Which graph nodes actually executed, and why each branch went the way it
+    # did. Empty on the deterministic backend, which has no branches to record.
+    graph_path: list[str] = Field(default_factory=list)
+    graph_decisions: list[dict] = Field(default_factory=list)

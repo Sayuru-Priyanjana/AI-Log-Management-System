@@ -88,6 +88,11 @@ async function deleteJSON(path) {
 }
 
 export const getHealth = () => getJSON('/api/health');
+// The workflow's shape and which backend is answering. Both are served by
+// whichever agent the `x-agent-backend` header selects, so they also settle
+// "did the switch actually take effect?" without reading container logs.
+export const getAgentGraph = () => getJSON('/api/agent/graph');
+export const getAgentIdentity = () => getJSON('/api/agent/identity');
 export const getSystems = () => getJSON('/api/systems');
 export const getConfig = () => getJSON('/api/config');
 export const getRecentInvestigations = (limit = 20, systemId) => {

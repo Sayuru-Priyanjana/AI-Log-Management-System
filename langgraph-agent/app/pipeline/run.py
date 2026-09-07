@@ -8,8 +8,14 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
+from app.agents.graph import TOPOLOGY, EventQueue, build_graph
+from app.agents.nodes import GraphNodes
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.react import ReActAgent
+from app.llm import telemetry
+from app.llm.factory import (
+    describe_context_window, describe_endpoint, describe_model, describe_provider,
+)
 from app.models.analysis import Analysis, CauseCategory, InvestigationResult, InvestigationWindows
 from app.models.answer import MODE_BY_INTENT, AnswerMode, DataTable, StructuredAnswer
 from app.models.domain import TimeWindow, ensure_utc
@@ -50,11 +56,16 @@ class InvestigationPipeline:
                  registry: SystemRegistry,
                  system_settings: SystemSettingsStore | None = None,
                  metric_tool: MetricTool | None = None,
-                 prometheus_client=None) -> None:
+                 prometheus_client=None, llm=None) -> None:
         self.logs = log_tool
         self.events = event_tool
         self.orchestrator = orchestrator
         self.react_agent = react_agent
+        # Held for telemetry only — the stages reach the model through the
+        # orchestrator and the loop, not through this. Defaults to the
+        # orchestrator's client so an existing caller that does not pass it
+        # still reports the right model name rather than "unknown".
+        self.llm = llm if llm is not None else getattr(orchestrator, "_llm", None)
         self.registry = registry
         self.system_settings = system_settings
         self.prometheus_client = prometheus_client
@@ -67,184 +78,89 @@ class InvestigationPipeline:
         self.hypotheses = HypothesisEngine()
 
     async def run(self, request: InvestigationRequest) -> AsyncIterator[StageEvent]:
+        """Executes the graph, forwarding what its nodes emit as it happens.
+
+        The graph is run as a task rather than awaited, because a node cannot
+        yield: the ReAct loop produces a dozen thoughts and observations that the
+        reader should see while the node is still inside it. Those go onto a
+        queue, and this drains the queue until the graph closes it.
+        """
         investigation_id = f"inv-{uuid.uuid4().hex[:12]}"
-        timings: dict[str, float] = {}
-        errors: list[str] = []
 
-        def mark(stage: str, started: float) -> None:
-            timings[stage] = round((time.perf_counter() - started) * 1000, 1)
+        meter = telemetry.LLMMeter(
+            provider=describe_provider(self.llm),
+            model=describe_model(self.llm),
+            endpoint=describe_endpoint(self.llm),
+            context_window=describe_context_window(self.llm),
+        )
+        token = telemetry.bind(meter)
 
-        started = time.perf_counter()
         system = await self.registry.require(request.system_id)
-        mark("registry", started)
-        
         metrics_tool = self.metric_tool or MetricTool(self.prometheus_client)
-        windows_resolver = WindowResolver(self.logs, prometheus=self.prometheus_client)
 
-        try:
-            # -- 1. plan -------------------------------------------------------
-            started = time.perf_counter()
-            plan = await self.orchestrator.plan(request, system)
-            mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
-            mark("plan", started)
-            yield StageEvent(stage="plan", data={**plan.model_dump(mode="json"),
-                                                 "answer_mode": mode.value})
+        queue = EventQueue()
+        nodes = GraphNodes(self, queue, metrics_tool)
+        graph = build_graph(nodes)
 
-            # -- 2. windows ----------------------------------------------------
-            started = time.perf_counter()
-            windows, search_histogram = await windows_resolver.resolve(plan)
-            mark("windows", started)
-            yield StageEvent(stage="windows", data={
-                **windows.model_dump(mode="json"),
-                "search_buckets": len(search_histogram),
-            })
+        initial: dict = {
+            "investigation_id": investigation_id,
+            "request": request,
+            "system": system,
+            "errors": [],
+            "timings_ms": {},
+            "visited": [],
+            "decisions": [],
+        }
 
-            # -- 3. evidence ---------------------------------------------------
-            started = time.perf_counter()
-            evidence = await self._collect(plan, windows, errors, metrics_tool)
-            mark("evidence", started)
-            yield StageEvent(stage="evidence", data=self._evidence_summary(evidence))
+        # The shape first, so the UI can draw the graph before a single node has
+        # run and light the nodes up as their events arrive, rather than
+        # revealing the picture only once there is nothing left to watch.
+        yield StageEvent(stage="graph", data={
+            **TOPOLOGY,
+            "investigation_id": investigation_id,
+            "engine": "langgraph",
+        })
 
-            # -- 4. signals ----------------------------------------------------
-            # Measured before the model runs, so nothing it says can change them.
-            started = time.perf_counter()
-            signals = SignalEngine(known_services=system.service_names).detect(
-                plan, windows, evidence)
-            mark("signals", started)
-            yield StageEvent(stage="signals", data={
-                "count": len(signals),
-                "signals": [s.model_dump(mode="json") for s in signals],
-            })
+        final: dict = {}
+        failure: BaseException | None = None
 
-            # -- 5. candidates -------------------------------------------------
-            started = time.perf_counter()
-            candidates = self.hypotheses.generate(plan, windows, signals, evidence)
-            mark("candidates", started)
-            yield StageEvent(stage="candidates", data={
-                "candidates": [c.model_dump(mode="json") for c in candidates],
-            })
-
-            # -- 6. reasoning loop ---------------------------------------------
-            started = time.perf_counter()
-            raw_answer: dict = {}
-            exposed_ids: set[str] = set()
-            table: DataTable | None = None
-            steps_used = 0
-            degraded: str | None = None
-
-            # Held so it can be closed explicitly: breaking out of `async for` leaves
-            # the generator suspended mid-await, and the event loop later complains
-            # about a task destroyed while pending.
-            # How far back the loop's live queries may reach. The resolver already
-            # looked back several times further than the question asked, to find
-            # an onset and a quiet baseline; its first bucket is the earliest data
-            # examined. Handing that bound to the loop is what lets it ask "did
-            # this start before the window?" — clamping live queries to the
-            # incident window would make that unanswerable by construction.
-            search_window = None
-            if search_histogram:
-                search_window = TimeWindow(
-                    start=ensure_utc(search_histogram[0].timestamp),
-                    end=windows.incident.end, label="search",
-                )
-
-            loop = self.react_agent.run(plan, windows, evidence, signals, candidates,
-                                        log_tool=self.logs, search_window=search_window)
+        async def drive() -> None:
+            nonlocal final, failure
             try:
-                async for event in loop:
-                    kind = event.get("type")
-
-                    if kind == "answer":
-                        raw_answer = event.get("answer") or {}
-                        exposed_ids = set(event.get("exposed_ids") or [])
-                        steps_used = event.get("steps_used", 0)
-                        break
-
-                    if kind == "error":
-                        message = event.get("message", "the reasoning loop failed")
-                        errors.append(message)
-                        degraded = f"the reasoning loop did not complete: {message}"
-                        exposed_ids = set(event.get("exposed_ids") or [])
-                        yield StageEvent(stage="reasoning", data=event)
-                        break
-
-                    if kind == "exhausted":
-                        errors.append(event.get("message", "step limit reached"))
-                        degraded = ("the reasoning loop hit its step limit without "
-                                    "reaching a conclusion")
-                        exposed_ids = set(event.get("exposed_ids") or [])
-                        steps_used = event.get("steps_used", 0)
-                        yield StageEvent(stage="reasoning", data=event)
-                        break
-
-                    # An observation carrying a table is the payload of an extraction
-                    # or aggregation answer; keep the most recent one.
-                    if kind == "observation" and event.get("table"):
-                        table = DataTable(**event["table"])
-
-                    yield StageEvent(stage="reasoning", data=event)
+                # `recursion_limit` bounds the whole run, not one node: without
+                # it a routing bug becomes an investigation that never returns.
+                final = await graph.ainvoke(initial, {"recursion_limit": 32})
+            except BaseException as exc:            # noqa: BLE001 - reported below
+                failure = exc
             finally:
-                await loop.aclose()
+                await queue.close()
 
-            mark("reasoning", started)
-
-            # -- 7. verify -----------------------------------------------------
-            started = time.perf_counter()
-            if not raw_answer and degraded:
-                raw_answer = self._fallback_answer(mode, signals, candidates)
-            answer: StructuredAnswer = verify_answer(
-                raw=raw_answer, mode=mode, signals=signals, candidates=candidates,
-                evidence=evidence, windows=windows, exposed_ids=exposed_ids,
-                table=table, steps_used=steps_used, degraded=degraded,
-            )
-            mark("verify", started)
-            yield StageEvent(stage="answer", data=answer.model_dump(mode="json"))
-
-            # The evidence itself, folded and ordered. Streamed as its own stage so
-            # the reader can check the conclusion against what it was drawn from.
-            evidence_timeline = build_evidence_timeline(windows, signals, evidence)
-            yield StageEvent(stage="evidence_timeline", data={
-                "window": windows.incident.model_dump(mode="json"),
-                "baseline": windows.baseline.model_dump(mode="json") if windows.baseline else None,
-                "entries": [e.model_dump(mode="json") for e in evidence_timeline],
-                "collapsed_from": evidence.logs.total_documents,
-            })
-
-            result = InvestigationResult(
-                id=investigation_id,
-                question=request.question,
-                plan=plan,
-                windows=windows,
-                signals=signals,
-                candidates=candidates,
-                analysis=Analysis(
-                    incident_detected=bool(signals),
-                    severity=self._severity(signals),
-                    category=CauseCategory(answer.cause_category)
-                    if answer.cause_category else CauseCategory.UNKNOWN,
-                    chosen_candidate_id=candidates[0].id if candidates else None,
-                    cause_summary=answer.headline,
-                    narrative=answer.detail,
-                    timeline=build_timeline(windows, signals, evidence),
-                    confidence=answer.confidence,
-                    evidence_ids=[c.id for c in answer.citations],
-                    # The flat view for stored history and scoring; the executable
-                    # form lives on `answer.next_steps`.
-                    next_steps=[step.label for step in answer.next_steps],
-                    evidence_gaps=answer.limitations,
-                    analyst="react" if not degraded else "react (degraded)",
-                    engine_top_candidate_id=candidates[0].id if candidates else None,
-                    agrees_with_engine=self._agrees(answer, candidates),
-                ),
-                answer=answer,
-                evidence_timeline=evidence_timeline,
-                evidence_summary=self._evidence_summary(evidence),
-                timings_ms=timings,
-                errors=errors,
-            )
-            yield StageEvent(stage="result", data=result.model_dump(mode="json"))
+        task = asyncio.create_task(drive())
+        try:
+            async for stage, data in queue.drain():
+                yield StageEvent(stage=stage, data=data)
+            await task
         finally:
-            pass
+            task.cancel()
+            telemetry.unbind(token)
+
+        if failure is not None:
+            logger.exception("Investigation graph failed", exc_info=failure)
+            yield StageEvent(stage="error", data={"detail": str(failure)})
+            return
+
+        # Emitted after the answer so the count is the run's real total, and
+        # separately from `result` so it is present even when a run is stopped
+        # before it is stored.
+        yield StageEvent(stage="llm", data=meter.snapshot())
+
+        result: InvestigationResult | None = final.get("result")
+        if result is None:
+            yield StageEvent(stage="error",
+                             data={"detail": "the graph produced no result"})
+            return
+        result.llm = meter.snapshot()
+        yield StageEvent(stage="result", data=result.model_dump(mode="json"))
 
     async def run_collect(self, request: InvestigationRequest) -> InvestigationResult:
         final: dict | None = None

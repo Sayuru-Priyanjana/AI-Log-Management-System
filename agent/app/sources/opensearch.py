@@ -164,6 +164,21 @@ class OpenSearchClient:
             auth=settings.opensearch_auth,
             timeout=settings.opensearch_timeout,
             verify=settings.opensearch_verify_ssl,
+            # Pinned, and load-bearing. httpx builds Accept-Encoding from
+            # whatever decoders happen to be importable, so installing an
+            # unrelated library changes what this client asks OpenSearch for:
+            # `langgraph` pulls in `langsmith`, which pulls in `zstandard`, and
+            # httpx then advertises `zstd`. OpenSearch 2.19 accepts that, says
+            # it will honour it, and never sends a readable body — every request
+            # hangs until the timeout. The symptom is not a decoding error but a
+            # ReadTimeout, so it reads as "OpenSearch is down": the health page
+            # showed opensearch and registry unreachable on the LangGraph
+            # backend alone, while a plain urllib call from the same container
+            # answered in 0.1s.
+            #
+            # Naming the encodings here makes this client's wire behaviour a
+            # property of this file rather than of the image's dependency tree.
+            headers={"Accept-Encoding": "gzip, deflate"},
         )
 
     async def close(self) -> None:

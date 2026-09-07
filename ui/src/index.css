@@ -780,7 +780,9 @@ pre.block {
 .agent-chat-item:hover .agent-chat-delete { opacity: 1; }
 .agent-chat-delete:hover { background: var(--err-soft); color: var(--err); }
 
-.agent-results { min-width: 0; min-height: 0; overflow: auto; padding: 12px; }
+.agent-results { min-width: 0; min-height: 0; overflow: hidden; padding: 0;
+  display: flex; flex-direction: column; }
+.agent-results > .empty { padding: 12px; }
 .agent-entry {
   min-height: 0; overflow: auto; padding: 12px;
   border-left: 1px solid var(--border); background: var(--surface);
@@ -794,7 +796,9 @@ pre.block {
   .ws { grid-template-columns: 190px 1fr; }
   .whoami { display: none; }
   .wsx-columns { grid-template-columns: 1fr; }
-  .agent-body { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
+  .agent-body { grid-template-columns: 1fr !important;
+    grid-template-rows: auto auto auto auto 1fr; }
+  .agent-resizer { display: none; }
   .agent-chats { border-right: none; border-bottom: 1px solid var(--border); max-height: 160px; }
   .agent-entry { border-left: none; border-top: 1px solid var(--border); }
 }
@@ -1074,4 +1078,261 @@ pre.block {
 .slider__range {
   background-color: var(--accent);
   z-index: 2;
+}
+
+/* ---------------------------------------------------------------- agent graph
+   The workflow preview and its maximized view. The preview is deliberately
+   label-free: at 44px tall a node name is unreadable, and a row of dots on
+   their edges still answers "how far along is it, and did it fork?" — which is
+   the only question a preview needs to answer before it is opened. */
+.li-graph-card { padding: 0; margin-bottom: 8px; overflow: hidden; }
+.li-graph-preview { display: block; width: 100%; padding: 8px 11px 4px; background: none;
+  border: 0; text-align: left; cursor: pointer; color: inherit; }
+.li-graph-preview:hover { background: var(--surface-2); }
+.li-graph-preview-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.li-graph-title { font-size: 12px; font-weight: 650; }
+.li-graph-engine { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+  font-weight: 600; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent-border); border-radius: var(--r); padding: 1px 6px; }
+.li-graph-mini { position: relative; width: 100%; height: 44px; }
+.li-graph-mini-edges, .li-graph-mini-nodes { position: absolute; inset: 0;
+  width: 100%; height: 100%; display: block; }
+
+.li-graph-overlay { position: fixed; inset: 0; z-index: 200; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background: rgba(15, 23, 42, .55); backdrop-filter: blur(3px); }
+.li-graph-modal { width: min(1040px, 100%); max-height: 88vh; display: flex;
+  flex-direction: column; padding: 0; overflow: hidden; }
+.li-graph-modal-head { display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.li-graph-close { background: none; border: 0; color: var(--text-3); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 4px 6px; border-radius: var(--r); }
+.li-graph-close:hover { background: var(--surface-2); color: var(--text); }
+.li-graph-body { display: flex; gap: 0; min-height: 0; flex: 1; }
+.li-graph-flow { flex: 1; overflow-y: auto; padding: 16px; min-width: 0; }
+.li-graph-side { width: 300px; flex-shrink: 0; padding: 16px;
+  border-left: 1px solid var(--border); background: var(--surface-2); overflow-y: auto; }
+.li-graph-side h4 { margin: 0 0 8px; font-size: 12.5px; font-weight: 650; }
+.li-graph-detail { font-size: 12px; line-height: 1.55; color: var(--text-2); margin: 0 0 8px; }
+
+.li-graph-step { display: flex; flex-direction: column; align-items: flex-start; }
+.li-graph-node { display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 11px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface); cursor: pointer; text-align: left; color: inherit; }
+.li-graph-node:hover { border-color: var(--border-strong); }
+.li-graph-node--done { font-weight: 550; }
+.li-graph-node--skipped { opacity: .5; }
+.li-graph-node--selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.li-graph-node-index { font-family: var(--mono); font-size: 10.5px; color: var(--text-3);
+  width: 16px; flex-shrink: 0; }
+.li-graph-node-label { font-size: 12.5px; }
+.li-graph-node-kind { font-size: 10.5px; color: var(--text-3); text-transform: uppercase;
+  letter-spacing: .4px; }
+.li-graph-node-state { margin-left: auto; font-size: 10.5px; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .4px; }
+.li-graph-node-state.is-done { color: var(--ok); }
+
+.li-graph-edge { display: flex; align-items: center; gap: 8px; padding: 3px 0 3px 6px;
+  font-size: 11.5px; color: var(--text-3); }
+.li-graph-edge--branch .li-graph-arrow { color: var(--warn); }
+.li-graph-edge--taken { color: var(--text-2); }
+.li-graph-edge--taken .li-graph-arrow { color: var(--ok); font-weight: 700; }
+.li-graph-arrow { font-family: var(--mono); }
+.li-graph-edge-to { font-weight: 550; }
+.li-graph-edge-when { font-style: italic; }
+.li-graph-edge-tag { font-size: 9.5px; text-transform: uppercase; letter-spacing: .5px;
+  font-weight: 700; padding: 1px 5px; border-radius: var(--r); color: var(--text-3);
+  background: var(--surface-2); border: 1px solid var(--border); }
+.li-graph-edge-tag.is-taken { color: var(--ok); border-color: var(--ok);
+  background: transparent; }
+.li-graph-edge--branch:not(.li-graph-edge--taken) { opacity: .62; }
+.li-graph-decisions { margin: 0; padding-left: 16px; display: flex; flex-direction: column;
+  gap: 10px; font-size: 12px; }
+.li-graph-decision-edge { font-weight: 600; font-size: 12px; margin-bottom: 2px; }
+
+/* ------------------------------------------------------------------ llm usage
+   Sits beside the window banner and reads the same way: three labelled figures,
+   the middle one turning amber then red as the largest prompt approaches the
+   context window — the point past which Ollama silently drops the head of the
+   prompt and the answer stops resting on the evidence. */
+.li-llm { display: flex; gap: 20px; flex-wrap: wrap; padding: 9px 11px; margin-bottom: 8px;
+  border-left: 3px solid var(--border-strong); }
+.li-llm--warn { border-left-color: var(--warn); }
+.li-llm--danger { border-left-color: var(--err); }
+.li-llm-part { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.li-llm-part--wide { flex: 1; min-width: 220px; }
+.li-llm-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text-3); font-weight: 600; }
+.li-llm-value { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.li-llm-value--mono { font-family: var(--mono); font-size: 12.5px; }
+.li-llm-pct { color: var(--text-3); font-weight: 500; }
+.li-llm--warn .li-llm-pct { color: var(--warn); }
+.li-llm--danger .li-llm-pct { color: var(--err); }
+.li-llm-sub { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
+
+/* ------------------------------------------------------------------- thread
+   Several investigations in one conversation. The problem this solves is
+   telling them apart: before, a follow-up simply replaced the page, and the
+   two questions had no boundary, no order and no separate conclusions.
+
+   Each turn is a card on a numbered rail. Earlier turns are quieter than the
+   one being read but never hidden — the rail is what makes "this is the third
+   thing I asked, and it followed from the second" legible at a glance. */
+.li-thread { display: flex; flex-direction: column; gap: 0; }
+
+.li-turn { position: relative; padding: 0 0 4px 34px; margin-bottom: 18px; }
+/* The rail: a line down the left connecting every turn, broken only after the
+   last one. It is what says these are one conversation and not four pages. */
+.li-turn::before {
+  content: ''; position: absolute; left: 11px; top: 26px; bottom: -18px;
+  width: 2px; background: var(--border);
+}
+.li-turn:last-of-type::before { display: none; }
+
+.li-turn-head { display: flex; align-items: flex-start; gap: 10px; padding: 2px 0 8px; }
+.li-turn-index {
+  position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11.5px; font-weight: 700; font-family: var(--mono);
+  background: var(--surface-2); color: var(--text-3);
+  border: 1px solid var(--border); z-index: 1;
+}
+.li-turn--live .li-turn-index {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.li-turn-question { min-width: 0; flex: 1; }
+.li-turn-q-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text-3); font-weight: 600;
+}
+/* The question itself is the heading of its turn — larger than the body text,
+   so scrolling a long thread means reading the questions, not hunting them. */
+.li-turn-q-text {
+  margin: 2px 0 0; font-size: 15px; line-height: 1.4; font-weight: 600; color: var(--text);
+}
+.li-turn--live .li-turn-q-text { color: var(--text); }
+
+.li-turn-status {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; font-weight: 700;
+  padding: 2px 7px; border-radius: var(--r); white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--border); color: var(--text-3); background: var(--surface-2);
+}
+.li-turn-status--ok { color: var(--ok); border-color: var(--ok); background: transparent; }
+.li-turn-status--err { color: var(--err); border-color: var(--err); background: transparent; }
+.li-turn-status--accent { color: var(--accent); border-color: var(--accent); background: transparent; }
+.li-turn-pulse { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.li-turn-toggle {
+  background: none; border: 1px solid var(--border); border-radius: var(--r);
+  color: var(--text-2); font-size: 11.5px; padding: 3px 9px; cursor: pointer; white-space: nowrap;
+}
+.li-turn-toggle:hover { border-color: var(--border-strong); color: var(--text); }
+
+.li-turn-summary {
+  padding: 10px 12px; border-radius: var(--r);
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.li-turn-headline { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.li-turn-facts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px;
+  font-size: 11.5px; }
+.li-turn-body { padding-top: 2px; }
+
+/* ------------------------------------------------------------ follow-up box
+   Sits at the end of the thread, where the next question belongs. The sidebar
+   form starts a new investigation and resets the thread; this one continues it,
+   and says so. */
+.li-followup {
+  margin-left: 34px; padding: 12px; border-radius: var(--r);
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.li-followup-label {
+  display: block; font-size: 11.5px; font-weight: 600; color: var(--text-2); margin-bottom: 7px;
+}
+.li-followup-row { display: flex; gap: 8px; }
+.li-followup-row .input { flex: 1; min-width: 0; }
+.li-turn-stop { color: var(--err); border-color: var(--err); }
+.li-turn-summary--failed { border-left: 3px solid var(--err); }
+.li-followup-box { resize: none; overflow-y: auto; min-height: 34px; max-height: 132px;
+  line-height: 1.45; font-family: inherit; }
+.li-followup-row { align-items: flex-end; }
+
+/* ------------------------------------------------------- collapsible section
+   One affordance for the three foldable parts of an investigation, all of them
+   closed by default. A finished run used to render the evidence timeline and
+   the reasoning trace expanded, which put several screens of raw material
+   between the answer and the next question. */
+.li-section { padding: 0; margin-bottom: 8px; overflow: hidden; }
+.li-section-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 11px; background: none; border: 0; cursor: pointer;
+  color: inherit; text-align: left; font: inherit;
+}
+.li-section-head:hover { background: var(--surface-2); }
+.li-section-chevron { flex-shrink: 0; color: var(--text-3); }
+.li-section-title { font-size: 12.5px; font-weight: 650; white-space: nowrap; }
+.li-section-summary { font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.li-section-hint { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+  font-weight: 700; color: var(--text-3); flex-shrink: 0; }
+.li-section-head:hover .li-section-hint { color: var(--accent); }
+.li-section-body { padding: 0 11px 11px; }
+.li-section-body .li-trace-list, .li-section-body .li-evtl-list { margin-top: 0; }
+
+/* ---------------------------------------------------------------- signals
+   Previously a row of bare type chips whose detail lived in a `title`
+   attribute — invisible on a touch screen, and the least readable thing on the
+   page despite being the only part that is measured rather than written. */
+.li-signals { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 8px; }
+.li-signal { padding: 9px 11px; border-radius: var(--r); background: var(--surface-2);
+  border: 1px solid var(--border); border-left: 3px solid var(--border-strong); }
+.li-signal--critical, .li-signal--high { border-left-color: var(--err); }
+.li-signal--medium { border-left-color: var(--warn); }
+.li-signal--low, .li-signal--info { border-left-color: var(--text-3); }
+.li-signal-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.li-signal-onset { font-family: var(--mono); font-size: 11px; }
+.li-signal-desc { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; }
+.li-signal-mag { margin-top: 6px; font-size: 12px; display: flex; flex-wrap: wrap;
+  align-items: baseline; gap: 4px; }
+.li-signal-mag-val { font-family: var(--mono); font-weight: 650; }
+.li-signal-mag-base { font-family: var(--mono); color: var(--text-3); }
+.li-signal-ratio { margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--warn); }
+.li-signal-id { display: block; margin-top: 6px; font-size: 10.5px; color: var(--text-3);
+  font-family: var(--mono); overflow-wrap: anywhere; }
+.li-signal-dots { display: inline-flex; gap: 3px; }
+.li-signal-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
+.li-signal-dot--critical, .li-signal-dot--high { background: var(--err); }
+.li-signal-dot--medium { background: var(--warn); }
+
+/* ------------------------------------------------- pinned follow-up composer
+   The pane splits into a scrolling thread and a fixed footer, so the primary
+   action of the page is on screen at every scroll position instead of being
+   the thing you reach after four investigations. */
+.li-conversation { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.li-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 4px; }
+.li-followup {
+  flex-shrink: 0; margin: 0; border-radius: 0;
+  border: 0; border-top: 2px solid var(--accent);
+  background: var(--surface); padding: 10px 12px 12px;
+  box-shadow: 0 -6px 18px -12px rgba(15, 23, 42, .45);
+}
+.li-followup-label { font-size: 12px; font-weight: 650; color: var(--text); }
+.li-followup .btn--primary { min-width: 82px; }
+
+/* ------------------------------------------------------------- pane resizers
+   Fixed 220/1fr/300 columns are a guess about how someone works. These are
+   dragged, keyboard-adjustable (arrows, Shift for a bigger step) and remembered
+   per workstation. */
+.agent-resizer {
+  cursor: col-resize; background: var(--border); position: relative;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.agent-resizer:hover, .agent-resizer:focus-visible { background: var(--accent); outline: none; }
+/* The hit area is wider than the 6px column, because a 6px target is a game. */
+.agent-resizer::after { content: ''; position: absolute; inset: 0 -5px; }
+.agent-resizer-grip {
+  width: 2px; height: 26px; border-radius: 2px; background: var(--surface);
+  opacity: .8; pointer-events: none;
 }

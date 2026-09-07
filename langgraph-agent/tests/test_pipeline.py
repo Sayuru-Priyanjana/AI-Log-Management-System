@@ -161,9 +161,24 @@ async def test_a_full_run_reaches_a_verified_structured_answer():
         if stage_event.stage == "result":
             result = stage_event.data
 
-    assert stages[:5] == ["plan", "windows", "evidence", "signals", "candidates"]
+    # The topology is streamed first so the UI can draw the graph before a node
+    # has run; the stage order after it is the order the graph executes in.
+    assert stages[0] == "graph"
+    assert stages[1:6] == ["plan", "windows", "evidence", "signals", "candidates"]
     assert "reasoning" in stages and "answer" in stages
+    assert "llm" in stages, "the model's cost must be reported with the run"
     assert result is not None
+
+    # The graph is the thing that ran, not a diagram drawn beside it: the nodes
+    # it reports having visited are the nodes the answer came through.
+    assert result["graph_path"][:5] == ["plan", "windows", "evidence", "signals",
+                                        "candidates"]
+    assert result["graph_path"][-2:] == ["verify", "finish"]
+    assert "fallback" not in result["graph_path"], (
+        "a run whose loop concluded must not route through the rule answer")
+    assert [d["to"] for d in result["graph_decisions"]] == ["signals", "verify"]
+    assert result["llm"]["requests"] >= 2, "one planning call plus the loop's"
+    assert result["llm"]["model"]
 
     answer = result["answer"]
     assert answer["mode"] == AnswerMode.ROOT_CAUSE.value

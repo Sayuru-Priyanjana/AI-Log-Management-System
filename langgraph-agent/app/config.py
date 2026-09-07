@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # without these a single 429 or 503 ends an investigation that had already
     # done all of its expensive work. Measured against Gemini's free tier, one
     # call in six came back 503, so an eight-step run would rarely survive.
+    # How many tokens the prompt may occupy, when the provider does not publish
+    # it and the model is not one of the names in app/llm/factory.py. Used only
+    # to show a utilisation figure beside an investigation; leaving it at 0
+    # reports the prompt size with the window marked unknown, which is better
+    # than a percentage measured against a ceiling nobody verified.
+    llm_context_window: int = 0
+
     llm_retry_attempts: int = 3
     llm_retry_base_delay: float = 1.0
     llm_retry_max_delay: float = 30.0

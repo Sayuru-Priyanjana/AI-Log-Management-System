@@ -30,6 +30,22 @@ class PromptTruncated(RuntimeError):
 
 
 class LLMClient(ABC):
+    def __init_subclass__(cls, **kwargs) -> None:
+        """Counts every model round trip, whoever implements it.
+
+        Instrumenting here rather than inside each provider is what makes the
+        "LLM requests" figure beside an investigation trustworthy: it cannot be
+        wrong for a backend that forgot to add a line, because there is no line
+        to add. The import is deferred to call time so that `app.llm.telemetry`
+        stays importable on its own, without pulling this module in first.
+        """
+        super().__init_subclass__(**kwargs)
+        generate = cls.__dict__.get("generate")
+        if generate is None or getattr(generate, "__llm_instrumented__", False):
+            return
+        from app.llm.telemetry import instrument
+        cls.generate = instrument(generate)
+
     @abstractmethod
     async def generate(self, *, system: str, prompt: str,
                        schema: dict | None = None) -> LLMResponse:

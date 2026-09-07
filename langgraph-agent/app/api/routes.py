@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.agents.tool_bindings import ToolBindings
 from app.config import settings
 from app.llm.factory import (
-    describe_endpoint, describe_model, describe_provider,
+    describe_context_window, describe_endpoint, describe_model, describe_provider,
 )
 from datetime import datetime, timezone
 from app.models.domain import TimeWindow
@@ -144,6 +144,39 @@ async def refresh_systems(request: Request) -> dict:
     discovered = await container.registry.refresh()
     return {"refreshed": len(discovered), "systems": sorted(discovered)}
 
+
+
+@router.get("/agent/graph")
+async def agent_graph() -> dict:
+    """The workflow's shape, independent of any run.
+
+    Served so the UI can draw the graph before an investigation starts — and so
+    the picture is the same structure the graph is compiled from rather than a
+    diagram maintained by hand beside it.
+    """
+    from app.agents.graph import TOPOLOGY
+    return {"engine": "langgraph", **TOPOLOGY}
+
+
+@router.get("/agent/identity")
+async def agent_identity(request: Request) -> dict:
+    """Which backend answered, and with which model.
+
+    Exists because the backend switch is a request header: when the gateway
+    routes to the wrong container, or to one that is not running, every symptom
+    shows up somewhere else entirely. One call that names the engine settles it.
+    """
+    container = deps(request)
+    llm = getattr(container.pipeline, "llm", None) or container.llm
+    return {
+        "engine": "langgraph",
+        "llm": {
+            "provider": describe_provider(llm),
+            "model": describe_model(llm),
+            "endpoint": describe_endpoint(llm),
+            "context_window": describe_context_window(llm),
+        },
+    }
 
 
 @router.post("/investigations")
@@ -627,20 +660,33 @@ async def get_system_alerts(system_id: str, request: Request):
     container = deps(request)
     
     query = {
-        "size": 50,
-        "sort": [{"start_time": {"order": "desc"}}],
+        "size": 100,
+        "sort": [{"state": {"order": "asc"}}, {"start_time": {"order": "desc"}}],
         "query": {
             "match_all": {}
         }
     }
     
     try:
-        result = await container.opensearch.search(".opendistro-alerting-alerts*", query)
+        # Search both active and historical alert indices
+        result = await container.opensearch.search(".opendistro-alerting-alert*", query)
         hits = result.get("hits", {}).get("hits", [])
         
         alerts = []
         for hit in hits:
             src = hit.get("_source", {})
+            
+            # Extract bucket-level alert details if present
+            agg_content = src.get("agg_alert_content", {})
+            bucket = agg_content.get("bucket", {})
+            bucket_key = bucket.get("key", {})
+            
+            # Determine service name and detailed error message
+            service_name = bucket_key.get("service") if bucket_key else None
+            error_message = src.get("error_message")
+            if not error_message and bucket_key:
+                error_message = bucket_key.get("error_pattern")
+                
             alerts.append({
                 "id": hit.get("_id"),
                 "monitor_name": src.get("monitor_name", "Unknown Monitor"),
@@ -649,14 +695,15 @@ async def get_system_alerts(system_id: str, request: Request):
                 "severity": src.get("severity", "1"),
                 "start_time": src.get("start_time"),
                 "end_time": src.get("end_time"),
-                "error_message": src.get("error_message")
+                "error_message": error_message,
+                "service": service_name
             })
             
-        return alerts
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=alerts, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     except Exception as exc:
         logger.error(f"Failed to fetch alerts: {exc}")
-        # If the index doesn't exist yet because no alerts fired, just return empty list
-        return []
+        return JSONResponse(content=[], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 @router.get("/systems/{system_id}/errors/top")
 async def get_top_errors(system_id: str, start: int, end: int, request: Request):
@@ -770,7 +817,7 @@ async def get_logs_context(system_id: str, timestamp: int, service: str, request
         return []
 
 @router.get("/systems/{system_id}/logs")
-async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, offset: int = 0, start: int = None, end: int = None):
+async def get_system_raw_logs(system_id: str, request: Request, query: str = "", service: str = "", level: str = "", limit: int = 100, cursor: str = None, start: int = None, end: int = None):
     container = deps(request)
     
     filter_clauses = [{"term": {"system.id": system_id}}]
@@ -808,20 +855,28 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
     
     es_query = {
         "size": limit,
-        "from": offset,
-        "sort": [{"@timestamp": {"order": "desc"}}],
+        "track_total_hits": True,
+        "sort": [{"@timestamp": {"order": "desc"}}, {"_id": {"order": "desc"}}],
         "query": {
             "bool": {
                 "filter": filter_clauses,
             }
         }
     }
+    
+    if cursor:
+        try:
+            es_query["search_after"] = json.loads(cursor)
+        except Exception as e:
+            logger.warning(f"Invalid cursor format: {e}")
+            
     if must_clauses:
         es_query["query"]["bool"]["must"] = must_clauses
         
     try:
         result = await container.opensearch.search(settings.opensearch_log_index, es_query)
         hits = result.get("hits", {}).get("hits", [])
+        total = result.get("hits", {}).get("total", {}).get("value", 0)
         
         logs = []
         for hit in hits:
@@ -877,14 +932,14 @@ async def get_system_raw_logs(system_id: str, request: Request, query: str = "",
                 "timestamp": src.get("@timestamp"),
                 "service": src.get("service", {}).get("name") or src.get("container_name") or "unknown",
                 "level": str(lvl),
-                "message": str(msg)
+                "message": str(msg),
+                "sort": hit.get("sort")
             })
             
         return {
-            "total": result.get("hits", {}).get("total", {}).get("value", 0),
+            "total": total,
             "logs": logs
         }
     except Exception as exc:
-        logger.error(f"Failed to fetch raw logs: {exc}")
+        logger.error(f"Failed to fetch logs: {exc}")
         return {"total": 0, "logs": []}
-

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Collapsible from './Collapsible';
 
 /**
  * The agent's working, shown as it happens.
@@ -9,34 +10,25 @@ import { useState } from 'react';
  * having to be guessed at.
  */
 export default function ReasoningTrace({ steps, live }) {
-  const [collapsed, setCollapsed] = useState(false);
   if (!steps.length) return null;
 
   const toolCalls = steps.filter((s) => s.type === 'action').length;
+  const thoughts = steps.filter((s) => s.type === 'thought').length;
 
   return (
-    <div className="glass-panel li-trace">
-      <button type="button" className="li-trace-head" onClick={() => setCollapsed(!collapsed)}>
-        <span className="li-trace-title">Reasoning trace</span>
-        <span className="li-muted">
-          {steps.filter((s) => s.type === 'thought').length} thought
-          {toolCalls === 1 ? '' : 's'} · {toolCalls} tool call{toolCalls === 1 ? '' : 's'}
-        </span>
-        <span className="li-spacer" />
-        {live && <span className="li-trace-live">running</span>}
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          strokeWidth="2.4"
-          style={{ transform: collapsed ? 'none' : 'rotate(180deg)', transition: 'transform .2s' }}>
-          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-
-      {!collapsed && (
-        <ol className="li-trace-list">
-          {steps.map((step, i) => <TraceStep key={i} step={step} />)}
-        </ol>
-      )}
-    </div>
+    <Collapsible
+      title="Reasoning trace"
+      summary={`${thoughts} thought${thoughts === 1 ? '' : 's'} · ${toolCalls} tool call${toolCalls === 1 ? '' : 's'}`}
+      right={live ? <span className="li-trace-live">running</span> : null}
+      // Open while it is still running: watching the loop work is the point of
+      // streaming it. Once there is an answer the working folds away, because
+      // the conclusion is what the reader came for.
+      defaultOpen={Boolean(live)}
+    >
+      <ol className="li-trace-list">
+        {steps.map((step, i) => <TraceStep key={i} step={step} />)}
+      </ol>
+    </Collapsible>
   );
 }
 

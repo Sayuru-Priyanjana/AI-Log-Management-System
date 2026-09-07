@@ -1,8 +1,11 @@
 import { useInvestigation } from '../InvestigationContext';
 import { usePreferences } from '../preferences';
+import AgentGraph from './AgentGraph';
 import AnswerPanel from './AnswerPanel';
+import LlmUsage from './LlmUsage';
 import EvidenceTimeline from './EvidenceTimeline';
 import ReasoningTrace from './ReasoningTrace';
+import SignalsPanel from './SignalsPanel';
 
 // The stages that run before the model does. Shown as a compact strip rather
 // than a full-width diagram: they are fast, they always succeed or fail
@@ -15,11 +18,24 @@ const PREP_STAGES = [
   { id: 'candidates', label: 'Candidates' },
 ];
 
-export default function InvestigationResults({ onFollowUp }) {
+/**
+ * One investigation, rendered in full.
+ *
+ * Reads the live run from context by default. Pass `turn` — a snapshot taken
+ * when a follow-up superseded it — to render an earlier question in the thread
+ * with exactly the same detail. The snapshot deliberately uses the same field
+ * names as the context, so this component does not need to know which one it
+ * got: an earlier turn is not a summary of an investigation, it is one.
+ */
+export default function InvestigationResults({ onFollowUp, turn, showHeader = true }) {
+  const live = useInvestigation();
+  const source = turn || live;
   const {
     request, stages, trace, answer, evidenceTimeline, result,
-    status, elapsed, errorDetail, stopInvestigation
-  } = useInvestigation();
+    status, elapsed, errorDetail,
+  } = source;
+  const stopInvestigation = live.stopInvestigation;
+  const { formatClock } = usePreferences();
 
   // If there's an error from context that wasn't displayed, we could show it,
   // but it's handled in the context. We'll just show the error detail in the UI.
@@ -48,6 +64,7 @@ export default function InvestigationResults({ onFollowUp }) {
 
   return (
     <div className="li-results">
+      {showHeader && (
       <div className="li-results-header">
         <span className="li-goal">{goal}</span>
         {plan?.service && <span className="li-chip li-chip--service">{plan.service}</span>}
@@ -75,6 +92,8 @@ export default function InvestigationResults({ onFollowUp }) {
         </div>
       </div>
       
+      )}
+
       {payload ? (
         <DetectionPayloadCard payload={payload} />
       ) : rawPayload ? (
@@ -92,7 +111,17 @@ export default function InvestigationResults({ onFollowUp }) {
 
       <WindowBanner windows={stages.windows} />
 
+      {/* The workflow sits above the stage strip: the strip says which stages
+          finished, the graph says which route the run took to get there, and
+          on the LangGraph backend those are not the same thing. */}
+      <AgentGraph turn={turn} />
+
       <PrepStrip stages={stages} />
+
+      <SignalsPanel signals={stages.signals?.signals}
+        formatClock={formatClock} />
+
+      <LlmUsage turn={turn} />
 
       {/* The answer sits above the trace once it exists: the conclusion is what
           most readers want, and the working is there for when they doubt it. */}
@@ -274,20 +303,11 @@ function PrepStrip({ stages }) {
           </div>
         );
       })}
-      {signals.length > 0 && (
-        <div className="li-prep-signals">
-          {signals.slice(0, 6).map((s) => (
-            <span key={s.id} className={`li-chip li-chip--${s.severity}`}
-              title={`${s.description}${s.magnitude ? ` — ${s.magnitude.incident} ${s.magnitude.unit}` : ''}`}>
-              {s.type}
-            </span>
-          ))}
-          {signals.length > 6 && <span className="li-muted">+{signals.length - 6} more</span>}
-        </div>
-      )}
-      {signals.length === 0 && stages.signals && (
+      {stages.signals && (
         <span className="li-muted" style={{ paddingLeft: 8 }}>
-          nothing crossed a threshold
+          {signals.length
+            ? `${signals.length} signal${signals.length === 1 ? '' : 's'} — see Signal detection below`
+            : 'nothing crossed a threshold'}
         </span>
       )}
       {candidates.length > 0 && (

@@ -79,6 +79,7 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
             event_tool=EventTool(opensearch),
             orchestrator=OrchestratorAgent(llm),
             react_agent=ReActAgent(llm),
+            llm=llm,
             registry=registry,
             system_settings=system_settings,
             prometheus_client=prometheus,

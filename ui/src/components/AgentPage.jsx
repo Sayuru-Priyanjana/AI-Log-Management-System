@@ -3,9 +3,11 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { deleteInvestigation, getRecentInvestigations, getSystems, getSystemIntegrations, notifyIntegrations } from '../api';
 import { useInvestigation } from '../InvestigationContext';
 import { useToast } from '../toast';
+import { investigationCard } from '../teams';
 import { usePreferences } from '../preferences';
 import InvestigationForm from './InvestigationForm';
-import InvestigationResults from './InvestigationResults';
+import ConversationThread from './ConversationThread';
+import { Resizer, useResizableWidth } from './ResizablePane';
 
 /**
  * The agent, full screen: recent chats, results, and the form that starts one.
@@ -20,12 +22,14 @@ export default function AgentPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const toast = useToast();
-  const { formatClock, formatDay } = usePreferences();
+  const { formatClock, formatDay, formatStamp } = usePreferences();
   const {
     request, result, status, meta, chatHistory, startInvestigation, loadInvestigation, clearInvestigation,
   } = useInvestigation();
 
   const nav = location.state || {};
+  const chatsPane = useResizableWidth('ui.agentChatsWidth', 220, [160, 460]);
+  const entryPane = useResizableWidth('ui.agentEntryWidth', 300, [240, 560]);
   const [systems, setSystems] = useState([]);
   const [systemId, setSystemId] = useState(nav.system_id || localStorage.getItem('lastSystemId') || null);
   const [chats, setChats] = useState([]);
@@ -114,53 +118,15 @@ export default function AgentPage() {
   const sendResultToIntegrations = async () => {
     if (!result) return;
     try {
-      // Teams MessageCards are very strict and silently drop messages with unsupported markdown (like code blocks) or HTML tags
-      const headline = result.answer?.headline || "Agent investigation complete.";
-      const detail = result.answer?.detail || "";
-      const rawText = `${headline}\n\n${detail}`;
-
-      let text = rawText
-        .replace(/```[a-z]*\n([\s\S]*?)```/gi, '\n$1\n') // Remove code block fences
-        .replace(/`/g, '') // Remove inline code ticks
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-
-      if (text.length > 2000) text = text.substring(0, 2000) + "\n\n... (truncated for Teams)";
-      
-      const isIncident = rawText.toLowerCase().includes("incident detected") || rawText.toLowerCase().includes("root cause");
-      const statusColor = isIncident ? "E81123" : "107C10";
-      const statusText = isIncident ? "🔴 Incident Detected" : "🟢 No Anomalies";
-
-      const payload = {
-        "@type": "MessageCard",
-        "@context": "http://schema.org/extensions",
-        "themeColor": statusColor,
-        "summary": "Agent Investigation Result",
-        "title": `Agent Result: ${meta?.label || 'Investigation'}`,
-        "sections": [
-          {
-            "facts": [
-              {
-                "name": "Status:",
-                "value": statusText
-              },
-              {
-                "name": "Target:",
-                "value": selected?.name || systemId || 'Unknown'
-              }
-            ],
-            "markdown": true
-          },
-          {
-            "activityTitle": "**Executive Summary**",
-            "text": text,
-            "markdown": true
-          }
-        ]
-      };
-      const response = await notifyIntegrations(systemId, payload);
+      const response = await notifyIntegrations(systemId, investigationCard({
+        result,
+        systemName: selected?.name,
+        systemId,
+        label: meta?.label,
+        formatStamp,
+      }));
       if (response && response.ok === false) {
-        throw new Error(response.detail || "Teams integration returned an error");
+        throw new Error(response.detail || 'Teams integration returned an error');
       }
       toast.success('Sent result to integrations');
     } catch (err) {
@@ -217,7 +183,9 @@ export default function AgentPage() {
         )}
       </div>
 
-      <div className="agent-body">
+      <div className="agent-body"
+        style={{ gridTemplateColumns:
+          `${chatsPane.width}px 6px minmax(0, 1fr) 6px ${entryPane.width}px` }}>
         <aside className="agent-chats">
           <div className="ws-side-head"><h4>Recent chats</h4></div>
           <div className="agent-chats-list">
@@ -238,32 +206,24 @@ export default function AgentPage() {
           </div>
         </aside>
 
+        <Resizer handle={chatsPane} edge="left" label="Resize the recent chats panel" />
+
         <section className="agent-results">
           {!request ? (
             <div className="empty" style={{ marginTop: 40 }}>
-              Fill in the investigation panel and click Ask AI.
+              Fill in the investigation panel and click Ask AI. Follow-up questions
+              stay in the same thread and carry the earlier answers as context.
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {chatHistory && chatHistory.map((pastChat, idx) => (
-                <div key={idx} style={{ padding: '16px', background: 'var(--bg-card)', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                  <details>
-                    <summary style={{ fontWeight: 'bold', cursor: 'pointer' }}>
-                      Previous Turn: {pastChat.request?.question || 'Investigation'}
-                    </summary>
-                    <div style={{ marginTop: '10px' }}>
-                      <p><strong>Answer:</strong> {pastChat.answer?.headline || (pastChat.result?.answer?.headline)}</p>
-                      <p>{pastChat.answer?.detail || (pastChat.result?.answer?.detail)}</p>
-                    </div>
-                  </details>
-                </div>
-              ))}
-              <InvestigationResults
-                onFollowUp={(question) => startInvestigation({ ...request, question, _at: Date.now() },
-                  { kind: 'followup' })} />
-            </div>
+            <ConversationThread
+              onAsk={(question) => startInvestigation(
+                { ...request, question, _at: Date.now() }, { kind: 'followup' })}
+              onFollowUp={(question) => startInvestigation(
+                { ...request, question, _at: Date.now() }, { kind: 'followup' })} />
           )}
         </section>
+
+        <Resizer handle={entryPane} edge="right" label="Resize the investigation panel" />
 
         <aside className="agent-entry">
           <h3 style={{ marginBottom: 10 }}>Investigation</h3>
