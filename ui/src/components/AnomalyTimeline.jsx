@@ -1,11 +1,24 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 
 /**
  * AnomalyTimeline renders a surveillance-style scrub bar highlighting
  * system alerts and anomalies.
  */
 export default function AnomalyTimeline({ alerts, start, end }) {
+  const [hoveredAlert, setHoveredAlert] = useState(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+
   const windowMs = end * 1000 - start * 1000;
+
+  const handleMouseEnter = (e, alert) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setTooltipPos({ 
+      x: rect.left + rect.width / 2, 
+      y: rect.top - 8 // Position above the blip
+    });
+    setHoveredAlert(alert);
+  };
 
   return (
     <div className="anomaly-timeline" title="Anomaly & Detection Timeline">
@@ -27,19 +40,47 @@ export default function AnomalyTimeline({ alerts, start, end }) {
             key={alert.id || alertTimeMs}
             className={`anomaly-blip anomaly-blip--${severityClass}`}
             style={{ left: `${posPercent}%` }}
+            onMouseEnter={(e) => handleMouseEnter(e, alert)}
+            onMouseLeave={() => setHoveredAlert(null)}
           >
-            <div className="timeline-tooltip">
-              <strong>{alert.monitor_name || alert.title || "Anomaly Detected"}</strong>
-              <span className="time">{new Date(alertTimeMs).toLocaleTimeString()}</span>
-              {alert.error_message && (
-                <span className="dim" style={{ fontSize: '10.5px', marginTop: '2px' }}>
-                  {alert.error_message}
-                </span>
-              )}
-            </div>
           </div>
         );
       })}
+
+      {hoveredAlert && createPortal(
+        <div 
+          className="timeline-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${tooltipPos.x}px`,
+            top: `${tooltipPos.y}px`,
+            bottom: 'auto',
+            transform: 'translate(-50%, -100%)',
+            margin: 0,
+            zIndex: 99999,
+            opacity: 1,
+            visibility: 'visible',
+            pointerEvents: 'none'
+          }}
+        >
+          <strong>{hoveredAlert.monitor_name || hoveredAlert.title || "Anomaly Detected"}</strong>
+          <span className="time">{new Date(hoveredAlert.start_time || hoveredAlert.timestamp).toLocaleTimeString()}</span>
+          {hoveredAlert.error_message && (
+            <div style={{ 
+              fontSize: '11px', 
+              marginTop: '4px', 
+              color: 'var(--text-2)', 
+              whiteSpace: 'normal', 
+              maxWidth: '350px', 
+              wordWrap: 'break-word',
+              lineHeight: '1.4'
+            }}>
+              {hoveredAlert.error_message}
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
