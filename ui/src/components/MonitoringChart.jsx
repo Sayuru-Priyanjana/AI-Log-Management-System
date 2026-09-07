@@ -44,7 +44,9 @@ const CustomTooltip = ({ active, payload, label, unit }) => {
             <div key={index} className="chart-tooltip-item">
               <span className="chart-tooltip-color" style={{ backgroundColor: entry.color }}></span>
               <span className="chart-tooltip-name">{entry.name}</span>
-              <span className="chart-tooltip-value">{entry.value}{unit}</span>
+              <span className="chart-tooltip-value">
+                {typeof entry.value === 'number' ? Number(entry.value.toFixed(4)) : entry.value}{unit}
+              </span>
             </div>
           ))}
         </div>
