@@ -56,9 +56,34 @@ class AnthropicClient(LLMClient):
         return response.status_code == 200
 
     def _payload(self, system: str, prompt: str, schema: dict | None) -> dict:
+        """The request, with the reusable half marked as cacheable.
+
+        A ReAct investigation makes up to eight calls that differ only in their
+        tail. Everything before that — the system prompt, which carries the full
+        tool schema, and the forced-response tool definition — is byte-identical
+        on every one of them, and identical again for the next question in the
+        same thread. Without a cache marker each call re-reads all of it at full
+        price; a run's prompt cost is then roughly `steps x prefix`, and the
+        prefix is the largest part.
+
+        The marker goes on the *last* cacheable block, because a breakpoint
+        caches everything above it: one marker on the system prompt covers the
+        tool definitions too when they are declared before it, so only one of
+        the four allowed breakpoints is spent.
+
+        The user turn is deliberately not marked. It is the part that changes,
+        and a breakpoint there would write a new cache entry on every step —
+        paying the write premium for something never read back.
+        """
+        cache = settings.llm_prompt_caching
         payload: dict = {
             "model": self.model,
-            "system": system,
+            # A plain string when caching is off, so a provider or gateway that
+            # does not understand the block form is unaffected by a setting the
+            # deployment never turned on.
+            "system": ([{"type": "text", "text": system,
+                         "cache_control": {"type": "ephemeral"}}]
+                       if cache else system),
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": settings.llm_max_output_tokens,
             "temperature": settings.llm_temperature,
@@ -109,8 +134,12 @@ class AnthropicClient(LLMClient):
         usage = data.get("usage") or {}
         result = LLMResponse(
             text=self._text_from(data.get("content") or []),
+            # `input_tokens` counts only what was NOT served from cache, so the
+            # two cache figures are additions to it rather than a subset of it.
             prompt_tokens=int(usage.get("input_tokens") or 0),
             output_tokens=int(usage.get("output_tokens") or 0),
+            cached_prompt_tokens=int(usage.get("cache_read_input_tokens") or 0),
+            cache_write_tokens=int(usage.get("cache_creation_input_tokens") or 0),
             duration_ms=(time.perf_counter() - started) * 1000,
             model=data.get("model") or self.model,
         )
@@ -119,6 +148,8 @@ class AnthropicClient(LLMClient):
                 f"the reply was cut off at {settings.llm_max_output_tokens} output tokens; "
                 f"raise LLM_MAX_OUTPUT_TOKENS if answers look truncated"
             )
-        logger.info("LLM call (%s): %d prompt tokens, %d output tokens, %.0fms",
-                    self.model, result.prompt_tokens, result.output_tokens, result.duration_ms)
+        logger.info("LLM call (%s): %d prompt tokens (%d cached, %d written), "
+                    "%d output tokens, %.0fms",
+                    self.model, result.prompt_tokens, result.cached_prompt_tokens,
+                    result.cache_write_tokens, result.output_tokens, result.duration_ms)
         return result

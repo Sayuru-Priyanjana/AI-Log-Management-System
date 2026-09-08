@@ -57,8 +57,7 @@ TOPOLOGY: dict[str, Any] = {
                    "One LLM call; every value it returns is checked against the registry."},
         {"id": "windows", "label": "Resolve window", "kind": "deterministic", "row": 1,
          "emits": "windows",
-         "detail": "Find the onset and a clean baseline to compare against. "
-                   "Pure Python — no model involved."},
+         "detail": "Sweep the whole period asked about for every elevated stretch, pick the one to analyse in depth, find a clean baseline for it, and measure the system's current status. Pure Python — no model involved."},
         {"id": "evidence", "label": "Collect evidence", "kind": "io", "row": 2,
          "emits": "evidence",
          "detail": "Logs, Kubernetes events and metrics, gathered concurrently."},
@@ -148,6 +147,11 @@ class GraphState(TypedDict, total=False):
     mode: Any
     resolved_windows: Any
     search_histogram: Any
+    # What the system is doing now, measured over the configured recent window
+    # whatever period the question asked about. Produced by the windows node
+    # alongside the sweep, because both are questions about time rather than
+    # about evidence and both are wanted before the model is asked anything.
+    recent_status: Any
     evidence_bundle: Any
     detected_signals: Any
     ranked_candidates: Any

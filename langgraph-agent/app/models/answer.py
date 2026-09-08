@@ -5,6 +5,9 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
+from .domain import TimeWindow
+from app.util.timefmt import clock
+
 
 class AnswerMode(str, Enum):
     """What shape of answer the question actually calls for.
@@ -137,6 +140,128 @@ class NextStep(BaseModel):
         return self.kind in ("tool", "investigation")
 
 
+class Episode(BaseModel):
+    """One distinct stretch of elevated errors inside the period asked about.
+
+    Onset detection returns a single moment — where the *first* accepted
+    departure is. That is the right anchor for a root-cause window and the wrong
+    answer to "what went wrong in the last six hours", because everything after
+    the first episode ends is simply not described. A question covering three
+    separate failures came back as one.
+
+    So the range asked about is swept separately from onset detection, and every
+    elevated stretch in it becomes one of these. The first is investigated in
+    full; the rest are measured and reported, which is far cheaper than analysing
+    each one and is the difference between "one issue" and "three issues, here is
+    when each ran and what was in it".
+    """
+
+    id: str
+    start: datetime
+    end: datetime
+
+    peak_errors_per_min: float = 0.0
+    mean_errors_per_min: float = 0.0
+    total_errors: int = 0
+    # How many times busier this stretch is than the quiet level of the range it
+    # was found in. Baseline-relative like every other magnitude here.
+    elevation: float | None = None
+    severity: str = "medium"        # critical | high | medium | low
+
+    # Still elevated at the end of the range: this one has not resolved.
+    ongoing: bool = False
+    # The stretch the deep analysis was run over. Exactly one episode is primary.
+    primary: bool = False
+
+    # Filled in by the per-episode breakdown, which is one aggregation per
+    # episode rather than a second full investigation.
+    services: list[str] = Field(default_factory=list)
+    top_errors: list[str] = Field(default_factory=list)
+    breakdown_status: str = "pending"   # pending | ok | unavailable
+
+    @property
+    def minutes(self) -> float:
+        return max((self.end - self.start).total_seconds() / 60.0, 1.0)
+
+    def summary_line(self) -> str:
+        head = (f"[{self.id}] {clock(self.start)}-{clock(self.end)} "
+                f"({self.minutes:.0f}m, {self.severity})")
+        if self.ongoing:
+            head += " STILL ELEVATED AT THE END OF THE RANGE"
+        if self.primary:
+            head += " [investigated in full below]"
+        body = (f"peak {self.peak_errors_per_min:.1f}/min, "
+                f"mean {self.mean_errors_per_min:.1f}/min, "
+                f"{self.total_errors} errors")
+        if self.elevation is not None:
+            body += f", {self.elevation:.1f}x the quiet level of the range"
+        parts = [head, f"    {body}"]
+        if self.services:
+            parts.append(f"    services: {', '.join(self.services)}")
+        for line in self.top_errors:
+            parts.append(f"    - {line}")
+        return "\n".join(parts)
+
+
+class RecentStatus(BaseModel):
+    """What the system is doing *now*, independent of the window asked about.
+
+    A question about a period that ended an hour ago is answered about that
+    period, which is correct and, on its own, unusable: the reader cannot tell a
+    resolved incident from one still running. This is measured over the last
+    `recent_status_minutes` whatever was asked, so every root-cause and
+    health-check answer carries both tenses.
+
+    Deterministic and cheap — two aggregations and one metric query, no model
+    call — so carrying it does not make an investigation slower or more
+    expensive.
+    """
+
+    window: TimeWindow
+    minutes: int = 30
+    status: str = "unknown"          # healthy | degraded | critical | unknown
+    summary: str = ""
+
+    total_documents: int = 0
+    errors: int = 0
+    warnings: int = 0
+    errors_per_min: float = 0.0
+    # service -> errors in the recent window, worst first.
+    errors_by_service: dict[str, int] = Field(default_factory=dict)
+    top_errors: list[str] = Field(default_factory=list)
+
+    # Pods not Ready, and pods that restarted inside the recent window. A low
+    # error rate does not mean healthy: a crashlooping service serves almost no
+    # traffic and therefore produces almost no errors, so the rate check passes
+    # while the system is still broken.
+    unready_pods: list[str] = Field(default_factory=list)
+    restarting_pods: list[str] = Field(default_factory=list)
+
+    status_reason: str = ""
+    unavailable: str | None = None
+
+    def summary_line(self) -> str:
+        parts = [f"CURRENT STATUS (the last {self.minutes} minutes, "
+                 f"to {clock(self.window.end)}): {self.status.upper()}"]
+        if self.status_reason:
+            parts.append(f"    why: {self.status_reason}")
+        parts.append(f"    {self.errors_per_min:.1f} errors/min "
+                     f"({self.errors} errors, {self.warnings} warnings, "
+                     f"{self.total_documents} log lines)")
+        if self.errors_by_service:
+            worst = ", ".join(f"{name} {count}"
+                              for name, count in list(self.errors_by_service.items())[:5])
+            parts.append(f"    errors by service: {worst}")
+        if self.unready_pods:
+            parts.append(f"    NOT READY right now: {', '.join(self.unready_pods[:6])}")
+        if self.restarting_pods:
+            parts.append(f"    restarted in this period: {', '.join(self.restarting_pods[:6])}")
+        for line in self.top_errors:
+            parts.append(f"    - {line}")
+        if self.unavailable:
+            parts.append(f"    (not fully measured: {self.unavailable})")
+        return "\n".join(parts)
+
 class DataTable(BaseModel):
     """Tabular result for extraction and aggregation answers."""
 
@@ -172,6 +297,19 @@ class StructuredAnswer(BaseModel):
 
     # Populated for extraction and aggregation answers.
     table: DataTable | None = None
+
+    # Every elevated stretch found across the whole period asked about. The
+    # narrative above is about one of them; this is the list, so a reader can see
+    # at a glance that a six-hour question held three separate failures rather
+    # than the one that got the full analysis. Attached by the verifier from what
+    # the sweep measured, not from anything the model wrote — the model can
+    # discuss them, it cannot invent one.
+    window_issues: list[Episode] = Field(default_factory=list)
+
+    # What the system is doing now, measured over a fixed recent window whatever
+    # period the question covered. Present on root-cause and health-check answers
+    # so "is it still happening" is answered without a second investigation.
+    recent_status: RecentStatus | None = None
 
     @field_validator("next_steps", mode="before")
     @classmethod

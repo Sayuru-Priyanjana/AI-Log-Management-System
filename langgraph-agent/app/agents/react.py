@@ -9,17 +9,52 @@ from typing import Any
 from app.agents.tool_bindings import ToolBindings, ToolResult
 from app.config import settings
 from app.llm.base import LLMClient, LLMUnavailable, PromptTruncated
-from app.models.analysis import Candidate, InvestigationWindows
+from app.models.analysis import Candidate, InvestigationWindows, RecentStatus
 from app.models.answer import MODE_BY_INTENT, AnswerMode
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
 from app.models.signals import Signal
+from app.util.timefmt import clock
 
 logger = logging.getLogger(__name__)
 
 _EMPTY_MARKERS = ("nothing matched", "no signals crossed", "no metric series",
                   "no log patterns matched", "no warning-level", "no metrics found",
                   "no log data to count", "no time-ordered events")
+
+
+def trim_observation(text: str, limit: int) -> str:
+    """Bounds one observation without losing what the answer must cite.
+
+    Every step re-sends the entire investigation log, so an observation is not
+    paid for once — it is paid for on every remaining step. A single unbounded
+    `search_logs` result therefore costs more than the tool call that produced
+    it, and a long run walks into the silent truncation `PromptTruncated` exists
+    to catch.
+
+    Trimming is line-aware and keeps the head, because these observations lead
+    with their evidence IDs and their measured figures and trail off into
+    examples. Cutting mid-line would leave a half-written `sig:` for the model to
+    complete from imagination, which is the one failure mode worth more than the
+    tokens saved. What was dropped is stated, so "there were more" is never
+    mistaken for "that was all".
+    """
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines()
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > limit:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    dropped = len(lines) - len(kept)
+    if not kept:                       # one enormous line; cut it at a word edge
+        return text[:limit].rsplit(" ", 1)[0] + " …[truncated]"
+    kept.append(f"…[{dropped} more line(s) not shown — the tool returned more than "
+                f"fits in the transcript; narrow the arguments if you need them]")
+    return "\n".join(kept)
 
 
 def _found_nothing(observation: str) -> bool:
@@ -92,7 +127,19 @@ MODE_GUIDANCE: dict[AnswerMode, str] = {
         "log, a Kubernetes event or a metric — get_service_events and "
         "get_service_metrics cover the last two. `headline` must name the failing "
         "component and what it did; `detail` must say what the evidence showed, "
-        "including the line you found before the first error if you found one."
+        "including the line you found before the first error if you found one.\n"
+        "\n"
+        "TWO THINGS THE ANSWER MUST COVER BEYOND THE ROOT CAUSE:\n"
+        "  * THE WHOLE PERIOD ASKED ABOUT. The signals and the baseline above "
+        "describe ONE stretch of it. If get_episodes lists more than one, the "
+        "question covered more than one issue: name each of the others in `detail` "
+        "with its time, duration and services, cite its ep: id, and say it was "
+        "measured rather than diagnosed. Reporting one issue for a range that held "
+        "three is a wrong answer even when the one is right.\n"
+        "  * WHAT IS TRUE NOW. get_recent_status measures the last few minutes "
+        "whatever period was asked about. `detail` must end by saying whether the "
+        "problem is still happening, using that measurement — a reader cannot act "
+        "on a diagnosis of a window that closed without knowing if it is over."
     ),
     AnswerMode.DATA_EXTRACTION: (
         "The user wants to SEE specific records, not an analysis of them. Retrieve "
@@ -109,10 +156,23 @@ MODE_GUIDANCE: dict[AnswerMode, str] = {
         "the number in `headline`. Never compute a total yourself — call the tool."
     ),
     AnswerMode.HEALTH_CHECK: (
-        "The user wants to know whether the system is healthy right now. Call "
-        "get_signals, and get_investigation_scope so you can say what was checked. "
-        "If nothing crossed a threshold, say so plainly — that is a real answer, "
-        "not a failure to find something."
+        "The user wants to know whether the system is healthy. Answer in two "
+        "tenses, in this order:\n"
+        "  1. NOW. get_recent_status is a direct measurement of the last few "
+        "minutes — error rate, worst services, and any pod that is not Ready or "
+        "has restarted. Lead `headline` with its verdict. Note that a LOW error "
+        "rate does not by itself mean healthy: a crashlooping service serves "
+        "almost no traffic and so emits almost no errors, which is why the pod "
+        "readiness line in that observation outranks the rate.\n"
+        "  2. OVER THE PERIOD ASKED ABOUT. get_signals for what crossed a "
+        "threshold, and get_episodes for every elevated stretch in the range — "
+        "give each one its time and severity in `detail`. A system that is fine "
+        "now but failed twice in the window asked about is not a healthy system, "
+        "and an answer that mentions only the present hides that.\n"
+        "\n"
+        "get_investigation_scope tells you what was actually examined, so you can "
+        "state the limits. If nothing crossed a threshold in either tense, say so "
+        "plainly — that is a real answer, not a failure to find something."
     ),
     AnswerMode.EXPLANATION: (
         "The user wants something explained. Ground the explanation in what was "
@@ -224,12 +284,14 @@ class ReActAgent:
     async def run(self, plan: InvestigationPlan, windows: InvestigationWindows,
                   evidence: EvidenceBundle, signals: list[Signal],
                   candidates: list[Candidate], log_tool=None,
-                  search_window=None) -> AsyncIterator[dict]:
+                  search_window=None,
+                  recent_status: RecentStatus | None = None) -> AsyncIterator[dict]:
         # `log_tool` is what makes the live query tools work. It is optional so a
         # caller with no index access still gets the ten in-memory tools; those
         # three then say so rather than failing obscurely.
         bindings = ToolBindings(plan, windows, evidence, signals, candidates,
-                                log_tool=log_tool, search_window=search_window)
+                                log_tool=log_tool, search_window=search_window,
+                                recent_status=recent_status)
         mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
 
         system = SYSTEM_PROMPT.format(
@@ -243,12 +305,26 @@ class ReActAgent:
                 history_lines.append(f"{msg.role.capitalize()}: {msg.content}")
             history_lines.append("")
 
+        # Two windows, always stated apart. The period asked about is what the
+        # answer has to cover; the incident window is the slice of it examined
+        # against a baseline. Printing only the second is what made an answer
+        # about twenty minutes read as an answer about six hours.
+        scanned = windows.scanned or windows.requested
         transcript = history_lines + [
             f"Question: {plan.goal}",
             f"System: {plan.system_id} / {plan.environment}",
             f"Focus service: {plan.service or 'whole system'}",
             f"Known services: {', '.join(self._known_services(evidence)) or 'none observed'}",
-            f"Window analysed: {windows.incident}",
+            f"Whole period asked about: {scanned}",
+            f"Stretch analysed in depth against a baseline: {windows.incident}",
+        ]
+        if recent_status is not None:
+            transcript.append(
+                f"Current status, measured separately over the last "
+                f"{recent_status.minutes} minutes: {recent_status.status.upper()} — "
+                f"{recent_status.status_reason}"
+            )
+        transcript += [
             "",
             f"TASK TYPE: {mode.value}. {MODE_GUIDANCE[mode]}",
             "",
@@ -281,6 +357,35 @@ class ReActAgent:
             if mode in (AnswerMode.DATA_EXTRACTION, AnswerMode.AGGREGATION):
                 opening_text += (" Put one row per signal in `table`, leading with "
                                  "its evidence ID.")
+        # The sweep goes in the opening too, and deliberately so. Front-loading
+        # costs tokens on every remaining step; *not* front-loading costs a whole
+        # round trip, which re-sends the same transcript anyway and adds a step of
+        # latency. Measured against this prompt the front-loaded form is cheaper —
+        # and it removes the failure it exists to prevent, which is a loop that
+        # never asks what else was in the range and reports one issue for three.
+        # The per-episode detail stays behind get_episodes; only the shape is here.
+        episode_ids: list[str] = []
+        if len(windows.episodes) > 1:
+            listing = "\n".join(
+                f"- [{e.id}] {clock(e.start)}-{clock(e.end)} ({e.minutes:.0f}m, "
+                f"{e.severity}, peak {e.peak_errors_per_min:.0f}/min)"
+                + (" <- the one analysed in depth below" if e.primary else "")
+                + (" <- had not resolved when the range ended" if e.ongoing else "")
+                for e in windows.episodes
+            )
+            sweep_text = (
+                f"The whole period asked about ({scanned}) was swept end to end and "
+                f"holds {len(windows.episodes)} SEPARATE elevated stretches:\n{listing}\n"
+                f"Only one of them has signals and a baseline behind it. The answer must "
+                f"still account for all of them — call get_episodes for what was in each."
+            )
+            episode_ids = [e.id for e in windows.episodes]
+            bindings.exposed_ids.update(episode_ids)
+            transcript.append("Observation (provided automatically, before you asked): "
+                              + sweep_text)
+            yield {"type": "observation", "step": 0, "text": sweep_text,
+                   "evidence_ids": episode_ids, "table": None, "automatic": True}
+
         transcript.append("Observation (provided automatically, before you asked): "
                           + opening_text)
         yield {"type": "observation", "step": 0, "text": opening_text,
@@ -427,7 +532,18 @@ class ReActAgent:
                    "evidence_ids": observation.evidence_ids,
                    "table": observation.table}
             transcript.append(f"Action: {action} {json.dumps(action_input)}")
-            transcript.append(f"Observation: {observation.text}")
+            # Bounded here, at the point of appending, rather than by rewriting
+            # the transcript later. The transcript stays append-only, which is
+            # what lets a provider cache the prompt prefix across all eight
+            # steps: every earlier byte is identical from one call to the next,
+            # so only the newest lines are ever re-read. Compacting old entries
+            # instead would save a few tokens per step and lose the cache on all
+            # of them. The reader still sees the full observation above — this
+            # bound applies only to the copy the model carries forward.
+            transcript.append(
+                "Observation: "
+                + trim_observation(observation.text, settings.react_observation_chars)
+            )
 
         # Out of steps. What was gathered is still worth reporting, so hand back
         # the transcript rather than nothing.

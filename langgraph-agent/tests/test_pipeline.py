@@ -9,10 +9,10 @@ from app.agents.react import ReActAgent
 from app.llm.base import LLMClient, LLMResponse, LLMUnavailable, PromptTruncated
 from app.models.answer import AnswerMode, CitationStatus
 from app.models.domain import ServiceDescriptor, SystemDescriptor
-from app.models.evidence import EventEvidence, LogEvidence, MetricEvidence
+from app.models.evidence import EventEvidence, LogEvidence, LogSnapshot, MetricEvidence
 from app.models.plan import InvestigationRequest
 from app.pipeline.run import InvestigationPipeline
-from tests.conftest import buckets, event, pattern, series
+from tests.conftest import T0, at, buckets, event, pattern, series
 
 SYSTEM = SystemDescriptor(
     id="shopdemo", name="Shop Demo", environments=["staging"], namespaces=["shopdemo"],
@@ -53,15 +53,30 @@ class ScriptedLLM(LLMClient):
 
 
 class FakeLogTool:
-    def __init__(self, evidence: LogEvidence, counts: list[int]) -> None:
+    def __init__(self, evidence: LogEvidence, counts: list[int],
+                 snapshot_errors: int = 4) -> None:
         self.evidence = evidence
         self.counts = counts
+        self.snapshot_errors = snapshot_errors
+        # Every window the cheap aggregation was asked for: one per elevated
+        # stretch found by the sweep, plus one for the current-status probe.
+        self.snapshots: list = []
 
     async def histogram(self, plan, window, interval="60s"):
         return buckets(self.counts)
 
     async def collect(self, plan, incident, baseline):
         return self.evidence
+
+    async def snapshot(self, plan, window, **_kwargs):
+        self.snapshots.append(window)
+        return LogSnapshot(
+            window=window,
+            total_documents=500,
+            by_level={"ERROR": self.snapshot_errors, "INFO": 496},
+            errors_by_service={"payment-db": self.snapshot_errors},
+            top_errors=[f"payment-db: connection refused (x{self.snapshot_errors})"],
+        )
 
 
 class FakeTool:
@@ -115,9 +130,20 @@ PLAN = json.dumps({"intent": "incident_investigation", "service": None,
 COUNTS = [0, 0, 1, 0, 1, 40, 45, 38, 41, 44]
 
 
-def ask(question="why is checkout failing?"):
-    return InvestigationRequest(system_id="shopdemo", environment="staging",
-                                question=question)
+def ask(question="why is checkout failing?", *, start=None, end=None):
+    """A request, optionally pinned to an explicit range.
+
+    The fake histogram is anchored to a fixed date, and the sweep — unlike onset
+    detection — only reports stretches that fall *inside the period asked
+    about*. A test about what the sweep found therefore has to state that period
+    rather than let the planner default to "the last hour", which lands nowhere
+    near the fixture.
+    """
+    return InvestigationRequest(
+        system_id="shopdemo", environment="staging", question=question,
+        start_time=start.isoformat() if start else None,
+        end_time=end.isoformat() if end else None,
+    )
 
 
 @pytest.mark.asyncio
@@ -387,3 +413,128 @@ async def test_re_requesting_the_seeded_signals_does_not_cost_a_step():
             texts.append(stage_event.data["text"])
 
     assert "already called" in texts[1], "the repeat guard should catch the re-ask"
+
+
+@pytest.mark.asyncio
+async def test_a_run_reports_the_whole_range_and_the_present_moment():
+    """The two additions, end to end through the graph.
+
+    A question whose range holds a second, separate failure must come back
+    describing both — the deep analysis of one, and a measurement of the other —
+    and must say what the system is doing now. Neither is asked of the model:
+    both are attached from what the pipeline measured, so an answer that talks
+    about one failure still carries the list of three.
+    """
+    logs, events, metrics = dependency_outage_evidence()
+    # Quiet, a failure, quiet, and a second failure still running at the end.
+    counts = ([1, 0, 1, 0, 1] * 3
+              + [40, 45, 38, 41, 44]
+              + [1, 0, 1, 0, 1] * 3
+              + [55, 60, 58, 62])
+    llm = ScriptedLLM(
+        PLAN,
+        json.dumps({"thought": "what else happened in this range?",
+                    "action": "get_episodes", "action_input": {},
+                    "is_finished": False}),
+        json.dumps({
+            "thought": "payment-db is the deepest failing service",
+            "action": None, "is_finished": True,
+            "answer": {
+                "headline": "payment-db became unavailable",
+                "detail": "Calls to payment-db stopped succeeding.",
+                "root_cause_service": "payment-db",
+                "reasoning": [{"claim": "calls to payment-db are failing",
+                               "evidence_ids": ["sig:DEPENDENCY_UNAVAILABLE:payment-db"],
+                               "kind": "observation"}],
+                "confidence": 0.8,
+            },
+        }),
+    )
+    log_tool = FakeLogTool(logs, counts, snapshot_errors=900)
+    pipeline = InvestigationPipeline(
+        log_tool=log_tool,
+        event_tool=FakeTool(events),
+        metric_tool=FakeTool(metrics),
+        orchestrator=OrchestratorAgent(llm),
+        react_agent=ReActAgent(llm, max_steps=4),
+        registry=FakeRegistry(),
+    )
+
+    result = None
+    windows_stage = None
+    async for stage_event in pipeline.run(
+            ask("what went wrong?", start=T0, end=at(len(counts) * 60))):
+        if stage_event.stage == "windows":
+            windows_stage = stage_event.data
+        if stage_event.stage == "result":
+            result = stage_event.data
+
+    assert result is not None
+
+    # -- the whole range ---------------------------------------------------
+    episodes = result["windows"]["episodes"]
+    assert len(episodes) == 2, "both failures in the range are reported, not just one"
+    assert sum(1 for e in episodes if e["primary"]) == 1
+    assert episodes[-1]["ongoing"] is True
+    assert result["windows"]["scanned"], "the period swept is recorded alongside the incident"
+    assert result["answer"]["window_issues"], "the issue list reaches the answer"
+
+    # Each stretch was described by its own cheap aggregation rather than a
+    # second full investigation.
+    assert all(e["breakdown_status"] == "ok" for e in episodes)
+    assert all(e["services"] == ["payment-db"] for e in episodes)
+
+    # -- the present moment ------------------------------------------------
+    recent = result["recent_status"]
+    assert recent is not None and recent["status"] == "critical"
+    assert windows_stage["recent_status"]["status"] == "critical", (
+        "the reader sees it while the run is still going, not only at the end")
+    assert result["answer"]["recent_status"]["status"] == "critical"
+    assert any("Right now" in l for l in result["answer"]["limitations"])
+
+    # The probe measures against the clock, so it asked for a window ending now
+    # rather than at the end of the period the question covered.
+    from app.models.domain import utcnow
+    latest = max(w.end for w in log_tool.snapshots)
+    assert abs((latest - utcnow()).total_seconds()) < 30
+
+
+@pytest.mark.asyncio
+async def test_the_loop_is_told_about_the_other_failures_before_it_chooses():
+    """Front-loaded rather than left for the model to ask about.
+
+    Not front-loading costs a whole round trip — which re-sends the same
+    transcript anyway — and risks the loop never asking, which is the failure
+    being fixed. The listing goes in the opening observation; the detail stays
+    behind get_episodes.
+    """
+    logs, events, metrics = dependency_outage_evidence()
+    counts = ([1, 0, 1, 0, 1] * 3 + [40, 45, 38, 41, 44]
+              + [1, 0, 1, 0, 1] * 3 + [55, 60, 58, 62])
+    llm = ScriptedLLM(
+        PLAN,
+        json.dumps({"thought": "done", "action": None, "is_finished": True,
+                    "answer": {"headline": "payment-db went down", "confidence": 0.5}}),
+        json.dumps({"thought": "done", "action": None, "is_finished": True,
+                    "answer": {"headline": "payment-db went down", "confidence": 0.5}}),
+    )
+    pipeline = InvestigationPipeline(
+        log_tool=FakeLogTool(logs, counts),
+        event_tool=FakeTool(events),
+        metric_tool=FakeTool(metrics),
+        orchestrator=OrchestratorAgent(llm),
+        react_agent=ReActAgent(llm, max_steps=4),
+        registry=FakeRegistry(),
+    )
+
+    async for _ in pipeline.run(ask("what went wrong?", start=T0,
+                                    end=at(len(counts) * 60))):
+        pass
+
+    reasoning_prompt = llm.prompts[-1]
+    assert "SEPARATE elevated stretches" in reasoning_prompt
+    assert "Whole period asked about" in reasoning_prompt
+    assert "Stretch analysed in depth" in reasoning_prompt, (
+        "the two windows are stated apart, so an answer about part of the range "
+        "does not read as an answer about all of it")
+    assert "Current status, measured separately" in reasoning_prompt

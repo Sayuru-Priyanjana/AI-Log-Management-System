@@ -89,6 +89,29 @@ FIELDS: tuple[Field, ...] = (
           help="Load-bearing: Ollama silently truncates prompts longer than this, "
                "keeping only the tail."),
 
+    Field("gemini_cache_ttl_seconds", "model", "Gemini cache lifetime (seconds)",
+          kind="number",
+          help="How long Gemini keeps the cached system prompt. Only used when the "
+               "API key has cached-content quota; free-tier keys report zero and "
+               "the setting has no effect."),
+    Field("llm_prompt_caching", "model", "Prompt caching", kind="boolean",
+          help="Marks the unchanging half of each prompt — the system prompt and the "
+               "tool schema — as cacheable, so a run's eight reasoning steps stop "
+               "re-reading it eight times. Turn off only for a gateway that rejects "
+               "the block form."),
+
+    # -- what an answer covers ---------------------------------------------
+    # This is the one exception to "no thresholds here", and a deliberate one:
+    # it does not change what counts as an incident, only how much of the
+    # present tense an answer reports. Two readers can disagree about what
+    # "recent" means without either of them making a stored investigation
+    # incomparable with the next.
+    Field("recent_status_minutes", "analysis", "Current status window (minutes)",
+          kind="number", rebuilds=False,
+          help="Every root-cause and health-check answer also reports what the system "
+               "is doing right now, measured over this many minutes — whatever period "
+               "the question itself asked about."),
+
     # -- presentation ------------------------------------------------------
     Field("display_timezone", "display", "Time zone", rebuilds=False,
           help="An offset like +05:30, or a name like Asia/Colombo. Everything is "
@@ -152,6 +175,15 @@ def validate(name: str, value: Any) -> Any:
 
     if name == "ollama_num_ctx" and int(coerced) < 2048:
         raise ValueError("a context window below 2048 truncates every prompt this agent sends")
+
+    if name == "recent_status_minutes":
+        minutes = int(coerced)
+        if minutes < 1:
+            raise ValueError("the current-status window must be at least a minute")
+        if minutes > 1440:
+            # Beyond a day this stops being "now" and starts being a second
+            # investigation running on every question.
+            raise ValueError("the current-status window cannot exceed 24 hours (1440 minutes)")
 
     return coerced
 
