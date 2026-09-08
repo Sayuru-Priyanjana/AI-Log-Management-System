@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from app.models.analysis import Candidate, InvestigationWindows
+from app.models.analysis import Candidate, InvestigationWindows, RecentStatus
 from app.models.domain import TimeWindow, ensure_utc
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
@@ -121,7 +121,8 @@ class ToolBindings:
     def __init__(self, plan: InvestigationPlan, windows: InvestigationWindows,
                  evidence: EvidenceBundle, signals: list[Signal] | None = None,
                  candidates: list[Candidate] | None = None,
-                 log_tool=None, search_window: TimeWindow | None = None) -> None:
+                 log_tool=None, search_window: TimeWindow | None = None,
+                 recent_status: RecentStatus | None = None) -> None:
         self.plan = plan
         self.windows = windows
         self.evidence = evidence
@@ -137,6 +138,11 @@ class ToolBindings:
         # what came before it, and clamping the search to the incident makes that
         # question unanswerable by construction.
         self.search_window = search_window
+        # What the system is doing now, measured over a fixed recent window
+        # whatever period the question asked about. Held here so the loop can ask
+        # for it by name rather than being told once and expected to remember —
+        # "is it still broken?" is a follow-up the model raises itself.
+        self.recent_status = recent_status
         # Every ID the loop has legitimately been shown.
         self.exposed_ids: set[str] = set()
         self.call_log: list[tuple[str, dict]] = []
@@ -695,20 +701,105 @@ class ToolBindings:
             f"{verdict}\nThe {len(found)} earliest matching line(s):",
         )
 
+    def get_episodes(self, _: str = "") -> ToolResult:
+        """Every elevated stretch in the period asked about, not just the one analysed.
+
+        The single most common wrong answer this replaced: a question covering
+        six hours, three separate failures inside it, and a report describing the
+        first one as if it were the whole story. The deep analysis is still about
+        one stretch — that is what keeps its baseline ratios meaningful — but the
+        reader is owed the list.
+        """
+        episodes = self.windows.episodes
+        scanned = self.windows.scanned or self.windows.requested
+        if not episodes:
+            return ToolResult(
+                f"The whole period asked about ({scanned}) was swept end to end and no "
+                f"stretch of elevated errors was found in it. {self.windows.sweep_method} "
+                f"That is a measurement, not missing data: nothing in this range "
+                f"departed far enough from its own normal level to count as an episode."
+            )
+
+        lines = [f"The whole period asked about ({scanned}) was swept end to end. "
+                 f"{self.windows.sweep_method}", ""]
+        ids = []
+        rows = []
+        for episode in episodes:
+            lines.append(episode.summary_line())
+            ids.append(episode.id)
+            rows.append([
+                episode.id,
+                f"{clock(episode.start)}-{clock(episode.end)}",
+                f"{episode.minutes:.0f}m",
+                episode.severity,
+                f"{episode.peak_errors_per_min:.1f}",
+                f"{episode.total_errors}",
+                ", ".join(episode.services) or "-",
+                "yes" if episode.primary else "no",
+            ])
+        if any(not e.primary for e in episodes):
+            lines.append("")
+            lines.append(
+                "Only the stretch marked [investigated in full below] has signals, a "
+                "baseline comparison and a call graph behind it. Report the others as "
+                "separate issues with their times, rates and services, and say plainly "
+                "that they were measured rather than diagnosed."
+            )
+
+        table = {
+            "columns": ["id", "when", "duration", "severity", "peak errors/min",
+                        "total errors", "services", "analysed in depth"],
+            "rows": rows,
+            "total_matched": len(rows),
+            "truncated": False,
+            "query_description": f"elevated stretches across {scanned}",
+        }
+        return ToolResult("\n".join(lines), ids, table)
+
+    def get_recent_status(self, _: str = "") -> ToolResult:
+        """How the system is behaving right now, whatever period was asked about.
+
+        Exists because "what was the root cause between 09:00 and 10:00" and "is
+        it still happening" are asked together and were answerable only one at a
+        time. This is measured against the clock, not against the question's
+        window, so an investigation into a period that closed an hour ago still
+        reports the present tense.
+        """
+        recent = self.recent_status
+        if recent is None:
+            return ToolResult(
+                "The current-status probe did not run for this investigation, so nothing "
+                "can be said about the present moment — only about the window analysed."
+            )
+        return ToolResult(recent.summary_line())
+
     def get_investigation_scope(self, _: str = "") -> ToolResult:
         """What was actually examined — window, baseline, and any gaps.
 
         Exposed as a tool so the loop can discover the limits of its own evidence
         rather than assuming the window covers whatever the user had in mind.
         """
+        scanned = self.windows.scanned or self.windows.requested
         parts = [
             f"Question: {self.plan.goal}",
             f"System: {self.plan.system_id} / {self.plan.environment}",
             f"Focus service: {self.plan.service or 'whole system'}",
-            f"Incident window analysed: {self.windows.incident}",
+            # Two windows, never one. The period asked about is what the answer
+            # has to cover; the incident window is the part of it examined in
+            # depth. Reporting only the second made an answer about twenty
+            # minutes read as an answer about six hours.
+            f"Whole period asked about, swept end to end: {scanned}",
+            f"Elevated stretches found in it: {len(self.windows.episodes)} "
+            f"({self.windows.sweep_method})",
+            f"Incident window analysed in depth: {self.windows.incident}",
             f"Baseline window compared against: {self.windows.baseline or 'NONE AVAILABLE'}",
             f"Onset detection: {self.windows.method}",
         ]
+        if self.recent_status is not None:
+            parts.append(f"Current status, measured separately over the last "
+                         f"{self.recent_status.minutes} minutes: "
+                         f"{self.recent_status.status.upper()} — "
+                         f"{self.recent_status.status_reason}")
         if self.windows.onset_before_window:
             parts.append("WARNING: the incident began before the window examined, so its "
                          "true start was not observed.")
@@ -760,6 +851,18 @@ class ToolBindings:
                  "the user asks how many, or for a rate.",
                  {"group_by": "level | service | pattern",
                   "service_name": "service or 'all'"}, "count_logs"),
+        ToolSpec("get_episodes",
+                 "EVERY elevated stretch found across the WHOLE period asked about, with "
+                 "its times, rate, services and severity. Call this for any question about "
+                 "a range rather than a moment — the deep analysis covers one stretch, and "
+                 "this is the list the answer has to account for.",
+                 {}, "get_episodes"),
+        ToolSpec("get_recent_status",
+                 "What the system is doing RIGHT NOW: error rate, worst services, and any "
+                 "pod that is not Ready or has restarted. Measured over a fixed recent "
+                 "window regardless of the period asked about, so it answers 'is it still "
+                 "happening'.",
+                 {}, "get_recent_status"),
         ToolSpec("get_investigation_scope",
                  "What was actually examined: windows, baseline, evidence gaps. Use it "
                  "before concluding that something is absent.",

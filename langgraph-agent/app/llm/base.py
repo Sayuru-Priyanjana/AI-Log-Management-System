@@ -14,6 +14,26 @@ class LLMResponse:
     model: str = ""
     warnings: list[str] = field(default_factory=list)
 
+    # Prompt caching, reported separately from `prompt_tokens` because the two
+    # are billed differently and because the difference is the whole point of
+    # measuring it. A ReAct run makes eight calls whose prompts share a long
+    # identical prefix — the system prompt, the tool schema, the evidence
+    # header, and every earlier step of the transcript — so from the second call
+    # on, most of the prompt should be a cache *read*. If these stay at zero
+    # across a run, caching is not working and the run is paying full price
+    # eight times over; that is invisible in a total token count, which looks
+    # the same either way.
+    cached_prompt_tokens: int = 0       # prefix served from cache
+    cache_write_tokens: int = 0         # prefix written to cache this call
+
+    @property
+    def cache_hit_ratio(self) -> float | None:
+        """Fraction of the prompt that did not have to be re-read."""
+        total = self.prompt_tokens + self.cached_prompt_tokens
+        if not total:
+            return None
+        return self.cached_prompt_tokens / total
+
 
 class LLMUnavailable(RuntimeError):
     """The model could not be reached or did not answer."""

@@ -5,7 +5,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from .answer import StructuredAnswer, TimelineEntry
+from .answer import Episode, RecentStatus, StructuredAnswer, TimelineEntry
 from .domain import TimeWindow, utcnow
 from .plan import InvestigationPlan
 from .signals import Signal
@@ -115,6 +115,20 @@ class InvestigationWindows(BaseModel):
     # nothing, and the reader is told which they got.
     baseline_quality: str = "clean"      # clean | degraded | none
 
+    # The whole period the sweep covered, which is the period the question asked
+    # about. `incident` is the stretch analysed in depth and is usually a part of
+    # it; without both, an answer about twenty minutes of a six-hour question
+    # looks like an answer about the six hours.
+    scanned: TimeWindow | None = None
+    # Every elevated stretch found inside `scanned`, earliest first. Exactly one
+    # is marked primary — the one `incident` covers.
+    episodes: list[Episode] = Field(default_factory=list)
+    sweep_method: str = ""
+
+    @property
+    def secondary_episodes(self) -> list["Episode"]:
+        return [e for e in self.episodes if not e.primary]
+
 
 class InvestigationResult(BaseModel):
     id: str
@@ -142,6 +156,10 @@ class InvestigationResult(BaseModel):
     # folded into occurrence counts. This is the evidence the conclusion rests
     # on, shown rather than summarised.
     evidence_timeline: list[TimelineEntry] = Field(default_factory=list)
+
+    # What the system is doing now, measured over the configured recent window
+    # whatever period the question asked about.
+    recent_status: RecentStatus | None = None
 
     evidence_summary: dict = Field(default_factory=dict)
     timings_ms: dict[str, float] = Field(default_factory=dict)

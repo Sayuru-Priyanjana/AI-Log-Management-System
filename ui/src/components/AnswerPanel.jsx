@@ -74,6 +74,19 @@ export default function AnswerPanel({ answer, investigationId, onInvestigate }) 
         <Caveat unresolved={unresolved} unsupported={unsupported} />
       )}
 
+      {/* 1a — the present tense, directly under the verdict.
+          The narrative above is about the period that was asked about, which may
+          have closed hours ago. Whether the thing is still happening is a
+          different question and the first one a reader asks next, so it is
+          answered here rather than buried in the limitations. */}
+      <RightNow status={answer.recent_status} />
+
+      {/* 1b — everything else that went wrong in the range.
+          Only one stretch gets the full analysis; a six-hour question can hold
+          three separate failures, and listing them is the difference between an
+          answer about the question and an answer about part of it. */}
+      <WindowIssues issues={answer.window_issues} />
+
       {answer.warning_analysis && (
         <Block title="Warnings in this window">
           <p className="li-ans-body">{answer.warning_analysis}</p>
@@ -139,6 +152,118 @@ export default function AnswerPanel({ answer, investigationId, onInvestigate }) 
           open={answer.mode === 'data_extraction' || answer.mode === 'aggregation'} />
       )}
     </article>
+  );
+}
+
+const STATUS_TONE = { healthy: 'ok', degraded: 'warn', critical: 'err', unknown: 'neutral' };
+// `low` maps to the bare chip: there is no `chip--neutral`, and an undefined
+// modifier class would leave the chip unstyled rather than plainly styled.
+const SEVERITY_TONE = { critical: 'err', high: 'err', medium: 'warn', low: '' };
+
+function shortTime(value) {
+  if (!value) return '';
+  const when = new Date(value);
+  return Number.isNaN(when.getTime())
+    ? '' : when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * What the system is doing at this moment, whatever period was asked about.
+ *
+ * Measured by the pipeline over a fixed recent window — configurable under
+ * Configuration › Analysis — and not by the model, so it is a reading rather
+ * than a claim. It sits immediately below the verdict because "is it still
+ * broken?" is the question a reader has the instant they finish the headline,
+ * and answering it used to require starting a second investigation.
+ */
+function RightNow({ status }) {
+  if (!status) return null;
+  const tone = STATUS_TONE[status.status] || 'neutral';
+  const pods = [...(status.unready_pods || []), ...(status.restarting_pods || [])];
+
+  return (
+    <section className={`li-now li-now--${tone}`}>
+      <div className="li-now-head">
+        <span className={`li-now-dot li-now-dot--${tone}`} aria-hidden="true" />
+        <span className="li-now-label">Right now</span>
+        <span className="li-now-verdict">{status.status}</span>
+        <span className="spacer" />
+        <span className="li-now-window">
+          last {status.minutes} min{status.window?.end ? `, to ${shortTime(status.window.end)}` : ''}
+        </span>
+      </div>
+
+      {status.status_reason && <p className="li-now-reason">{status.status_reason}</p>}
+
+      <dl className="li-now-figures">
+        <div><dt>Errors</dt><dd>{(status.errors_per_min ?? 0).toFixed(1)}/min</dd></div>
+        <div><dt>Log lines</dt><dd>{(status.total_documents ?? 0).toLocaleString()}</dd></div>
+        {/* Not a footnote. A crashlooping service serves almost no traffic and so
+            emits almost no errors — the rate can look calm while the system is
+            down, which is exactly when this column is the one that matters. */}
+        {pods.length > 0 && (
+          <div className="li-now-figure--bad">
+            <dt>Pods affected</dt>
+            <dd className="mono">{pods.slice(0, 3).join(', ')}{pods.length > 3 ? ` +${pods.length - 3}` : ''}</dd>
+          </div>
+        )}
+      </dl>
+
+      {Object.keys(status.errors_by_service || {}).length > 0 && (
+        <div className="li-now-services">
+          {Object.entries(status.errors_by_service).slice(0, 5).map(([name, count]) => (
+            <span key={name} className="li-now-svc">
+              <span className="mono">{name}</span><span className="li-now-svc-n">{count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {status.unavailable && <p className="li-now-gap">Not fully measured: {status.unavailable}</p>}
+    </section>
+  );
+}
+
+/**
+ * Every elevated stretch found across the whole period asked about.
+ *
+ * One row per issue, with the one that got the full analysis marked. Shown only
+ * when there is more than one: a single issue is what the narrative above
+ * already describes, and repeating it as a one-row table would be noise.
+ */
+function WindowIssues({ issues }) {
+  if (!issues || issues.length < 2) return null;
+  return (
+    <Block title={`${issues.length} issues across the period you asked about`}
+      hint="The narrative above analyses one of these in depth; the rest were measured">
+      <ul className="li-eps">
+        {issues.map((e) => (
+          <li key={e.id} className={`li-ep${e.primary ? ' li-ep--primary' : ''}`}>
+            <div className="li-ep-head">
+              <span className={`chip chip--${SEVERITY_TONE[e.severity] || ''}`}>{e.severity}</span>
+              <span className="li-ep-when mono">
+                {shortTime(e.start)}–{shortTime(e.end)}
+              </span>
+              <span className="li-ep-dur">{Math.round(e.minutes ?? 0) || Math.round(
+                (new Date(e.end) - new Date(e.start)) / 60000)} min</span>
+              <span className="spacer" />
+              {e.primary && <span className="li-ep-flag">analysed in depth</span>}
+              {e.ongoing && <span className="li-ep-flag li-ep-flag--bad">unresolved</span>}
+            </div>
+            <div className="li-ep-figures">
+              peak {(e.peak_errors_per_min ?? 0).toFixed(0)}/min · {e.total_errors} errors
+              {e.elevation ? ` · ${e.elevation.toFixed(1)}× normal` : ''}
+            </div>
+            {e.services?.length > 0 && (
+              <div className="li-ep-svcs mono">{e.services.join(', ')}</div>
+            )}
+            {e.top_errors?.slice(0, 2).map((line, i) => (
+              <div key={i} className="li-ep-err">{line}</div>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </Block>
   );
 }
 

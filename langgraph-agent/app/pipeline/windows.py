@@ -6,16 +6,33 @@ import statistics
 from datetime import datetime, timedelta
 
 from app.config import settings
-from app.models.analysis import InvestigationWindows
+from app.models.analysis import Episode, InvestigationWindows
 from app.models.domain import TimeWindow, ensure_utc
 from app.models.evidence import LogBucket
-from app.models.plan import InvestigationPlan
+from app.models.plan import Intent, InvestigationPlan
 from app.tools.logs import LogTool
 from app.util.timefmt import clock
 
 logger = logging.getLogger(__name__)
 
 ERROR_LEVELS = ("ERROR", "FATAL", "CRITICAL")
+
+# Intents whose answer is about the period asked for, not about an incident
+# inside it.
+#
+# Narrowing the analysed window to the onset is right for a root-cause question:
+# it is what keeps every baseline-relative ratio measured against a comparable
+# stretch, and widening it dilutes the very spike being explained. It is simply
+# wrong for the other kind of question. "List the 5xx in the last six hours" and
+# "how many restarts today" name their range explicitly, there is no baseline
+# ratio to protect, and answering them from the twenty minutes after the first
+# error is not a narrower answer — it is a wrong count and a short list, both
+# presented as complete.
+FULL_RANGE_INTENTS = frozenset({
+    Intent.DATA_EXTRACTION,
+    Intent.AGGREGATION,
+    Intent.HISTORICAL_QUERY,
+})
 
 
 class OnsetResult:
@@ -354,6 +371,193 @@ def place_baseline(
     return None, False
 
 
+def quiet_level(buckets: list[LogBucket], quantile: float = 0.25) -> float:
+    """The error rate this range runs at when nothing is wrong.
+
+    Taken from a low quantile rather than the median, for the same reason
+    `place_baseline` does: when an episode fills more than 40% of the range the
+    median climbs with it, and a stretch running at six times normal reads as
+    normal. A low quantile is unmoved by an episode occupying up to three
+    quarters of the range.
+    """
+    counts = sorted(float(b.errors) for b in buckets)
+    if not counts:
+        return 0.0
+    return counts[max(0, min(len(counts) - 1, int(len(counts) * quantile)))]
+
+
+def _episode_severity(elevation: float | None, peak: float, minutes: float) -> str:
+    """How loud an episode was, from how far above normal it ran and for how long.
+
+    Deliberately not a function of absolute count: "40 errors" means something
+    different on a service that normally emits 30 and one that normally emits 0,
+    which is the same reason every threshold in this pipeline is a ratio.
+    """
+    lift = elevation if elevation is not None else 1.0
+    if lift >= 8 or (lift >= 4 and minutes >= 10):
+        return "critical"
+    if lift >= 4 or (lift >= 2.5 and minutes >= 10):
+        return "high"
+    if lift >= 2 or peak >= 10:
+        return "medium"
+    return "low"
+
+
+def detect_episodes(
+    buckets: list[LogBucket],
+    *,
+    within: TimeWindow,
+    threshold: float | None = None,
+    quiet: float | None = None,
+    quiet_gap: int | None = None,
+    min_buckets: int | None = None,
+    limit: int | None = None,
+) -> tuple[list[Episode], str]:
+    """Every distinct elevated stretch inside the period asked about.
+
+    `detect_onset` answers a different question — where the incident being
+    investigated *began* — and answers it with one moment. Asked about six hours
+    containing three separate failures, it returns the first, the analysed window
+    is anchored there, and the two later ones are never described. The reader
+    sees "one issue" for a range that held three.
+
+    This sweeps the requested range instead of stopping at the first crossing.
+    The rules are the ones onset detection already uses, so the two agree about
+    what counts as elevated:
+
+    * the entry bar is the onset threshold — median + k*spread over the calmest
+      buckets, floored at sqrt(median) so ordinary Poisson noise never enters;
+    * the *exit* bar is deliberately lower than the entry bar. With one bar, a
+      single calm minute inside a ten-minute failure ends the episode and the
+      next minute starts another, reporting one incident as four;
+    * an episode has to span `min_buckets` to be reported at all, because one
+      elevated bucket at this resolution is noise that happened to clear the
+      line;
+    * `quiet_gap` calm buckets in a row end it. Anything shorter is a dip inside
+      one episode, not the boundary between two.
+
+    Returns the episodes earliest-first, plus a sentence describing the sweep,
+    which is what the reader is shown when nothing was found — "nothing crossed"
+    and "we did not look" are different answers.
+    """
+    quiet_gap = settings.episode_quiet_gap_buckets if quiet_gap is None else quiet_gap
+    min_buckets = settings.episode_min_buckets if min_buckets is None else min_buckets
+    limit = settings.max_reported_episodes if limit is None else limit
+
+    if not buckets:
+        return [], "no log histogram was available, so the range was not swept"
+
+    # The bars come from the whole histogram, which reaches further back than the
+    # question did. Deriving them from the requested slice alone would let a
+    # range that is *entirely* inside an incident set its own bar at incident
+    # level and report itself as quiet.
+    if threshold is None or quiet is None:
+        reference = detect_onset(buckets)
+        threshold = reference.threshold if threshold is None else threshold
+        quiet = quiet_level(buckets) if quiet is None else quiet
+
+    inside = [b for b in buckets if within.contains(ensure_utc(b.timestamp))]
+    if len(inside) < 2:
+        return [], (f"the period asked about holds {len(inside)} histogram bucket(s), "
+                    f"too few to separate one episode from another")
+
+    spacings = [
+        (ensure_utc(b.timestamp) - ensure_utc(a.timestamp)).total_seconds()
+        for a, b in zip(inside, inside[1:])
+    ]
+    step = timedelta(seconds=statistics.median(spacings)) if spacings else timedelta(minutes=1)
+
+    # Hysteresis, with the exit bar scaled to the episode rather than fixed.
+    #
+    # Entering costs the full threshold. Staying costs less — real failures dip,
+    # and one calm minute inside a ten-minute outage must not end it. But a
+    # *fixed* lower bar is worse than no hysteresis at all: it sits within
+    # ordinary variance, so every episode chains through the quiet stretch after
+    # it and swallows the rest of the range. Measured on a baseline running at
+    # 2-4 errors/min, a floor of half the threshold (3.9) was crossed by routine
+    # noise of 4, and a single elevated bucket grew into a six-minute "episode"
+    # made almost entirely of normal traffic.
+    #
+    # A fifth of the episode's own running peak separates the two cleanly, which
+    # is the same rule — and the same constant — the backward onset scan settled
+    # on for the same reason. The floor stays as a lower bound for a small
+    # episode whose peak is barely above the threshold.
+    exit_floor = max(quiet * 1.5, threshold * 0.5, float(settings.onset_min_absolute))
+
+    runs: list[list[int]] = []
+    current: list[int] | None = None
+    peak = 0.0
+    gap = 0
+    for index, bucket in enumerate(inside):
+        count = float(bucket.errors)
+        if current is None:
+            if count >= threshold:
+                current, gap, peak = [index], 0, count
+            continue
+        peak = max(peak, count)
+        if count >= max(exit_floor, peak * 0.2):
+            current.append(index)
+            gap = 0
+        else:
+            gap += 1
+            if gap >= quiet_gap:
+                runs.append(current)
+                current, gap, peak = None, 0, 0.0
+    if current is not None:
+        runs.append(current)
+
+    episodes: list[Episode] = []
+    for number, run in enumerate(runs, start=1):
+        if len(run) < min_buckets:
+            continue
+        counts = [float(inside[i].errors) for i in run]
+        start = ensure_utc(inside[run[0]].timestamp)
+        # A bucket labels the *start* of its interval, so the episode runs to the
+        # end of its last bucket, not to that bucket's own label. Without the
+        # step, a two-minute episode is reported as one minute long and its
+        # per-minute rates come out doubled.
+        end = min(ensure_utc(inside[run[-1]].timestamp) + step, within.end)
+        mean = statistics.fmean(counts)
+        peak = max(counts)
+        elevation = (mean / quiet) if quiet > 0 else (None if mean <= 0 else float("inf"))
+        if elevation == float("inf"):
+            elevation = None
+        minutes = max((end - start).total_seconds() / 60.0, 1.0)
+        episodes.append(Episode(
+            id=f"ep:{number}",
+            start=start,
+            end=end,
+            peak_errors_per_min=round(peak, 2),
+            mean_errors_per_min=round(mean, 2),
+            total_errors=int(sum(counts)),
+            elevation=round(elevation, 2) if elevation is not None else None,
+            severity=_episode_severity(elevation, peak, minutes),
+            # The run reaches the last bucket of the range, so whatever this was
+            # had not finished when the data ran out.
+            ongoing=run[-1] == len(inside) - 1,
+        ))
+
+    if not episodes:
+        return [], (f"the whole period was swept at {step.total_seconds():.0f}s resolution "
+                    f"and no stretch stayed above {threshold:.1f} errors/min; the range "
+                    f"runs at about {quiet:.1f} errors/min")
+
+    # Worst first when there are more than fit, but reported earliest-first: the
+    # cap has to keep the *biggest* issues, and the reader has to read them in
+    # the order they happened.
+    if len(episodes) > limit:
+        kept = sorted(episodes, key=lambda e: -(e.mean_errors_per_min * e.minutes))[:limit]
+        dropped = len(episodes) - len(kept)
+        episodes = sorted(kept, key=lambda e: e.start)
+        note = (f"{len(episodes)} elevated stretch(es) reported out of {len(episodes) + dropped} "
+                f"found; the {dropped} smallest were left out")
+    else:
+        note = (f"{len(episodes)} elevated stretch(es) found across the whole period, "
+                f"swept at {step.total_seconds():.0f}s resolution against "
+                f"{threshold:.1f} errors/min")
+    return episodes, note
+
+
 class WindowResolver:
     def __init__(self, log_tool: LogTool, prometheus=None) -> None:
         self._logs = log_tool
@@ -395,6 +599,40 @@ class WindowResolver:
                 latest = (onset, f"p95 latency for {service} stepped from "
                                  f"{before:.2f}s to {after:.2f}s and stayed there")
         return latest
+
+    @staticmethod
+    def _sweep(windows: InvestigationWindows, buckets: list[LogBucket]) -> None:
+        """Describes the *whole* period asked about, not only the part analysed.
+
+        The deep analysis is anchored to one onset and is deliberately narrow —
+        that is what keeps its baseline-relative ratios meaningful. The cost of
+        that narrowness is that everything else inside the question goes
+        unmentioned, which is why a six-hour question containing three failures
+        reported one. This fills the gap: the requested range is swept end to
+        end, every elevated stretch is measured, and the one the analysis
+        actually covers is marked so the reader can see which of the issues got
+        the full treatment and which were only counted.
+        """
+        scanned = TimeWindow(start=windows.requested.start,
+                             end=windows.requested.end, label="scanned")
+        episodes, note = detect_episodes(buckets, within=scanned)
+
+        # Which of them the deep analysis is about. Overlap rather than
+        # containment: the incident window starts a pre-roll before the onset, so
+        # it reaches slightly outside the episode it belongs to.
+        incident = windows.incident
+        best, best_overlap = None, 0.0
+        for episode in episodes:
+            overlap = (min(episode.end, incident.end)
+                       - max(episode.start, incident.start)).total_seconds()
+            if overlap > best_overlap:
+                best, best_overlap = episode, overlap
+        if best is not None:
+            best.primary = True
+
+        windows.scanned = scanned
+        windows.episodes = episodes
+        windows.sweep_method = note
 
     async def resolve(self, plan: InvestigationPlan) -> tuple[InvestigationWindows, list[LogBucket]]:
         requested = plan.requested_window
@@ -470,9 +708,41 @@ class WindowResolver:
                 onset_before_window=False,
                 method=method,
             )
+            self._sweep(windows, buckets)
             return windows, buckets
 
         onset = ensure_utc(buckets[onset_result.index].timestamp)
+
+        if plan.intent in FULL_RANGE_INTENTS:
+            # Retrieval and counting answer the question's own range. The onset
+            # is still found and still reported — "the errors you asked to see
+            # began at 09:14" is useful — but it does not decide what gets
+            # queried, and the baseline is placed relative to it as usual so any
+            # signals detected alongside remain comparable.
+            incident = TimeWindow(start=requested.start, end=requested.end,
+                                  label="incident")
+            baseline, baseline_quiet = place_baseline(
+                buckets,
+                latest_end=min(onset - pre_roll, requested.start),
+                # Sized like every other branch: long enough to be a fair
+                # comparison, capped at an hour so a 7-day retrieval question
+                # does not draw its baseline from a different day.
+                length=min(max(incident.duration, min_baseline), timedelta(hours=1)),
+                earliest=search.start,
+                min_length=min_baseline,
+            )
+            windows = InvestigationWindows(
+                requested=requested, incident=incident, baseline=baseline,
+                onset=onset, onset_detected=True,
+                onset_before_window=onset < requested.start,
+                baseline_quality=("none" if not baseline
+                                  else "clean" if baseline_quiet else "degraded"),
+                method=(f"this question asks for records over a stated period, so the whole "
+                        f"of it was queried rather than the stretch around the onset; "
+                        f"errors first departed from normal at {clock(onset)}"),
+            )
+            self._sweep(windows, buckets)
+            return windows, buckets
 
         if onset_result.before_window:
             # Elevated from the very first bucket we can see. The true start is
@@ -506,6 +776,7 @@ class WindowResolver:
                            f"been unhealthy" if usable else
                            "no comparison window could be formed at all")),
             )
+            self._sweep(windows, buckets)
             return windows, buckets
 
         # The search deliberately looks back several times further than asked, to
@@ -572,6 +843,7 @@ class WindowResolver:
                               else "clean" if baseline_quiet else "degraded"),
             method=method,
         )
+        self._sweep(windows, buckets)
         logger.info(
             "Windows resolved: onset=%s incident=%s baseline=%s",
             onset.isoformat(), windows.incident, windows.baseline,

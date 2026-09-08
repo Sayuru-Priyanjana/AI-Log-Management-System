@@ -6,7 +6,9 @@ from datetime import datetime
 
 from app.config import settings
 from app.models.domain import TimeWindow, ensure_utc
-from app.models.evidence import LogBucket, LogEvidence, LogPattern, LogSample
+from app.models.evidence import (
+    LogBucket, LogEvidence, LogPattern, LogSample, LogSnapshot,
+)
 from app.models.plan import InvestigationPlan
 from app.sources.opensearch import OpenSearchClient, OpenSearchError
 from app.tools.fingerprint import fingerprint, pattern_id
@@ -117,6 +119,68 @@ class LogTool:
                 by_level=levels,
             ))
         return buckets
+
+    # -- snapshot ----------------------------------------------------------
+    async def snapshot(self, plan: InvestigationPlan, window: TimeWindow, *,
+                       top_services: int = 5, top_messages: int = 3) -> LogSnapshot:
+        """Level counts, the noisiest services and their commonest errors.
+
+        One aggregation: no examples, no dependency tree, no per-message
+        timestamps, none of the baseline comparison `collect` does. That matters
+        because this runs once per elevated stretch the sweep found plus once for
+        the current-status overlay, and a full pattern query per episode would
+        multiply the cost of an investigation by the number of issues in it —
+        exactly the wrong way round, since finding more issues is the point.
+
+        `track_total_hits` for the same reason every other count here sets it:
+        OpenSearch otherwise stops counting at 10,000 and silently understates a
+        busy window.
+        """
+        body = {
+            "size": 0,
+            "track_total_hits": True,
+            "query": {"bool": {"filter": self.base_filters(plan, window)}},
+            "aggs": {
+                "levels": {"terms": {"field": "log.level", "size": 10}},
+                "errors": {
+                    "filter": {"terms": {"log.level": list(ERROR_LEVELS)}},
+                    "aggs": {
+                        "by_service": {
+                            "terms": {"field": "service.name", "size": top_services},
+                            "aggs": {
+                                "messages": {"terms": {"field": "log.message.keyword",
+                                                       "size": top_messages}},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        snapshot = LogSnapshot(window=window)
+        try:
+            result = await self._client.search(self._index, body)
+        except OpenSearchError as exc:
+            # Never fatal. This is a description of context around an answer, and
+            # losing it must not lose the answer.
+            logger.warning("Snapshot query failed for %s: %s", window, exc)
+            snapshot.status = "unavailable"
+            snapshot.reason = str(exc)
+            return snapshot
+
+        aggs = result.get("aggregations", {})
+        snapshot.total_documents = result.get("hits", {}).get("total", {}).get("value", 0)
+        snapshot.by_level = {
+            bucket["key"]: bucket["doc_count"]
+            for bucket in aggs.get("levels", {}).get("buckets", [])
+        }
+        for service in aggs.get("errors", {}).get("by_service", {}).get("buckets", []):
+            name = service["key"]
+            snapshot.errors_by_service[name] = service["doc_count"]
+            for message in service.get("messages", {}).get("buckets", []):
+                snapshot.top_errors.append(
+                    f"{name}: {str(message['key'])[:160]} (x{message['doc_count']})"
+                )
+        return snapshot
 
     # -- patterns ----------------------------------------------------------
     async def _pattern_query(self, plan: InvestigationPlan, window: TimeWindow,

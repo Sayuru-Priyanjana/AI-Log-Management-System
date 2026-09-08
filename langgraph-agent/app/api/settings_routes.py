@@ -37,6 +37,10 @@ GROUPS = [
      "description": "Central Prometheus server for metrics."},
     {"id": "registry", "label": "Registry",
      "description": "System registry and discovery settings."},
+    {"id": "analysis", "label": "Analysis",
+     "description": "What an answer covers. These change how much is reported, not "
+                    "what counts as an incident — the thresholds behind that stay "
+                    "fixed so stored investigations remain comparable."},
     {"id": "display", "label": "Display",
      "description": "Presentation only. Everything is stored and compared in UTC."},
 ]

@@ -8,7 +8,7 @@
         "run",
         "dev",
         "--prefix",
-        "LogIntel/ui",
+        "ui",
         "--",
         "--port",
         "5173",

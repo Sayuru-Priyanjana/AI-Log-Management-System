@@ -139,6 +139,7 @@ class InvestigationPipeline:
             "answer": None,
             "result": None,
             "search_histogram": [],
+            "recent_status": None,
         }
 
         # The shape first, so the UI can draw the graph before a single node has
@@ -209,20 +210,36 @@ class InvestigationPipeline:
 
     # ------------------------------------------------------------------ util
     @staticmethod
-    def _fallback_answer(mode: AnswerMode, signals, candidates) -> dict:
+    def _fallback_answer(mode: AnswerMode, signals, candidates,
+                         windows=None, recent=None) -> dict:
         """What to say when the loop failed.
 
         The deterministic stages already ran, so there is a real answer available
         even with no model at all. Reporting it — clearly marked as the rules'
         answer rather than the agent's — beats returning nothing.
+
+        The sweep and the current-status probe are deterministic too, so a
+        degraded run keeps both: the reader still gets every elevated stretch in
+        the range and whether the system is healthy at this moment, which is
+        often the part they came for. Losing those with the model would make a
+        model outage look like a quiet system.
         """
+        episodes = list(windows.episodes) if windows else []
+        extra = ""
+        if len(episodes) > 1:
+            extra = (" " + " ".join(
+                f"A separate elevated stretch ran {e.start:%H:%M}-{e.end:%H:%M} "
+                f"({e.severity})." for e in episodes if not e.primary))
+        if recent is not None:
+            extra += f" {recent.summary}"
+
         if candidates:
             top = candidates[0]
             return {
                 "headline": top.hypothesis,
                 "detail": (f"{top.rationale} This came from the rule engine; the "
                            f"reasoning loop did not finish, so there is no "
-                           f"model-written explanation."),
+                           f"model-written explanation.{extra}"),
                 "root_cause_service": top.service,
                 "reasoning": [{"claim": top.hypothesis, "because": top.rationale,
                                "evidence_ids": top.supporting_signals,
@@ -235,14 +252,29 @@ class InvestigationPipeline:
             return {
                 "headline": f"{len(signals)} signal(s) were detected but no explanation "
                             f"could be assembled.",
-                "detail": "The measurements are reported below.",
+                "detail": f"The measurements are reported below.{extra}",
                 "reasoning": [{"claim": s.description, "evidence_ids": [s.id],
                                "kind": "observation"} for s in signals[:5]],
                 "confidence": 0.2,
             }
+        if episodes:
+            # No signal crossed, yet the sweep found elevated stretches. Saying
+            # "nothing happened" here would contradict a measurement this run
+            # made itself.
+            return {
+                "headline": (f"No signal crossed its threshold, but {len(episodes)} "
+                             f"elevated stretch(es) were measured in the period asked "
+                             f"about."),
+                "detail": (f"The reasoning loop did not run, so none of them was "
+                           f"diagnosed.{extra}"),
+                "reasoning": [{"claim": e.summary_line().splitlines()[0],
+                               "evidence_ids": [e.id], "kind": "observation"}
+                              for e in episodes[:5]],
+                "confidence": 0.25,
+            }
         return {
             "headline": "Nothing measurable departed from baseline in this window.",
-            "detail": "No signal crossed its threshold.",
+            "detail": f"No signal crossed its threshold.{extra}",
             "confidence": 0.3,
         }
 

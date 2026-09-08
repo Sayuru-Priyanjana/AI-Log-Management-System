@@ -17,6 +17,13 @@ import { useInvestigation } from '../InvestigationContext';
  *   model      — which model actually served it. The backend switch and the
  *                provider setting are configured in different places, and
  *                "which model answered this" was previously only in a log line.
+ *   cached     — how much of the prompt the provider served from its cache
+ *                instead of re-reading. A run makes up to nine calls sharing one
+ *                long identical prefix, so most of the prompt should be a cache
+ *                read from the second call on. This is the only place that
+ *                shows whether it actually is: a run paying full price nine
+ *                times and a run paying once look identical in a total token
+ *                count, and differ by roughly an order of magnitude in cost.
  */
 export default function LlmUsage({ turn }) {
   const live = useInvestigation();
@@ -27,6 +34,7 @@ export default function LlmUsage({ turn }) {
     model, provider, requests, failed_requests: failedRequests,
     context_window: window, peak_prompt_tokens: peak, peak_context_used: used,
     prompt_tokens: promptTokens, output_tokens: outputTokens,
+    cached_prompt_tokens: cachedTokens, cache_hit_ratio: cacheRatio,
     requests_by_stage: byStage, duration_ms: durationMs,
   } = llmUsage;
 
@@ -72,12 +80,30 @@ export default function LlmUsage({ turn }) {
         )}
       </div>
 
+      {/* Shown only once there is something to show. A provider that does not
+          report cache usage — Ollama, which caches locally and says nothing
+          about it — would otherwise display a permanent, meaningless 0%. */}
+      {cachedTokens > 0 && (
+        <div className="li-llm-part">
+          <span className="li-llm-label">Prompt cache</span>
+          <span className="li-llm-value">
+            {compact(cachedTokens)}
+            {cacheRatio != null && (
+              <span className="li-llm-pct"> · {Math.round(cacheRatio * 100)}%</span>
+            )}
+          </span>
+          <span className="li-llm-sub">
+            of the prompt served from cache instead of re-read
+          </span>
+        </div>
+      )}
+
       <div className="li-llm-part li-llm-part--wide">
         <span className="li-llm-label">Model</span>
         <span className="li-llm-value li-llm-value--mono">{model || 'unknown'}</span>
         <span className="li-llm-sub">
           {provider || 'unknown provider'}
-          {' · '}{compact((promptTokens || 0) + (outputTokens || 0))} tokens total
+          {' · '}{compact((promptTokens || 0) + (outputTokens || 0))} tokens charged
           {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s in the model` : ''}
         </span>
       </div>

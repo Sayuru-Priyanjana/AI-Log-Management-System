@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine
 } from 'recharts';
 
 const GRAFANA_COLORS = [
@@ -56,7 +56,7 @@ const CustomTooltip = ({ active, payload, label, unit }) => {
   return null;
 };
 
-export default function MonitoringChart({ title, data, services, compareServices = [], loading, unit, onClick, showControls = true, showLegend = true, defaultTopN = 10, emptyMessage, externalHiddenSeries, onLegendClick }) {
+export default function MonitoringChart({ title, data, services, compareServices = [], loading, unit, onClick, showControls = true, showLegend = true, defaultTopN = 10, emptyMessage, externalHiddenSeries, onLegendClick, onPointSelect, selectedTime }) {
   const [internalHiddenSeries, setInternalHiddenSeries] = useState(new Set());
   const [topN, setTopN] = useState(defaultTopN);
   
@@ -141,6 +141,26 @@ export default function MonitoringChart({ title, data, services, compareServices
     let _refAreaRight = refAreaRight;
 
     if (_refAreaLeft === _refAreaRight || _refAreaRight === '') {
+      // A mouse-down/up with no drag between them is a click, not a zoom
+      // gesture — recharts still reports it through the same handlers this
+      // component uses for drag-select, since it never sees "click" and
+      // "drag" as different things itself. The fullscreen chart's "Analyse
+      // with AI" flow wants exactly this: which point got clicked.
+      //
+      // `activeLabel` is recharts' own tracked "point currently under the
+      // mouse", built up from the mousemove events that led up to this one —
+      // not from this event alone. The very first interaction with a chart in
+      // a session can land here with nothing tracked yet, before recharts has
+      // seen the mouse move over it at all, and `activeLabel` comes back
+      // `undefined`. `Number(undefined)` is `NaN`, not an error, so an
+      // unguarded call here does not fail loudly — it quietly hands the
+      // caller a point that formats as "—" everywhere and would send the
+      // agent a question about an invalid date. Finite-checked instead: no
+      // point resolved means no selection made, silently, rather than a
+      // broken one shown.
+      if (onPointSelect && Number.isFinite(Number(_refAreaLeft))) {
+        onPointSelect(Number(_refAreaLeft));
+      }
       setRefAreaLeft('');
       setRefAreaRight('');
       return;
@@ -371,6 +391,16 @@ export default function MonitoringChart({ title, data, services, compareServices
                     );
                   })}
                   
+                  {selectedTime != null && (
+                    <ReferenceLine
+                      x={selectedTime}
+                      stroke="var(--primary)"
+                      strokeWidth={2}
+                      strokeDasharray="4 3"
+                      ifOverflow="extendDomain"
+                    />
+                  )}
+
                   {refAreaLeft && refAreaRight ? (
                     <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="var(--primary)" />
                   ) : null}

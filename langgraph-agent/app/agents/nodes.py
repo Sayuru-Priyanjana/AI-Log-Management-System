@@ -18,6 +18,7 @@ Two rules hold everywhere in this file:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -28,6 +29,8 @@ from app.models.answer import MODE_BY_INTENT, AnswerMode, DataTable, StructuredA
 from app.models.plan import ChatMessage
 from app.models.domain import TimeWindow, ensure_utc
 from app.pipeline.answer_check import verify_answer
+from app.pipeline.episodes import describe_episodes
+from app.pipeline.recent import RecentStatusProbe
 from app.pipeline.signals import SignalEngine
 from app.pipeline.timeline import build_evidence_timeline, build_timeline
 from app.pipeline.windows import WindowResolver
@@ -93,13 +96,50 @@ class GraphNodes:
                 "timings_ms": self._timed(state, "plan", started)}
 
     async def windows(self, state: dict) -> dict:
+        """Where to look, what else went wrong in range, and how things are now.
+
+        Three separable questions, answered here together because all three are
+        about time rather than about evidence, and because the two additions are
+        cheap enough to run concurrently with each other:
+
+        * `resolve` picks the stretch to analyse in depth and the quiet stretch
+          to compare it against. Unchanged, and still the thing every
+          baseline-relative signal depends on.
+        * the sweep inside it lists *every* elevated stretch in the period asked
+          about. Without it a six-hour question containing three failures was
+          answered about the twenty minutes after the first one, and the reader
+          was never told the other two existed.
+        * the recent probe measures the last N minutes whatever was asked, so an
+          answer about a window that closed an hour ago can still say whether the
+          system is serving traffic now.
+
+        Neither addition can fail the run: the episode breakdown degrades to
+        timings-only and the probe reports which half it managed.
+        """
         telemetry.set_stage("windows")
         started = time.perf_counter()
+        plan = state["investigation_plan"]
         resolver = WindowResolver(self._p.logs, prometheus=self._p.prometheus_client)
-        windows, histogram = await resolver.resolve(state["investigation_plan"])
+        windows, histogram = await resolver.resolve(plan)
+
+        probe = RecentStatusProbe(self._p.logs, prometheus=self._p.prometheus_client)
+        described, recent = await asyncio.gather(
+            describe_episodes(self._p.logs, plan, windows.episodes),
+            probe.measure(plan),
+            return_exceptions=True,
+        )
+        if isinstance(described, BaseException):
+            logger.warning("Episode breakdown failed: %s", described)
+        if isinstance(recent, BaseException):
+            logger.warning("Recent status probe failed: %s", recent)
+            recent = None
+
         await self._emit("windows", {**windows.model_dump(mode="json"),
-                                     "search_buckets": len(histogram)})
+                                     "search_buckets": len(histogram),
+                                     "recent_status": (recent.model_dump(mode="json")
+                                                       if recent else None)})
         return {"resolved_windows": windows, "search_histogram": histogram,
+                "recent_status": recent,
                 "visited": self._enter(state, "windows"),
                 "timings_ms": self._timed(state, "windows", started)}
 
@@ -168,6 +208,7 @@ class GraphNodes:
         loop = self._p.react_agent.run(
             state["investigation_plan"], state["resolved_windows"], state["evidence_bundle"], state["detected_signals"],
             state["ranked_candidates"], log_tool=self._p.logs, search_window=search_window,
+            recent_status=state.get("recent_status"),
         )
         # Held so it can be closed explicitly: breaking out of `async for` leaves
         # the generator suspended mid-await, and the event loop later complains
@@ -221,7 +262,9 @@ class GraphNodes:
         degraded = state.get("degraded") or (
             "no evidence source was reachable, so the reasoning loop was not run")
         raw = self._p._fallback_answer(mode, state.get("detected_signals") or [],
-                                       state.get("ranked_candidates") or [])
+                                       state.get("ranked_candidates") or [],
+                                       windows=state.get("resolved_windows"),
+                                       recent=state.get("recent_status"))
         # Which branch sent it here: the reasoning loop only runs when evidence
         # was collected, so having visited it identifies the predecessor.
         came_from = "reason" if "reason" in (state.get("visited") or []) else "evidence"
@@ -244,6 +287,7 @@ class GraphNodes:
             table=state.get("table"),
             steps_used=state.get("steps_used") or 0,
             degraded=state.get("degraded"),
+            recent_status=state.get("recent_status"),
         )
         await self._emit("answer", answer.model_dump(mode="json"))
         arrived_from = "fallback" if "fallback" in (state.get("visited") or []) else "reason"
@@ -308,6 +352,7 @@ class GraphNodes:
             ),
             answer=answer,
             evidence_timeline=evidence_timeline,
+            recent_status=state.get("recent_status"),
             evidence_summary=self._p._evidence_summary(evidence),
             timings_ms=state.get("timings_ms") or {},
             errors=state.get("errors") or [],

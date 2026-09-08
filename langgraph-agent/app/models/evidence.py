@@ -80,6 +80,40 @@ class LogSample(BaseModel):
     trace_id: str | None = None
 
 
+class LogSnapshot(BaseModel):
+    """A cheap description of one stretch of time.
+
+    `LogEvidence` is the full picture — templates, examples, baseline
+    comparisons, the dependency graph — and costs several queries to build. That
+    is right for the window being investigated and wrong for the other half
+    dozen this run has to *describe*: an elevated stretch found by the sweep, and
+    the last half hour that every answer now reports on. Both need level counts,
+    the noisiest services and their commonest errors, and nothing else.
+
+    One aggregation each, so covering six issues plus the current status costs
+    about what one extra pattern query used to.
+    """
+
+    window: TimeWindow
+    status: str = "ok"                  # ok | unavailable
+    reason: str | None = None
+
+    total_documents: int = 0
+    by_level: dict[str, int] = Field(default_factory=dict)
+    errors_by_service: dict[str, int] = Field(default_factory=dict)
+    top_errors: list[str] = Field(default_factory=list)
+
+    @property
+    def errors(self) -> int:
+        return sum(count for level, count in self.by_level.items()
+                   if level in ("ERROR", "FATAL", "CRITICAL"))
+
+    @property
+    def warnings(self) -> int:
+        return sum(count for level, count in self.by_level.items()
+                   if level in ("WARN", "WARNING"))
+
+
 class LogEvidence(BaseModel):
     status: str = "ok"
     reason: str | None = None

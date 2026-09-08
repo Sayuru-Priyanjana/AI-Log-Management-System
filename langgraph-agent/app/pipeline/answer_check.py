@@ -15,7 +15,7 @@ import logging
 import re
 
 from app.config import settings
-from app.models.analysis import Candidate, InvestigationWindows
+from app.models.analysis import Candidate, InvestigationWindows, RecentStatus
 from app.models.answer import (
     AnswerMode,
     Assumption,
@@ -34,9 +34,19 @@ logger = logging.getLogger(__name__)
 
 
 def build_evidence_index(signals: list[Signal], candidates: list[Candidate],
-                         evidence: EvidenceBundle) -> dict[str, str]:
-    """Every ID that refers to something real in this run."""
+                         evidence: EvidenceBundle,
+                         windows: InvestigationWindows | None = None) -> dict[str, str]:
+    """Every ID that refers to something real in this run.
+
+    Episodes are in here for the same reason signals are: they were measured
+    before the model saw them, so a claim about the third failure in a six-hour
+    range can be checked against the sweep that found it rather than taken on
+    trust.
+    """
     index: dict[str, str] = {}
+    for episode in (windows.episodes if windows else []):
+        index[episode.id] = (f"elevated stretch {episode.start:%H:%M}-{episode.end:%H:%M} "
+                             f"({episode.severity})")
     for signal in signals:
         index[signal.id] = (f"{signal.type.value} on "
                             f"{signal.service or signal.pod or 'system'}")
@@ -160,8 +170,9 @@ def verify_answer(
     table: DataTable | None = None,
     steps_used: int = 0,
     degraded: str | None = None,
+    recent_status: RecentStatus | None = None,
 ) -> StructuredAnswer:
-    index = build_evidence_index(signals, candidates, evidence)
+    index = build_evidence_index(signals, candidates, evidence, windows)
     factors: list[ConfidenceFactor] = []
 
     answer = StructuredAnswer(
@@ -199,6 +210,37 @@ def verify_answer(
 
     answer.limitations = [str(x).strip() for x in (raw.get("limitations") or []) if x]
     answer.next_steps = _build_next_steps(raw.get("next_steps"), evidence, answer)
+
+    # -- what was measured, whatever the model chose to write about ---------
+    # Both of these are attached from the pipeline's own measurements rather
+    # than parsed out of the reply. That is the point: the model is asked to
+    # discuss them and may fail to, and an answer that silently omits two of the
+    # three failures in the range is the exact defect this exists to close. The
+    # reader gets the list either way, and a narrative that ignored it is called
+    # out below rather than quietly patched up.
+    answer.window_issues = list(windows.episodes)
+    answer.recent_status = recent_status
+
+    unmentioned = [e for e in windows.secondary_episodes
+                   if e.id not in (answer.detail + answer.headline)]
+    if unmentioned and mode in (AnswerMode.ROOT_CAUSE, AnswerMode.HEALTH_CHECK):
+        answer.limitations.append(
+            f"{len(unmentioned)} further elevated stretch(es) inside the period asked "
+            f"about were measured by the sweep but not discussed above: "
+            + "; ".join(f"{e.start:%H:%M}-{e.end:%H:%M} ({e.severity})"
+                        for e in unmentioned[:4])
+            + ". They are listed in full beside this answer; only the stretch analysed "
+              "in depth has a baseline comparison and a call graph behind it."
+        )
+    if recent_status is not None and recent_status.status in ("degraded", "critical"):
+        # Worth stating even when the narrative covered it: a reader skimming
+        # limitations is looking for what the answer does not settle, and "the
+        # window you asked about is over, this is not" belongs there.
+        answer.limitations.append(
+            f"This answer is about {windows.scanned or windows.requested}. Right now, in "
+            f"the last {recent_status.minutes} minutes, the system is "
+            f"{recent_status.status.upper()}: {recent_status.status_reason}."
+        )
 
     # -- citations ---------------------------------------------------------
     # Three outcomes, kept distinct: it resolves, it was never shown to the

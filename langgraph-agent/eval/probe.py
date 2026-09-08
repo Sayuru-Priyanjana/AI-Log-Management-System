@@ -21,6 +21,8 @@ from app.config import settings
 from app.models.domain import TimeWindow, utcnow
 from app.models.plan import Intent, InvestigationPlan
 from app.pipeline.signals import SignalEngine
+from app.pipeline.episodes import describe_episodes
+from app.pipeline.recent import RecentStatusProbe
 from app.pipeline.windows import WindowResolver
 from app.models.analysis import InvestigationWindows
 from app.models.evidence import EvidenceBundle
@@ -121,6 +123,26 @@ async def probe_tools(minutes: int = 30) -> None:
         print(f"  method    : {windows.method}")
         counts = [b.errors for b in buckets]
         print(f"  error buckets ({len(counts)}): {counts}")
+
+        # The other half of the window question. `incident` is the stretch the
+        # deep analysis covers; this is everything else the period asked about
+        # contained. When a result surprises you and the expected failure is
+        # absent from BOTH lists, the problem is upstream of the LLM — which is
+        # what this whole command exists to settle in one run.
+        rule("FULL-RANGE SWEEP")
+        print(f"  scanned   : {windows.scanned or windows.requested}")
+        print(f"  method    : {windows.sweep_method}")
+        if not windows.episodes:
+            print("  no elevated stretch was found anywhere in the period asked about")
+        await describe_episodes(LogTool(client), plan, windows.episodes)
+        for episode in windows.episodes:
+            print("  " + episode.summary_line().replace("\n", "\n  "))
+
+        rule("CURRENT STATUS")
+        # Measured against the clock rather than the window above, so this says
+        # whether the thing being investigated is still happening.
+        recent = await RecentStatusProbe(LogTool(client), prometheus=prom).measure(plan)
+        print("  " + recent.summary_line().replace("\n", "\n  "))
 
         rule("LOG TOOL")
         logs = await LogTool(client).collect(plan, windows.incident, windows.baseline)
