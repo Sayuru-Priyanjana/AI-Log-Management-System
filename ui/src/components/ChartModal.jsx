@@ -1,11 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import MonitoringChart from './MonitoringChart';
 import TimeframePicker from './TimeframePicker';
+import { usePreferences } from '../preferences';
+import { chartPointNavState } from '../investigate';
 
-export default function ChartModal({ isOpen, onClose, title, currentData, services, unit, fetchComparisonData, currentStart, currentEnd }) {
+export default function ChartModal({ isOpen, onClose, title, currentData, services, unit, fetchComparisonData, currentStart, currentEnd, system }) {
+  const navigate = useNavigate();
+  const { formatStamp } = usePreferences();
+
   // Timeframe state
   const [modalStart, setModalStart] = useState(currentStart);
   const [modalEnd, setModalEnd] = useState(currentEnd);
+
+  // The point clicked on the chart, in ms — set by MonitoringChart's
+  // onPointSelect, cleared whenever the modal reopens or the timeframe
+  // changes so a stale selection from a different window is never carried
+  // into a click on the "Analyse with AI" button that appears for it.
+  const [selectedPoint, setSelectedPoint] = useState(null);
   
   // Data states
   const [primaryData, setPrimaryData] = useState(currentData || []);
@@ -48,8 +60,15 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
       setHiddenSeries(new Set());
       setCompareMode('none');
       setCustomDate('');
+      setSelectedPoint(null);
     }
   }, [isOpen, currentData, currentStart, currentEnd, services]);
+
+  // A selection made in one timeframe stops meaning anything once the
+  // timeframe changes underneath it — the marker would still be drawn at the
+  // old x position, and "Analyse with AI" would still offer to investigate a
+  // point the chart on screen no longer shows.
+  useEffect(() => { setSelectedPoint(null); }, [modalStart, modalEnd]);
 
   // Fetch Primary Data when Timeframe changes (only if it differs from props)
   useEffect(() => {
@@ -199,9 +218,25 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
 
   const isOverlay = compareMode !== 'none' && compareView === 'overlay' && compareData;
 
-  const renderSingleChart = (dataToRender, chartTitle, isLoading, compareSvc = []) => (
+  // A hint worth handing the agent only when it is unambiguous: if the reader
+  // has isolated a single service on the legend, that is almost certainly the
+  // one they clicked the chart to ask about. With several services visible
+  // there is no honest way to guess which one, so none is sent and the
+  // investigation covers the whole system instead.
+  const visibleServices = selectedServices.filter((s) => !hiddenSeries.has(s));
+  const serviceHint = visibleServices.length === 1 ? visibleServices[0] : undefined;
+
+  const handleAnalyse = () => {
+    if (!system?.id || selectedPoint == null) return;
+    const nav = chartPointNavState({
+      system, title, timestampMs: selectedPoint, serviceHint, formatStamp,
+    });
+    navigate('/agent', { state: nav });
+  };
+
+  const renderSingleChart = (dataToRender, chartTitle, isLoading, compareSvc = [], selectable = false) => (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-      <MonitoringChart 
+      <MonitoringChart
         title={chartTitle}
         data={dataToRender}
         services={selectedServices}
@@ -211,6 +246,8 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
         defaultTopN="all"
         externalHiddenSeries={hiddenSeries}
         onLegendClick={handleLegendClick}
+        onPointSelect={selectable ? setSelectedPoint : undefined}
+        selectedTime={selectable ? selectedPoint : undefined}
       />
     </div>
   );
@@ -327,20 +364,59 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
           </div>
         </header>
 
+        {/* Selection banner: appears once a point on the chart is clicked, and
+            names the moment before offering to hand it to the agent — so the
+            reader confirms what they clicked before a run starts on it. */}
+        {selectedPoint != null && (
+          <div style={{
+            padding: '10px 24px', borderBottom: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: '12px',
+            background: 'var(--surface-2)', flexWrap: 'wrap',
+          }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-2)' }}>
+              📍 Selected point: <strong style={{ color: 'var(--text)' }}>{formatStamp(selectedPoint)}</strong>
+              {serviceHint ? <> &middot; <span className="mono">{serviceHint}</span></> : null}
+            </span>
+            <button
+              type="button"
+              className="btn btn--sm btn--primary"
+              onClick={handleAnalyse}
+              disabled={!system?.id}
+              title={system?.id ? undefined : 'No system selected'}
+            >
+              Analyse with AI →
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => setSelectedPoint(null)}
+              style={{ marginLeft: 'auto' }}
+              title="Clear selection"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Body */}
         <div style={{ flex: 1, padding: '24px', display: 'flex', gap: '24px', minHeight: 0 }}>
           {isOverlay ? (
             renderSingleChart(
-              getMergedOverlayData(), 
-              'Overlay Comparison (Dashed lines = Comparison)', 
-              loadingPrimary || loadingCompare, 
-              selectedServices.map(s => `${s}_compare`)
+              getMergedOverlayData(),
+              'Overlay Comparison (Dashed lines = Comparison)',
+              loadingPrimary || loadingCompare,
+              selectedServices.map(s => `${s}_compare`),
+              true
             )
           ) : (
             <>
-              {renderSingleChart(primaryData, 'Current Timeframe', loadingPrimary)}
-              
+              {renderSingleChart(primaryData, 'Current Timeframe', loadingPrimary, [], true)}
+
               {compareMode !== 'none' && (
+                // Not selectable: a click here would pick a point out of the
+                // comparison window (yesterday, or a custom date), which has
+                // no honest "now" to bracket relative to Date.now(), and no
+                // clear system-time meaning to hand the agent.
                 renderSingleChart(compareData, `Comparison Data`, loadingCompare)
               )}
             </>
