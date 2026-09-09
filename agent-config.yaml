@@ -159,7 +159,8 @@ data:
         local str_body = tostring(body or "")
         local lvl = nil
         -- Attempt to parse common Spring Boot log format
-        local ts, parsed_lvl, rest = str_body:match("^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Z]+)%s+(.*)")
+        local ts, parsed_lvl, rest = str_body:match(
+          "^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+[%w%+%-:]*)%s+([A-Za-z]+)%s+(.*)")
         if ts ~= nil then
           lvl = parsed_lvl
           str_body = rest
@@ -173,7 +174,6 @@ data:
           if http_code == nil then http_code = str_body:match("status=(%d%d%d)") end
           if http_code == nil then http_code = str_body:match("\"status\":%s*(%d%d%d)") end
           
-          lvl = "INFO" -- default fallback
           if http_code ~= nil then
             local code = tonumber(http_code)
             if code ~= nil then
@@ -181,6 +181,19 @@ data:
               elseif code >= 400 then lvl = "WARN"
               elseif code >= 200 then lvl = "INFO"
               end
+            end
+          else
+            local text = tostring(body or "")
+            if text:match("%sERROR%s") or text:match("^ERROR%s") then lvl = "ERROR"
+            elseif text:match("%sWARN%s") or text:match("^WARN%s") then lvl = "WARN"
+            elseif text:match("%sINFO%s") or text:match("^INFO%s") then lvl = "INFO"
+            elseif text:match("%sDEBUG%s") or text:match("^DEBUG%s") then lvl = "DEBUG"
+            elseif text:match("%sTRACE%s") or text:match("^TRACE%s") then lvl = "TRACE"
+            elseif text:match("%sFATAL%s") or text:match("^FATAL%s") then lvl = "FATAL"
+            else lvl = "UNKNOWN"
+            end
+            if lvl == "UNKNOWN" then
+               out["parse"] = { failed = true, stream = record["stream"] }
             end
           end
         end

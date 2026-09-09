@@ -103,8 +103,13 @@ export default function ChartModal({ isOpen, onClose, title, currentData, servic
       compStart = modalStart - (24 * 3600);
       compEnd = modalEnd - (24 * 3600);
     } else if (compareMode === 'custom' && customDate) {
-      const selectedDate = new Date(customDate);
-      compStart = Math.floor(selectedDate.getTime() / 1000);
+      const startObj = new Date(modalStart * 1000);
+      const [year, month, day] = customDate.split('-');
+      
+      const compStartObj = new Date(startObj);
+      compStartObj.setFullYear(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
+      
+      compStart = Math.floor(compStartObj.getTime() / 1000);
       compEnd = compStart + duration;
     } else {
       setCompareData(null);

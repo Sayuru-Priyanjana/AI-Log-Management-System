@@ -273,15 +273,29 @@ data:
         -- extracted level to resolve_level as an explicit value rather than
         -- re-detecting it from text.
         local synthetic = {}
+        local str_body = tostring(body or "")
         local ts, parsed_lvl, rest = str_body:match(
-          "^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+%w*)%s+([A-Za-z]+)%s+(.*)")
+          "^(%d%d%d%d%-%d%d%-%d%d.%d%d:%d%d:%d%d%.%d+[%w%+%-:]*)%s+([A-Za-z]+)%s+(.*)")
         if ts ~= nil and normalize_level_value(parsed_lvl) ~= nil then
           synthetic["level"] = parsed_lvl
-          str_body = rest
+          local level, inferred = resolve_level(synthetic, rest)
+          out["log"] = { level = level, message = rest }
+          if inferred then out["log"]["level_inferred"] = true end
+        else
+          -- Unstructured line: keep it, but mark it so log-pattern analysis can
+          -- exclude it rather than silently treating noise as evidence.
+          local text = tostring(body or "")
+          local level = "UNKNOWN"
+          if text:match("%sERROR%s") or text:match("^ERROR%s") then level = "ERROR"
+          elseif text:match("%sWARN%s") or text:match("^WARN%s") then level = "WARN"
+          elseif text:match("%sINFO%s") or text:match("^INFO%s") then level = "INFO"
+          elseif text:match("%sDEBUG%s") or text:match("^DEBUG%s") then level = "DEBUG"
+          elseif text:match("%sTRACE%s") or text:match("^TRACE%s") then level = "TRACE"
+          elseif text:match("%sFATAL%s") or text:match("^FATAL%s") then level = "FATAL"
+          end
+          out["log"] = { level = level, message = text }
+          out["parse"] = { failed = true, stream = record["stream"] }
         end
-        local level, inferred = resolve_level(synthetic, str_body)
-        out["log"] = { level = level, message = str_body }
-        if inferred then out["log"]["level_inferred"] = true end
       end
 
         if out["service"] == nil then
