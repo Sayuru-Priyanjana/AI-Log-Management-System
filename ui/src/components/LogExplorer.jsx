@@ -138,6 +138,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
             <option value="warn">WARN</option>
             <option value="info">INFO</option>
             <option value="debug">DEBUG</option>
+            <option value="trace">TRACE</option>
           </select>
           <button type="submit" className="btn btn--sm btn--primary">Search</button>
           
