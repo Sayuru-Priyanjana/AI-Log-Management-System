@@ -11,11 +11,17 @@ export default function Scheduler() {
   const toast = useToast();
   const { formatStamp } = usePreferences();
   const notifiedRef = useRef(null);
+  const inFlightScanRef = useRef(new Set());
 
   // Centralized completion handler for automated agent runs (scheduled scans & auto-investigated alerts)
   useEffect(() => {
     if (status === 'complete' && result && meta?.auto && notifiedRef.current !== result.id) {
       notifiedRef.current = result.id;
+      
+      const notifiedKey = `notified-investigation-${result.id}`;
+      if (localStorage.getItem(notifiedKey)) return;
+      localStorage.setItem(notifiedKey, 'true');
+
       const targetSystemId = meta.systemId || result.plan?.system_id || result.system_id;
       if (!targetSystemId) return;
 
@@ -66,8 +72,8 @@ export default function Scheduler() {
         if (!systems || systems.length === 0) return;
 
         const now = new Date();
+        const isoDate = now.toISOString().slice(0, 10); // Standardized YYYY-MM-DD
         const currentHHMM = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-        const todayDate = now.toLocaleDateString();
 
         for (const system of systems) {
           const { values } = await getSystemIntegrations(system.id).catch(() => ({ values: null }));
@@ -79,40 +85,40 @@ export default function Scheduler() {
             scanTimeToday.setHours(scanHour, scanMinute, 0, 0);
 
             if (now >= scanTimeToday) {
-              const scanKey = `${system.id}-${todayDate}`;
+              // Keyed by system, date, and configured scan_time to prevent duplicate runs across tabs
+              // while still allowing re-testing if the user adjusts the scan_time.
+              const scanKey = `${system.id}-${isoDate}-${values.scan_time}`;
               
-              // Persist scan history in localStorage so page reloads or multiple tabs 
-              // don't trigger duplicate scans.
               const storedHistory = JSON.parse(localStorage.getItem('logintel_scheduled_scans') || '{}');
-              if (storedHistory[scanKey]) continue;
+              if (storedHistory[scanKey] || inFlightScanRef.current.has(scanKey)) continue;
 
-              storedHistory[scanKey] = true;
+              // Immediately acquire lock before starting
+              inFlightScanRef.current.add(scanKey);
+              storedHistory[scanKey] = Date.now();
               localStorage.setItem('logintel_scheduled_scans', JSON.stringify(storedHistory));
 
-              const targetService = system.services?.[0]?.name || 'cluster-wide';
               const nowISO = new Date().toISOString();
               const oneHourAgoISO = new Date(Date.now() - 3600000).toISOString();
 
+              // Scans the overall system across all services (no hardcoded single service)
               const navState = {
                 system_id: system.id,
                 environment: system.environments?.[0],
-                service: targetService,
-                service_hint: targetService,
-                question: `Perform a routine daily health scan on ${targetService}. Look for any anomalies in metrics or logs over the past hour.`,
+                question: `Perform a routine daily health scan on the entire ${system.name} system. Look for any anomalies across all services, metrics, and logs over the past hour.`,
                 start_time: oneHourAgoISO,
                 end_time: nowISO,
               };
 
               const scanMeta = {
                 kind: 'scheduled',
-                label: `Scheduled Scan (${currentHHMM})`,
-                serviceLabel: targetService,
+                label: `Daily Health Scan (${currentHHMM})`,
+                serviceLabel: 'Entire System',
                 auto: true,
                 systemId: system.id,
                 systemName: system.name,
               };
 
-              toast.info(`Starting scheduled AI scan for ${system.name}`);
+              toast.info(`Starting scheduled daily health scan for ${system.name} (Entire System)`);
               startInvestigation(navState, scanMeta);
               break; // Start one at a time
             }
@@ -121,7 +127,7 @@ export default function Scheduler() {
       } catch (err) {
         console.error("Scheduler error:", err);
       }
-    }, 30000); // check every 30 seconds
+    }, 15000); // Check every 15 seconds
 
     return () => clearInterval(tick);
   }, [status, startInvestigation, toast]);

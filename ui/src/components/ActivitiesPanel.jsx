@@ -32,6 +32,7 @@ export default function ActivitiesPanel({ systemId, investigations }) {
       .filter((inv) => new Date(inv.created_at).getTime() >= cutoff)
       .map((inv) => ({
         id: inv.id,
+        ids: inv.ids,
         kind: 'user',
         label: inv.question || 'Investigation',
         status: activityStatus(inv),
@@ -46,7 +47,7 @@ export default function ActivitiesPanel({ systemId, investigations }) {
 
   const handleRowClick = (row) => {
     if (row.kind === 'user') {
-      navigate('/agent', { state: { system_id: systemId, investigation_id: row.id } });
+      navigate('/agent', { state: { system_id: systemId, investigation_ids: row.ids || [row.id] } });
     }
   };
 

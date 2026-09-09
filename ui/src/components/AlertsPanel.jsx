@@ -138,11 +138,21 @@ export default function AlertsPanel({ system }) {
       list.forEach((a) => notified.current.add(a.id));
       return;
     }
-    const fresh = list.filter((a) => !notified.current.has(a.id));
+    const fresh = list.filter((a) => {
+      if (notified.current.has(a.id)) return false;
+      if (localStorage.getItem(`notified-alert-${a.id}`)) {
+        notified.current.add(a.id); // Sync local state
+        return false;
+      }
+      return true;
+    });
     if (!fresh.length) return;
     // Marked before sending, so a slow webhook cannot be posted to twice by the
     // next refresh landing mid-flight.
-    fresh.forEach((a) => notified.current.add(a.id));
+    fresh.forEach((a) => {
+      notified.current.add(a.id);
+      localStorage.setItem(`notified-alert-${a.id}`, 'true');
+    });
     try {
       const { values } = await getSystemIntegrations(system.id);
       if (!values) return;
