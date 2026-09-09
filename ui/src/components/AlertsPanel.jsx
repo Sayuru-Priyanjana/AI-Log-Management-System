@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePreferences } from '../preferences';
 import { useToast } from '../toast';
@@ -26,7 +26,78 @@ export default function AlertsPanel({ system }) {
   // The first load is a snapshot of what already exists, not news. Without this
   // opening the page posts every standing alert to the channel at once.
   const seeded = useRef(false);
-  const { startInvestigation, setRequest, setMeta, setStatus } = useInvestigation();
+  const pendingQueueRef = useRef([]);
+  const { startInvestigation, status } = useInvestigation();
+
+  const changeStatus = useCallback((id, newStatus) => {
+    setAlertStatus(id, newStatus);
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a)));
+    setOpen((prev) => (prev?.id === id ? { ...prev, status: newStatus } : prev));
+  }, []);
+
+  const formatPayload = useCallback((payload) => {
+    if (!payload) return payload;
+    const formatted = { ...payload };
+    if (formatted.detected_at) formatted.detected_at = formatStamp(formatted.detected_at);
+    if (formatted.timestamp) formatted.timestamp = formatStamp(formatted.timestamp);
+    return formatted;
+  }, [formatStamp]);
+
+  const triggerAutoInvestigation = useCallback((alert) => {
+    changeStatus(alert.id, 'investigating');
+    const firedAt = Number(alert.timestamp) || Date.now();
+    const LEAD_IN_MS = 30 * 60 * 1000;
+    const endedAt = alert.payload?.state === 'COMPLETED' && alert.endTime
+      ? Number(alert.endTime) : Date.now();
+
+    const navState = {
+      system_id: system.id,
+      environment: system.environments?.[0],
+      service: alert.service,
+      service_hint: alert.service,
+      question: `${alert.title} on ${alert.service}. Investigate the likely root cause.\n\n`
+        + `The detection fired at ${formatStamp(firedAt)}.\n\n`
+        + `Detection payload:\n${JSON.stringify(formatPayload(alert.payload), null, 2)}`,
+      start_time: new Date(firedAt - LEAD_IN_MS).toISOString(),
+      end_time: new Date(Math.max(endedAt, firedAt + 60000)).toISOString(),
+    };
+
+    const alertMeta = {
+      kind: 'alert',
+      label: alert.title,
+      serviceLabel: alert.service,
+      alertId: alert.id,
+      auto: true,
+      systemId: system.id,
+      systemName: system.name,
+    };
+
+    toast.info(`Auto-investigating alert: ${alert.title} (running in AI Agent window)`);
+    startInvestigation(navState, alertMeta);
+  }, [system, formatStamp, formatPayload, changeStatus, toast, startInvestigation]);
+
+  // Process queued alerts when the agent completes its current task
+  useEffect(() => {
+    if (status !== 'connecting' && status !== 'streaming' && pendingQueueRef.current.length > 0) {
+      const nextAlert = pendingQueueRef.current.shift();
+      if (nextAlert) {
+        triggerAutoInvestigation(nextAlert);
+      }
+    }
+  }, [status, triggerAutoInvestigation]);
+
+  // Sync alert status when investigations finish in the background
+  useEffect(() => {
+    const handleStatusChange = (e) => {
+      const { id, status: newStatus } = e.detail || {};
+      if (id && newStatus) {
+        setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a)));
+        setOpen((prev) => (prev?.id === id ? { ...prev, status: newStatus } : prev));
+      }
+    };
+    window.addEventListener('logintel:alertStatusChanged', handleStatusChange);
+    return () => window.removeEventListener('logintel:alertStatusChanged', handleStatusChange);
+  }, []);
 
   const fetchAlerts = async () => {
     try {
@@ -58,13 +129,8 @@ export default function AlertsPanel({ system }) {
   };
 
   /**
-   * Posts newly seen detections to the channel.
-   *
-   * `notify_on_alert_enabled` has existed in the settings — and in the settings
-   * UI — with nothing behind it: turning it on did nothing at all. This is the
-   * sender. It is deliberately quiet about its own failures: a webhook that is
-   * misconfigured should not bury the alert list under error toasts every
-   * refresh cycle.
+   * Handles newly seen detections: posts to Teams and/or auto-investigates
+   * based on per-system integration configuration.
    */
   const announce = async (list) => {
     if (!seeded.current) {
@@ -79,13 +145,33 @@ export default function AlertsPanel({ system }) {
     fresh.forEach((a) => notified.current.add(a.id));
     try {
       const { values } = await getSystemIntegrations(system.id);
-      if (!values?.notify_on_alert_enabled) return;
-      for (const alert of fresh) {
-        await notifyIntegrations(system.id,
-          alertCard({ alert, systemName: system.name, systemId: system.id, formatStamp }));
+      if (!values) return;
+
+      // 1. Notify integrations for alerts: post to Teams
+      if (values.notify_on_alert_enabled) {
+        for (const alert of fresh) {
+          try {
+            await notifyIntegrations(system.id,
+              alertCard({ alert, systemName: system.name, systemId: system.id, formatStamp }));
+          } catch (err) {
+            console.warn('Could not post alert to Teams:', err.message);
+          }
+        }
+      }
+
+      // 2. Auto investigate incoming alert with agent
+      if (values.auto_investigate_alerts_enabled) {
+        for (const alert of fresh) {
+          if (status === 'connecting' || status === 'streaming') {
+            pendingQueueRef.current.push(alert);
+            toast.info(`Queued alert for auto-investigation: ${alert.title}`);
+          } else {
+            triggerAutoInvestigation(alert);
+          }
+        }
       }
     } catch (err) {
-      console.warn('Could not post alerts to integrations:', err.message);
+      console.warn('Could not process alert automation:', err.message);
     }
   };
 
@@ -102,14 +188,6 @@ export default function AlertsPanel({ system }) {
     return () => clearInterval(interval);
   }, [system.id]);
 
-  const formatPayload = (payload) => {
-    if (!payload) return payload;
-    const formatted = { ...payload };
-    if (formatted.detected_at) formatted.detected_at = formatStamp(formatted.detected_at);
-    if (formatted.timestamp) formatted.timestamp = formatStamp(formatted.timestamp);
-    return formatted;
-  };
-
   const scan = () => {
     setScanning(true);
     setTimeout(async () => {
@@ -117,12 +195,6 @@ export default function AlertsPanel({ system }) {
       setScanning(false);
       toast.info(`Scanned OpenSearch for new alerts`);
     }, 500);
-  };
-
-  const changeStatus = (id, status) => {
-    setAlertStatus(id, status);
-    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
-    setOpen((prev) => (prev?.id === id ? { ...prev, status } : prev));
   };
 
   const removeAlert = (id, e) => {
