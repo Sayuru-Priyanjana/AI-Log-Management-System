@@ -44,6 +44,35 @@ class Settings(BaseSettings):
     # than a percentage measured against a ceiling nobody verified.
     llm_context_window: int = 0
 
+    # Prompt caching. The system prompt, the tool schema and the evidence header
+    # are byte-identical across every step of one investigation and across the
+    # investigations in a thread, so the provider can be told to keep them
+    # rather than re-reading them eight times. On Anthropic this is an explicit
+    # `cache_control` marker; on OpenAI-compatible endpoints it happens
+    # automatically as long as the prompt *prefix* stays stable, which is what
+    # the ReAct transcript is built to preserve.
+    llm_prompt_caching: bool = True
+
+    # How long Gemini keeps the cached system prompt. It is the same 2,082
+    # tokens for the life of the process, so this only decides how often the
+    # cache is recreated — long enough to span a working session, short enough
+    # that a changed tool schema cannot be served from a stale copy for a whole
+    # day. Ignored on a key without cached-content quota, which is every
+    # free-tier key.
+    gemini_cache_ttl_seconds: int = 3600
+    # Below this, a prompt is not worth caching and Gemini will not cache it
+    # anyway — explicit cached content has a minimum size, and asking to cache
+    # the planner's twelve-token instruction earns an INVALID_ARGUMENT. Checked
+    # locally so that rejection never happens: it is indistinguishable, at the
+    # HTTP layer, from the quota refusal that *should* switch caching off.
+    gemini_cache_min_tokens: int = 1024
+    # How long to stop asking after the API refuses to create a cache. Measured
+    # behaviour: the same key returned `limit=0` twice and then succeeded, so
+    # the refusal is a quota window rather than a property of the account.
+    # Giving up permanently would cost every later run its caching over one bad
+    # minute; retrying every call would pay a rejected round trip per request.
+    gemini_cache_retry_seconds: int = 900
+
     llm_retry_attempts: int = 3
     llm_retry_base_delay: float = 1.0
     llm_retry_max_delay: float = 30.0
@@ -58,6 +87,14 @@ class Settings(BaseSettings):
     ollama_num_ctx: int = 16384
     ollama_temperature: float = 0.0
     ollama_seed: int = 42
+    # How long Ollama keeps the model — and with it the KV cache of the prompt
+    # prefix — resident after a call. Ollama re-uses that cache for any prompt
+    # that shares a leading run of tokens with the last one, which is exactly
+    # what an append-only ReAct transcript produces, so an investigation's later
+    # steps re-evaluate only their own new lines. The default of 5 minutes
+    # expires between questions in a conversation; 30 covers a working session
+    # without pinning the model indefinitely.
+    ollama_keep_alive: str = "30m"
 
     # --- Pipeline tuning --------------------------------------------------
     # Onset detection
@@ -76,6 +113,35 @@ class Settings(BaseSettings):
     # Windows
     min_baseline_minutes: int = 10
     incident_pre_roll_seconds: int = 120
+
+    # --- Full-window sweep ------------------------------------------------
+    # Onset detection answers "where did this start"; it returns one moment, so
+    # a question about six hours used to be answered about the twenty minutes
+    # after the first departure and the rest of the range was never described.
+    # The sweep is the other half: every distinct elevated stretch inside the
+    # period asked about is found and reported, so a window holding three
+    # separate incidents comes back as three issues rather than one.
+    #
+    # How many episodes are reported. A cap, not a target — beyond a handful the
+    # list stops being a summary and becomes the histogram again.
+    max_reported_episodes: int = 6
+    # Consecutive quiet buckets that end an episode. Below this, one calm minute
+    # inside a ten-minute failure splits it into two issues that are really one.
+    episode_quiet_gap_buckets: int = 3
+    # An episode has to last this long to be worth reporting on its own. A single
+    # elevated bucket is noise at this resolution.
+    episode_min_buckets: int = 2
+    # How many services and distinct error templates are named per episode.
+    episode_top_services: int = 5
+    episode_top_errors: int = 3
+
+    # --- Current status overlay -------------------------------------------
+    # Root-cause and health-check answers report two things: what happened in
+    # the period asked about, and what the system is doing *now*. Asked about a
+    # window that ended an hour ago, an answer with no present tense leaves the
+    # reader unable to tell a resolved incident from a running one. Editable
+    # from the configuration page.
+    recent_status_minutes: int = 30
 
     # Evidence budgets — these bound the LLM prompt by construction rather than
     # by truncating it afterwards.
@@ -106,6 +172,15 @@ class Settings(BaseSettings):
     # an investigation takes. Too low and the loop cannot follow a chain across
     # services; too high and a confused model wanders instead of concluding.
     react_max_steps: int = 8
+
+    # Transcript budget. Every step re-sends the whole investigation log, so an
+    # unbounded transcript costs O(steps^2) tokens and pushes a long run into
+    # the silent truncation `PromptTruncated` exists to catch. Older
+    # observations are folded to a one-line digest; the most recent ones stay
+    # verbatim, because those are what the next decision is made from.
+    react_verbatim_steps: int = 3
+    react_observation_chars: int = 1400
+    react_digest_chars: int = 220
 
     # Confidence ceilings applied by the verifier. These are caps, not scores:
     # the answer never rises above them, whatever the model claimed.

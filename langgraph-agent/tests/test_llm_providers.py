@@ -171,7 +171,103 @@ async def test_a_forced_tool_call_comes_back_as_json_text(monkeypatch):
     assert json.loads(result.text) == {"answer": "ok"}
     assert seen["key"] == "test-key"
     assert seen["body"]["tool_choice"] == {"type": "tool", "name": "respond"}
-    assert seen["body"]["system"] == "S", "the system prompt is a field, not a message"
+    # A top-level field, never an entry in `messages` — that is the shape
+    # difference this client exists for. It is a list of blocks rather than a
+    # bare string because the cacheable half of the prompt is marked there; see
+    # the caching tests below.
+    assert "system" in seen["body"] and "system" not in {
+        m["role"] for m in seen["body"]["messages"]
+    }
+    assert seen["body"]["system"][0]["text"] == "S"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_reusable_half_of_an_anthropic_prompt_is_marked_cacheable(monkeypatch):
+    """A ReAct run makes up to eight calls sharing one long, identical prefix.
+
+    The system prompt carries the whole tool schema and does not change between
+    them, so without a cache breakpoint every step re-reads all of it at full
+    price and a run costs roughly steps x prefix. The marker goes on the system
+    block and nowhere else: the user turn is the part that changes, and a
+    breakpoint there would write a new entry on every step and never read one
+    back.
+    """
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_prompt_caching", True)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 120, "output_tokens": 8,
+                      "cache_read_input_tokens": 3400,
+                      "cache_creation_input_tokens": 0},
+            "stop_reason": "end_turn",
+        })
+
+    client = wire(AnthropicClient(), handler)
+    result = await client.generate(system="S", prompt="P")
+
+    assert seen["body"]["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in seen["body"]["messages"][0]
+
+    # Reported apart from prompt_tokens, because Anthropic counts them apart:
+    # `input_tokens` is what was NOT cached. Folding them together would make a
+    # cached run and an uncached one report the same total.
+    assert result.prompt_tokens == 120
+    assert result.cached_prompt_tokens == 3400
+    assert round(result.cache_hit_ratio, 3) == round(3400 / 3520, 3)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_caching_can_be_turned_off_without_changing_the_request_shape(monkeypatch):
+    """A gateway that does not understand the block form must be unaffected by a
+    setting the deployment never turned on."""
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_prompt_caching", False)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+            "stop_reason": "end_turn",
+        })
+
+    client = wire(AnthropicClient(), handler)
+    result = await client.generate(system="S", prompt="P")
+    assert seen["body"]["system"] == "S"
+    assert result.cached_prompt_tokens == 0
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_an_openai_cached_prefix_is_not_counted_twice(monkeypatch):
+    """OpenAI-compatible endpoints count cached tokens *inside* prompt_tokens.
+
+    Anthropic counts them beside it. Left as they arrive, the same run would
+    report different totals depending on which provider answered, and neither
+    number would mean anything. The cached part is subtracted out here so
+    `prompt_tokens` means the same thing on both.
+    """
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "model": "gpt-4o-mini",
+            "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4000, "completion_tokens": 20,
+                      "prompt_tokens_details": {"cached_tokens": 3584}},
+        })
+
+    client = wire(OpenAICompatibleClient(base_url="https://api.openai.com/v1"), handler)
+    result = await client.generate(system="S", prompt="P")
+    assert result.cached_prompt_tokens == 3584
+    assert result.prompt_tokens == 416, "the cached prefix must not be billed twice"
     await client.close()
 
 

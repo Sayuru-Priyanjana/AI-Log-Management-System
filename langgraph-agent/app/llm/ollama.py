@@ -55,6 +55,13 @@ class OllamaClient(LLMClient):
             "system": system,
             "prompt": prompt,
             "stream": False,
+            # Keeps the model — and the KV cache of the prompt prefix — resident
+            # between calls. Ollama re-uses that cache for any prompt sharing a
+            # leading run of tokens with the previous one, which is what the
+            # append-only ReAct transcript is built to produce: step 6 re-reads
+            # nothing of steps 1-5. Letting the model unload between questions
+            # throws that away and re-evaluates the whole prompt from scratch.
+            "keep_alive": settings.ollama_keep_alive,
             "options": {
                 # The single most consequential setting in this file. Ollama
                 # defaults num_ctx to 2048 and truncates anything longer without

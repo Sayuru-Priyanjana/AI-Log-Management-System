@@ -19,6 +19,7 @@ import logging
 from app.config import settings
 from app.llm.anthropic import AnthropicClient
 from app.llm.base import LLMClient
+from app.llm.gemini import GeminiClient
 from app.llm.ollama import OllamaClient
 from app.llm.openai_compatible import OpenAICompatibleClient
 
@@ -46,8 +47,13 @@ def build_llm() -> LLMClient:
         client = OpenAICompatibleClient(base_url=settings.llm_base_url or "https://api.groq.com/openai/v1")
         client.provider = "groq"
     elif provider == "gemini":
-        client = OpenAICompatibleClient(base_url=settings.llm_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/")
-        client.provider = "gemini"
+        # Gemini's own API rather than its OpenAI-compatible shim. The shim
+        # works, but its `usage` object carries no cached-token field at all, so
+        # there was no way to see whether a run re-read the same 2,000-token
+        # system prompt on all four of its calls — or to do anything about it.
+        # The native surface reports `cachedContentTokenCount` and exposes
+        # `cachedContents`; see app/llm/gemini.py for what each buys, measured.
+        client = GeminiClient()
     else:
         client = OllamaClient()
 
@@ -81,7 +87,10 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-3-opus": 200_000, "claude-3-haiku": 200_000,
     "llama-3.3-70b-versatile": 128_000, "llama-3.1-8b-instant": 128_000,
     "mixtral-8x7b-32768": 32_768,
+    "gemini-3.5-pro": 1_048_576, "gemini-3.5-flash": 1_048_576,
+    "gemini-3.5-flash-lite": 1_048_576,
     "gemini-2.5-pro": 1_048_576, "gemini-2.5-flash": 1_048_576,
+    "gemini-2.5-flash-lite": 1_048_576,
     "gemini-2.0-flash": 1_048_576, "gemini-1.5-pro": 2_097_152,
     "gemini-1.5-flash": 1_048_576,
 }

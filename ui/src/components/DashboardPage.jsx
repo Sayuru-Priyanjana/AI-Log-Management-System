@@ -135,6 +135,10 @@ export default function DashboardPage() {
     localStorage.setItem('lastSystemId', id);
   };
 
+  // Both "Analyse with AI" flows below need the full system record — its
+  // environment, specifically — not just the id this page otherwise tracks.
+  const selectedSystem = systems.find((s) => s.id === selectedId);
+
 
 
 
@@ -198,10 +202,11 @@ export default function DashboardPage() {
               <h3 style={{ margin: 0, color: 'var(--text-2)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Detections & Anomalies</h3>
             </header>
             <div style={{ padding: '16px' }}>
-              <AnomalyTimeline 
-                alerts={alerts} 
-                start={start} 
-                end={end} 
+              <AnomalyTimeline
+                alerts={alerts}
+                start={start}
+                end={end}
+                system={selectedSystem}
               />
             </div>
           </div>
@@ -320,6 +325,7 @@ export default function DashboardPage() {
           fetchComparisonData={selectedChart.fetchFn}
           currentStart={start}
           currentEnd={end}
+          system={selectedSystem}
         />
       )}
     </div>

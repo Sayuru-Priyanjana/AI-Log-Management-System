@@ -34,6 +34,8 @@ class LLMCall:
     model: str
     prompt_tokens: int = 0
     output_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    cache_write_tokens: int = 0
     duration_ms: float = 0.0
     truncated: bool = False
     failed: str | None = None
@@ -70,8 +72,32 @@ class LLMMeter:
         return sum(c.output_tokens for c in self.calls)
 
     @property
+    def cached_prompt_tokens(self) -> int:
+        return sum(c.cached_prompt_tokens for c in self.calls)
+
+    @property
+    def cache_write_tokens(self) -> int:
+        return sum(c.cache_write_tokens for c in self.calls)
+
+    @property
     def peak_prompt_tokens(self) -> int:
-        return max((c.prompt_tokens for c in self.calls), default=0)
+        """The largest prompt actually sent, cached portion included.
+
+        Deliberately not the largest *billed* prompt. Those became different
+        numbers when cache reporting arrived: a 5,300-token prompt with 4,200
+        served from cache bills 1,100, and reporting that as the peak made a run
+        look like it had used 0.1% of its context window when it had used 0.5%.
+
+        The distinction matters most where it is cheapest to get wrong. This
+        figure is the truncation early-warning — Ollama silently drops the
+        *head* of anything past `num_ctx`, so an answer written from the tail of
+        its own transcript reads exactly like a confident one — and a peak that
+        shrinks as caching improves would hide the run creeping up on that
+        limit. Cost belongs in `prompt_tokens` and `cached_prompt_tokens`; size
+        belongs here.
+        """
+        return max((c.prompt_tokens + c.cached_prompt_tokens for c in self.calls),
+                   default=0)
 
     def snapshot(self) -> dict:
         """The shape the UI reads. Kept flat so it survives the NDJSON stream."""
@@ -86,9 +112,24 @@ class LLMMeter:
             "context_window": self.context_window,
             "requests": self.request_count,
             "failed_requests": sum(1 for c in self.calls if c.failed),
+            # Billed, not sent: the cached prefix is excluded here and counted
+            # under `cached_prompt_tokens` below. `peak_prompt_tokens` is the
+            # other way round — see the property for why the two differ.
             "prompt_tokens": self.prompt_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.prompt_tokens + self.output_tokens,
+            # What prompt caching saved. `cached_prompt_tokens` is prompt text
+            # the provider served from its cache instead of re-reading, so a
+            # healthy eight-step run shows most of its prompt here rather than
+            # in `prompt_tokens`. Zero across a whole run means caching is off
+            # or the prefix is not stable, which no total-token figure reveals.
+            "cached_prompt_tokens": self.cached_prompt_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "cache_hit_ratio": (
+                round(self.cached_prompt_tokens
+                      / (self.prompt_tokens + self.cached_prompt_tokens), 4)
+                if (self.prompt_tokens + self.cached_prompt_tokens) else None
+            ),
             "peak_prompt_tokens": peak,
             # None rather than 0 when there is no published window: the UI shows
             # "unknown", which is honest, instead of "0% used", which is not.
@@ -118,6 +159,7 @@ def set_stage(stage: str) -> None:
 
 
 def record(*, model: str, prompt_tokens: int = 0, output_tokens: int = 0,
+           cached_prompt_tokens: int = 0, cache_write_tokens: int = 0,
            duration_ms: float = 0.0, truncated: bool = False,
            failed: str | None = None) -> None:
     """Called by every provider at the end of a round trip, success or not.
@@ -134,6 +176,8 @@ def record(*, model: str, prompt_tokens: int = 0, output_tokens: int = 0,
         model=model or meter.model,
         prompt_tokens=prompt_tokens,
         output_tokens=output_tokens,
+        cached_prompt_tokens=cached_prompt_tokens,
+        cache_write_tokens=cache_write_tokens,
         duration_ms=duration_ms,
         truncated=truncated,
         failed=failed,
@@ -174,6 +218,8 @@ def instrument(generate):
         record(model=response.model or getattr(self, "model", ""),
                prompt_tokens=response.prompt_tokens,
                output_tokens=response.output_tokens,
+               cached_prompt_tokens=response.cached_prompt_tokens,
+               cache_write_tokens=response.cache_write_tokens,
                duration_ms=response.duration_ms or (_time.perf_counter() - started) * 1000,
                truncated=response.truncated)
         return response

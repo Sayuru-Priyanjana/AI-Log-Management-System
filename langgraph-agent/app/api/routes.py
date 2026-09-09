@@ -317,6 +317,15 @@ async def effective_config() -> dict:
             "min_baseline_minutes": settings.min_baseline_minutes,
             "incident_pre_roll_seconds": settings.incident_pre_roll_seconds,
         },
+        # How much of the question's range is described, and how much of the
+        # present. Separate from `windows` because none of these decides what
+        # counts as an incident — they decide what the answer mentions.
+        "coverage": {
+            "max_reported_episodes": settings.max_reported_episodes,
+            "episode_quiet_gap_buckets": settings.episode_quiet_gap_buckets,
+            "episode_min_buckets": settings.episode_min_buckets,
+            "recent_status_minutes": settings.recent_status_minutes,
+        },
         "thresholds": {
             "error_rate_spike_multiplier": settings.error_rate_spike_multiplier,
             "latency_degradation_multiplier": settings.latency_degradation_multiplier,
@@ -331,12 +340,15 @@ async def effective_config() -> dict:
             "model": settings.llm_model or settings.ollama_model,
             "temperature": settings.llm_temperature,
             "num_ctx": settings.ollama_num_ctx,
+            "prompt_caching": settings.llm_prompt_caching,
         },
         "budgets": {
             "max_log_patterns": settings.max_log_patterns,
             "max_events": settings.max_events,
             "max_prompt_patterns": settings.max_prompt_patterns,
             "max_prompt_events": settings.max_prompt_events,
+            "react_max_steps": settings.react_max_steps,
+            "react_observation_chars": settings.react_observation_chars,
         },
     }
 

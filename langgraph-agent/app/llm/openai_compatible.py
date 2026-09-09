@@ -80,6 +80,22 @@ class OpenAICompatibleClient(LLMClient):
         return not names or self.model in names
 
     def _payload(self, system: str, prompt: str, schema: dict | None) -> dict:
+        """The request.
+
+        There is no cache flag to set here. OpenAI-compatible endpoints that
+        support prompt caching apply it automatically to any prompt whose
+        leading tokens repeat a recent one, which makes the *shape* of the
+        prompt the only lever — and the shape is already right: the system
+        message is fixed for a whole investigation, and the ReAct transcript is
+        appended to rather than rewritten, so every call's prefix is a prefix of
+        the next call's. Nothing here may reorder or rewrite the head of the
+        prompt for the sake of a few tokens; doing so would cost far more in
+        cache misses than it saved.
+
+        What the caching does need is reporting, which happens in `generate`
+        below — a run whose `cached_tokens` stays at zero is paying full price
+        on every step and nothing else in the numbers would show it.
+        """
         payload: dict = {
             "model": self.model,
             "messages": [
@@ -170,10 +186,19 @@ class OpenAICompatibleClient(LLMClient):
         message = choices[0].get("message") or {}
         usage = data.get("usage") or {}
 
+        # How much of the prompt was served from cache. Reported under
+        # `prompt_tokens_details.cached_tokens`, and — unlike Anthropic's —
+        # counted *inside* `prompt_tokens` rather than beside it, so it is
+        # subtracted out here. Without that the two providers would report the
+        # same run with different totals and neither figure would mean anything.
+        cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+        billed = max(int(usage.get("prompt_tokens") or 0) - cached, 0)
+
         result = LLMResponse(
             text=message.get("content") or "",
-            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            prompt_tokens=billed,
             output_tokens=int(usage.get("completion_tokens") or 0),
+            cached_prompt_tokens=cached,
             duration_ms=(time.perf_counter() - started) * 1000,
             model=data.get("model") or self.model,
         )
@@ -185,6 +210,8 @@ class OpenAICompatibleClient(LLMClient):
                 f"the reply was cut off at {settings.llm_max_output_tokens} output tokens; "
                 f"raise LLM_MAX_OUTPUT_TOKENS if answers look truncated"
             )
-        logger.info("LLM call (%s): %d prompt tokens, %d output tokens, %.0fms",
-                    self.model, result.prompt_tokens, result.output_tokens, result.duration_ms)
+        logger.info("LLM call (%s): %d prompt tokens (%d served from cache), "
+                    "%d output tokens, %.0fms",
+                    self.model, result.prompt_tokens, result.cached_prompt_tokens,
+                    result.output_tokens, result.duration_ms)
         return result

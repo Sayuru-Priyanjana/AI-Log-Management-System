@@ -5,6 +5,7 @@ import { useToast } from '../toast';
 import { getSystemIntegrations, notifyIntegrations, getSystemAlerts } from '../api';
 import { alertCard } from '../teams';
 import { useInvestigation } from '../InvestigationContext';
+import { getAlertStatuses, setAlertStatus } from '../mockData';
 
 const STATUSES = ['pending', 'investigating', 'handled'];
 const SEVERITY_TONE = { high: 'err', medium: 'warn', low: '' };
@@ -30,13 +31,19 @@ export default function AlertsPanel({ system }) {
   const fetchAlerts = async () => {
     try {
       const data = await getSystemAlerts(system.id);
+      // Triage state is ours, not OpenSearch's — the alerting plugin has no
+      // field for "someone looked at this". Re-reading it here is what stops
+      // the fifteen-second refresh below resetting every card to `pending`,
+      // including the one the agent just finished investigating.
+      const statuses = getAlertStatuses();
       const mappedAlerts = data.map(a => ({
         id: a.id,
         title: a.monitor_name,
         service: a.service || 'cluster-wide',
         severity: a.severity === "1" ? 'high' : 'medium',
         timestamp: a.start_time || new Date().getTime(),
-        status: 'pending',
+        status: statuses[a.id]?.status || 'pending',
+        endTime: a.end_time,
         payload: {
           trigger: a.trigger_name,
           state: a.state,
@@ -113,6 +120,7 @@ export default function AlertsPanel({ system }) {
   };
 
   const changeStatus = (id, status) => {
+    setAlertStatus(id, status);
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
     setOpen((prev) => (prev?.id === id ? { ...prev, status } : prev));
   };
@@ -127,12 +135,32 @@ export default function AlertsPanel({ system }) {
     changeStatus(alert.id, 'investigating');
     setOpen(null);
     
+    // The window the alert is about, not the default lookback.
+    //
+    // A detection carries the moment it fired, and handing the agent only a
+    // question meant the run used whatever default window the form would have
+    // used. An alert that opened three hours ago was then investigated over the
+    // last hour — a period in which nothing had happened — and came back
+    // all-clear on an alert that was still open.
+    //
+    // The window starts a little before the alert so the onset detector has room
+    // to find what led up to it, and runs to now rather than to the alert's end
+    // so a still-open detection is analysed up to the present. Both ends are
+    // ISO-8601 UTC, which is what the planner parses.
+    const firedAt = Number(alert.timestamp) || Date.now();
+    const LEAD_IN_MS = 30 * 60 * 1000;
+    const endedAt = alert.payload?.state === 'COMPLETED' && alert.endTime
+      ? Number(alert.endTime) : Date.now();
+
     const navState = {
       system_id: system.id,
       environment: system.environments?.[0],
       service: alert.service,
       question: `${alert.title} on ${alert.service}. Investigate the likely root cause.\n\n`
+        + `The detection fired at ${formatStamp(firedAt)}.\n\n`
         + `Detection payload:\n${JSON.stringify(formatPayload(alert.payload), null, 2)}`,
+      start_time: new Date(firedAt - LEAD_IN_MS).toISOString(),
+      end_time: new Date(Math.max(endedAt, firedAt + 60000)).toISOString(),
       kind: 'alert',
       label: alert.title,
       serviceLabel: alert.service,

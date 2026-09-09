@@ -39,3 +39,46 @@ export function logActivity(systemId, { kind, label, status }) {
   writeAll(ACTIVITIES_KEY, [entry, ...readAll(ACTIVITIES_KEY)]);
   return entry;
 }
+
+// -- alert status -------------------------------------------------------------
+// Which detections have been triaged, and how far.
+//
+// The alerts themselves come from OpenSearch now — the generator that used to
+// live here is gone — but their *status* does not: OpenSearch alerting has no
+// field for "a human looked at this", and inventing one would mean writing back
+// into an index the alerting plugin owns. So triage state stays here, keyed by
+// the alert's own document id, and survives the fifteen-second refresh that
+// otherwise rebuilds every card from scratch.
+//
+// This also has to exist because two call sites already used it. `setAlertStatus`
+// was removed along with the generator while `AgentPage` still imported it, so
+// finishing an alert investigation threw "setAlertStatus is not a function" every
+// time — the one path in the app where an error was guaranteed rather than
+// possible.
+const ALERT_STATUS_KEY = 'logintel.alertStatus';
+
+function readStatuses() {
+  try { return JSON.parse(localStorage.getItem(ALERT_STATUS_KEY) || '{}'); } catch { return {}; }
+}
+
+export function getAlertStatuses() {
+  return readStatuses();
+}
+
+export function getAlertStatus(id, fallback = 'pending') {
+  return readStatuses()[id]?.status || fallback;
+}
+
+export function setAlertStatus(id, status) {
+  if (!id) return null;
+  const all = readStatuses();
+  all[id] = { status, at: new Date().toISOString() };
+  // Bounded: an alerting system that fires all day would otherwise grow this
+  // without limit in a tab nobody reloads.
+  const ids = Object.keys(all);
+  if (ids.length > 500) {
+    for (const stale of ids.slice(0, ids.length - 500)) delete all[stale];
+  }
+  try { localStorage.setItem(ALERT_STATUS_KEY, JSON.stringify(all)); } catch { /* quota */ }
+  return all[id];
+}

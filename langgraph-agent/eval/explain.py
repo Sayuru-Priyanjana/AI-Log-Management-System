@@ -50,6 +50,33 @@ async def main() -> None:
     print(f"  onset    : {windows.get('onset')}   detected={windows.get('onset_detected')}")
     print(f"  method   : {windows.get('method')}")
 
+    # Which of the run's issues got the full treatment, and which were only
+    # counted. An answer that named one failure in a range that held three is a
+    # different fault from one that named the wrong failure, and without this
+    # the two look identical in a stored run.
+    episodes = windows.get("episodes") or []
+    scanned = windows.get("scanned") or {}
+    if scanned:
+        print(f"  scanned  : {str(scanned.get('start', '?'))[:19]} -> "
+              f"{str(scanned.get('end', '?'))[:19]}")
+    print(f"  sweep    : {windows.get('sweep_method') or 'not recorded (run predates the sweep)'}")
+    for episode in episodes:
+        flags = " ".join(filter(None, [
+            "PRIMARY" if episode.get("primary") else "",
+            "ONGOING" if episode.get("ongoing") else "",
+        ]))
+        print(f"    [{episode.get('id')}] {str(episode.get('start'))[11:19]}"
+              f"-{str(episode.get('end'))[11:19]} {episode.get('severity')} "
+              f"peak={episode.get('peak_errors_per_min')}/min "
+              f"services={', '.join(episode.get('services') or []) or '-'} {flags}")
+
+    recent = run.get("recent_status")
+    if recent:
+        print(f"\nCURRENT STATUS AT THE TIME OF THE RUN ({recent.get('minutes')}m window)")
+        print(f"  {str(recent.get('status', '')).upper()}: {recent.get('status_reason')}")
+        if recent.get("unready_pods"):
+            print(f"  not ready: {', '.join(recent['unready_pods'])}")
+
     print(f"\nSIGNALS ({len(run.get('signals', []))})")
     for signal in run.get("signals", []):
         magnitude = signal.get("magnitude") or {}

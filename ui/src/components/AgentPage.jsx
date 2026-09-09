@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { deleteInvestigation, getRecentInvestigations, getSystems, getSystemIntegrations, notifyIntegrations } from '../api';
+import { setAlertStatus } from '../mockData';
 import { useInvestigation } from '../InvestigationContext';
 import { useToast } from '../toast';
 import { investigationCard } from '../teams';
@@ -108,9 +109,15 @@ export default function AgentPage() {
     }
     if (!nav.question) return;
     autoStarted.current = true;
+    // `start_time`/`end_time` are forwarded when the caller supplied them. An
+    // alert knows when it fired, and without this the investigation fell back to
+    // the default lookback — so a detection from three hours ago was diagnosed
+    // against the last hour, in which nothing had happened, and came back
+    // all-clear on an alert that was still open.
     startInvestigation({
       system_id: systemId, environment: nav.environment, question: nav.question,
       service_hint: nav.service,
+      start_time: nav.start_time, end_time: nav.end_time,
     }, { kind: nav.kind || 'new', label: nav.label, alertId: nav.alertId, auto: nav.auto });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemId]);
@@ -120,12 +127,17 @@ export default function AgentPage() {
     if (status === 'complete' && result && (meta?.kind === 'scheduled' || (meta?.kind === 'alert' && meta?.auto)) && notifiedRef.current !== result.id) {
       notifiedRef.current = result.id;
       
-      // Sync with UI: if it's an auto-investigated alert, mark it as handled and refresh sidebar
-      if (meta?.kind === 'alert' && meta.alertId) {
-        import('../mockData').then(({ setAlertStatus }) => {
-          setAlertStatus(meta.alertId, 'handled');
-        });
-      }
+      // Sync with UI: an auto-investigated alert is marked handled, and the
+      // sidebar refreshed.
+      //
+      // This was a dynamic `import('../mockData').then(({ setAlertStatus }) => …)`
+      // for a function that had been deleted along with the mock alert
+      // generator, so every completed alert investigation ended in
+      // "setAlertStatus is not a function" — inside a promise, so it surfaced as
+      // an unhandled rejection rather than anything the page could show. A
+      // static import is also what makes that class of mistake a build error
+      // instead of a runtime one.
+      if (meta?.kind === 'alert' && meta.alertId) setAlertStatus(meta.alertId, 'handled');
       refreshChats(systemId);
       
       getSystemIntegrations(systemId)
@@ -138,11 +150,7 @@ export default function AgentPage() {
     } else if (status === 'complete' && result && meta?.kind === 'alert' && notifiedRef.current !== result.id) {
       // Manual alert investigations: just refresh chats and mark handled
       notifiedRef.current = result.id;
-      if (meta.alertId) {
-        import('../mockData').then(({ setAlertStatus }) => {
-          setAlertStatus(meta.alertId, 'handled');
-        });
-      }
+      if (meta.alertId) setAlertStatus(meta.alertId, 'handled');
       refreshChats(systemId);
     } else if (status === 'complete' && result && notifiedRef.current !== result.id) {
       // Manual normal investigations: just refresh chats
