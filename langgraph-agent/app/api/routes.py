@@ -488,16 +488,11 @@ async def get_system_metrics_error_logs(system_id: str, start: int, end: int, re
                     {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
                 ],
                 "should": [
-                    {"match": {"level": "error"}},
-                    {"match": {"level": "ERROR"}},
-                    {"match": {"log.level": "error"}},
-                    {"match": {"status": "ERROR"}},
-                    {"match": {"message": "error"}},
-                    {"match": {"message": "fatal"}},
-                    {"match": {"message": "critical"}},
-                    {"match": {"log.message": "error"}},
-                    {"match": {"log.message": "fatal"}},
-                    {"match": {"log.message": "critical"}}
+                    {"term": {"level.keyword": "ERROR"}},
+                    {"term": {"level.keyword": "error"}},
+                    {"term": {"log.level.keyword": "ERROR"}},
+                    {"term": {"log.level.keyword": "error"}},
+                    {"term": {"status": "ERROR"}}
                 ],
                 "minimum_should_match": 1
             }
@@ -743,16 +738,11 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
                     {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
                 ],
                 "should": [
-                    {"match": {"level": "error"}},
-                    {"match": {"level": "ERROR"}},
-                    {"match": {"log.level": "error"}},
-                    {"match": {"status": "ERROR"}},
-                    {"match": {"message": "error"}},
-                    {"match": {"message": "fatal"}},
-                    {"match": {"message": "critical"}},
-                    {"match": {"log.message": "error"}},
-                    {"match": {"log.message": "fatal"}},
-                    {"match": {"log.message": "critical"}}
+                    {"term": {"level.keyword": "ERROR"}},
+                    {"term": {"level.keyword": "error"}},
+                    {"term": {"log.level.keyword": "ERROR"}},
+                    {"term": {"log.level.keyword": "error"}},
+                    {"term": {"status": "ERROR"}}
                 ],
                 "minimum_should_match": 1
             }
@@ -761,7 +751,7 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
             "top_errors": {
                 "terms": {
                     "field": "log.message.keyword",
-                    "size": 5
+                    "size": 100
                 },
                 "aggs": {
                     "services": {
@@ -785,16 +775,33 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
             result = await container.opensearch.search(settings.opensearch_log_index, query)
             buckets = result.get("aggregations", {}).get("top_errors", {}).get("buckets", [])
 
-        errors = []
+        clustered_errors = {}
         for b in buckets:
-            msg = b.get("key")
-            count = b.get("doc_count")
-            services = []
+            msg = b.get("key", "")
+            count = b.get("doc_count", 0)
+            
+            # Simple clustering by stripping dynamic parts
+            pattern = re.sub(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', '<UUID>', msg)
+            pattern = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', '<IP>', pattern)
+            pattern = re.sub(r'\b0x[0-9a-fA-F]+\b', '<HEX>', pattern)
+            pattern = re.sub(r'\b\d{4,}\b', '<NUM>', pattern)
+            
+            if pattern not in clustered_errors:
+                clustered_errors[pattern] = {"count": 0, "services": set(), "sample": msg}
+            
+            clustered_errors[pattern]["count"] += count
             service_buckets = b.get("services", {}).get("buckets", [])
             for sb in service_buckets:
-                services.append(sb.get("key"))
-            service_str = ", ".join(services) if services else "Unknown"
-            errors.append({"message": msg, "count": count, "service": service_str})
+                clustered_errors[pattern]["services"].add(sb.get("key"))
+                
+        # Sort by count and take top 5
+        sorted_patterns = sorted(clustered_errors.values(), key=lambda x: x["count"], reverse=True)[:5]
+
+        errors = []
+        for data in sorted_patterns:
+            service_str = ", ".join(data["services"]) if data["services"] else "Unknown"
+            # Return the clustered pattern as the message
+            errors.append({"message": data["sample"], "count": data["count"], "service": service_str})
         return errors
     except Exception as exc:
         logger.error(f"Failed to fetch top errors: {exc}")

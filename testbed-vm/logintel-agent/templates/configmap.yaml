@@ -143,7 +143,19 @@ data:
         if body["level"] == nil then out["log"]["level"] = "UNKNOWN" end
         if body["message"] == nil then out["log"]["message"] = "" end
       else
-        out["log"] = { level = "UNKNOWN", message = tostring(body or "") }
+        -- Unstructured line: keep it, but mark it so log-pattern analysis can
+        -- exclude it rather than silently treating noise as evidence.
+        local text = tostring(body or "")
+        local level = "UNKNOWN"
+        if text:match("%sERROR%s") or text:match("^ERROR%s") then level = "ERROR"
+        elseif text:match("%sWARN%s") or text:match("^WARN%s") then level = "WARN"
+        elseif text:match("%sINFO%s") or text:match("^INFO%s") then level = "INFO"
+        elseif text:match("%sDEBUG%s") or text:match("^DEBUG%s") then level = "DEBUG"
+        elseif text:match("%sTRACE%s") or text:match("^TRACE%s") then level = "TRACE"
+        elseif text:match("%sFATAL%s") or text:match("^FATAL%s") then level = "FATAL"
+        end
+        out["log"] = { level = level, message = text }
+        out["parse"] = { failed = true, stream = record["stream"] }
       end
 
         if out["service"] == nil then
