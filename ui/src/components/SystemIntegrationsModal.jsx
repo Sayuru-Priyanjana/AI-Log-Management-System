@@ -167,8 +167,9 @@ export default function SystemIntegrationsModal({ system, health, tests, onTest,
               </div>
             </div>
             <p className="hint" style={{ marginTop: 8 }}>
-              These are saved and ready — there is no scheduler running yet to act on them, so the
-              daily scan above does not fire on its own until one exists.
+              Automation is active — scheduled daily scans run at the configured time, and incoming
+              alerts will be automatically investigated and posted to Microsoft Teams according to the
+              options selected above.
             </p>
           </div>
         )}

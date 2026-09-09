@@ -122,39 +122,13 @@ export default function AgentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemId]);
 
-  // Handle auto-notification for scheduled scans and alerts when they complete
+  // Handle UI sync and chat refresh when investigations complete
   useEffect(() => {
-    if (status === 'complete' && result && (meta?.kind === 'scheduled' || (meta?.kind === 'alert' && meta?.auto)) && notifiedRef.current !== result.id) {
+    if (status === 'complete' && result && notifiedRef.current !== result.id) {
       notifiedRef.current = result.id;
-      
-      // Sync with UI: an auto-investigated alert is marked handled, and the
-      // sidebar refreshed.
-      //
-      // This was a dynamic `import('../mockData').then(({ setAlertStatus }) => …)`
-      // for a function that had been deleted along with the mock alert
-      // generator, so every completed alert investigation ended in
-      // "setAlertStatus is not a function" — inside a promise, so it surfaced as
-      // an unhandled rejection rather than anything the page could show. A
-      // static import is also what makes that class of mistake a build error
-      // instead of a runtime one.
-      if (meta?.kind === 'alert' && meta.alertId) setAlertStatus(meta.alertId, 'handled');
-      refreshChats(systemId);
-      
-      getSystemIntegrations(systemId)
-        .then(({ values }) => {
-          if (values?.notify_on_scan_result_enabled) {
-            sendResultToIntegrations();
-          }
-        })
-        .catch(console.error);
-    } else if (status === 'complete' && result && meta?.kind === 'alert' && notifiedRef.current !== result.id) {
-      // Manual alert investigations: just refresh chats and mark handled
-      notifiedRef.current = result.id;
-      if (meta.alertId) setAlertStatus(meta.alertId, 'handled');
-      refreshChats(systemId);
-    } else if (status === 'complete' && result && notifiedRef.current !== result.id) {
-      // Manual normal investigations: just refresh chats
-      notifiedRef.current = result.id;
+      if (meta?.kind === 'alert' && meta.alertId) {
+        setAlertStatus(meta.alertId, 'handled');
+      }
       refreshChats(systemId);
     }
   }, [status, result, meta, systemId]);
