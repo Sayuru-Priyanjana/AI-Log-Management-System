@@ -85,6 +85,9 @@ export default function Scheduler() {
             scanTimeToday.setHours(scanHour, scanMinute, 0, 0);
 
             if (now >= scanTimeToday) {
+              // Add a random jitter (0-2s) to prevent cross-tab race conditions
+              await new Promise(r => setTimeout(r, Math.random() * 2000));
+
               // Keyed by system, date, and configured scan_time to prevent duplicate runs across tabs
               // while still allowing re-testing if the user adjusts the scan_time.
               const scanKey = `${system.id}-${isoDate}-${values.scan_time}`;
