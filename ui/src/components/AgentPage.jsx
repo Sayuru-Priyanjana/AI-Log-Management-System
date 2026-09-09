@@ -102,9 +102,9 @@ export default function AgentPage() {
   // systems load) does not fire it a second time.
   useEffect(() => {
     if (autoStarted.current || !systemId) return;
-    if (nav.investigation_id) {
+    if (nav.investigation_ids || nav.investigation_id) {
       autoStarted.current = true;
-      loadInvestigation(nav.investigation_id);
+      loadInvestigation(nav.investigation_ids || nav.investigation_id);
       return;
     }
     if (!nav.question) return;
