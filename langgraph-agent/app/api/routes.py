@@ -488,11 +488,11 @@ async def get_system_metrics_error_logs(system_id: str, start: int, end: int, re
                     {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
                 ],
                 "should": [
-                    {"term": {"level.keyword": "ERROR"}},
-                    {"term": {"level.keyword": "error"}},
-                    {"term": {"log.level.keyword": "ERROR"}},
-                    {"term": {"log.level.keyword": "error"}},
-                    {"term": {"status": "ERROR"}}
+                    {"match": {"level": "ERROR"}},
+                    {"match": {"level": "error"}},
+                    {"match": {"log.level": "ERROR"}},
+                    {"match": {"log.level": "error"}},
+                    {"match": {"status": "ERROR"}}
                 ],
                 "minimum_should_match": 1
             }
@@ -738,11 +738,11 @@ async def get_top_errors(system_id: str, start: int, end: int, request: Request)
                     {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
                 ],
                 "should": [
-                    {"term": {"level.keyword": "ERROR"}},
-                    {"term": {"level.keyword": "error"}},
-                    {"term": {"log.level.keyword": "ERROR"}},
-                    {"term": {"log.level.keyword": "error"}},
-                    {"term": {"status": "ERROR"}}
+                    {"match": {"level": "ERROR"}},
+                    {"match": {"level": "error"}},
+                    {"match": {"log.level": "ERROR"}},
+                    {"match": {"log.level": "error"}},
+                    {"match": {"status": "ERROR"}}
                 ],
                 "minimum_should_match": 1
             }
