@@ -232,7 +232,7 @@ export async function getSystemLogsNLQ(systemId, params = {}) {
   
   const path = `/api/systems/${systemId}/logs/nlq?${queryParams.toString()}`;
   const response = await fetch(`${BASE_URL}${path}`, { 
-    headers: getHeaders({ 'x-agent-backend': 'langgraph-agent' }) 
+    headers: getHeaders({ 'x-agent-backend': 'langgraph' }) 
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
