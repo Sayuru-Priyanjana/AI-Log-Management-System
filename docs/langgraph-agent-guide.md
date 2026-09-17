@@ -129,6 +129,8 @@ The loop discourages repeating the same call or repeatedly searching for nothing
 
 `verify_answer` builds an index of evidence collected in the run, checks IDs cited by reasoning steps, and labels citations as resolved, unresolved, or inferred by the pipeline. It attaches the measured episode list and recent status independently of what the model wrote. It identifies unmentioned secondary episodes and evidence gaps. It rebuilds confidence using caps and adjustments for missing baselines, partial sources, unsupported claims, invented IDs, model failure, disagreement with the top rule candidate, and a current test that rejects or cannot settle the named cause. Historical similarity never increases confidence. The configured maximum reportable confidence defaults to 0.90.
 
+A crashloop identifies a failing workload, not its exit cause. A rollout at the same reported time is only a lead. When the answer cites no startup log or termination signal for the affected service, verification replaces a claimed root cause with an unconfirmed-exit finding, caps confidence at 0.40, and requests previous-container logs and the termination reason. Live log IDs exposed by the retrieval tools are valid citations.
+
 The final result includes the plan, windows, signals, topology, fingerprint, historical matches, candidates and their tests, causal roles, verified answer, condensed evidence timeline, recent status, source summary, timings, errors, graph path and decisions, and LLM usage. The API stores this record in the OpenSearch investigation index. The flat `analysis` field supports history and evaluation views; `answer` contains the richer structured reasoning and citations.
 
 ## Failure behavior and limits

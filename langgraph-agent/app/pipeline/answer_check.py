@@ -29,7 +29,7 @@ from app.models.answer import (
 )
 from app.models.evidence import EvidenceBundle
 from app.models.intelligence import HypothesisTest
-from app.models.signals import Signal
+from app.models.signals import Signal, SignalType
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,13 @@ def verify_answer(
             ))
             continue
 
+        if evidence_id.startswith("log:") and evidence_id in exposed_ids:
+            answer.citations.append(Citation(
+                id=evidence_id, label="log line retrieved during this investigation",
+                status=CitationStatus.RESOLVED,
+            ))
+            continue
+
         # A copied schema placeholder is a formatting slip, not a fabricated
         # claim. Both are rejected, but they say different things about the run
         # and lumping them together makes the diagnosis harder.
@@ -292,6 +299,65 @@ def verify_answer(
                 status=CitationStatus.INFERRED,
                 detail="Added by the pipeline: the model cited no usable evidence.",
             ))
+
+    # A restart signal proves that a process exits repeatedly, not why it exits.
+    # In particular, a rollout and a crashloop sharing a minute can be correlated
+    # without the new image being the cause. Keep the affected service visible,
+    # but do not publish an unverified exit explanation as a root cause.
+    unconfirmed_exit = False
+    if mode is AnswerMode.ROOT_CAUSE and answer.root_cause_service:
+        service = answer.root_cause_service
+        crashloop = any(s.type is SignalType.CRASHLOOP and s.service == service
+                        and not s.pre_existing for s in signals)
+        direct_exit_signal = any(
+            s.service == service and not s.pre_existing and s.type in
+            (SignalType.OOM_KILL, SignalType.IMAGE_PULL_FAILURE)
+            for s in signals)
+        cited_startup_log = any(
+            p.service == service and p.id in cited and
+            (p.level in ("FATAL", "CRITICAL") or any(
+                phrase in (p.template + " " + p.example).lower() for phrase in
+                ("startup", "failed to start", "failed to initialize",
+                 "failed to initialise", "panic", "fatal", "exit code")))
+            for p in evidence.logs.patterns)
+        cited_live_log = any(sid.startswith("log:") and sid in exposed_ids
+                             for sid in cited)
+        if (crashloop and not direct_exit_signal and not cited_startup_log
+                and not cited_live_log):
+            unconfirmed_exit = True
+            change = any(s.type is SignalType.DEPLOYMENT_CHANGE and
+                         s.service == service and not s.pre_existing for s in signals)
+            answer.headline = (f"{service} is crashlooping; the reason its container "
+                               "exits is not established.")
+            answer.detail = (
+                ("A deployment change was observed around the crashloop, but "
+                 "matching timestamps do not establish that the rollout caused it. "
+                 if change else "")
+                + "Check the container's previous logs and termination reason to "
+                  "identify the failure inside the workload."
+            )
+            for step in answer.reasoning:
+                if any(word in step.claim.lower() for word in
+                       ("deploy", "rollout", "change")) and re.search(
+                        r"\b(caus\w*|trigger\w*|introduc\w*|result\w*)\b",
+                        step.claim, re.IGNORECASE):
+                    step.claim = ("A deployment change occurred around the crashloop; "
+                                  "whether it caused the exits is unconfirmed.")
+                    step.because = "Timing alone does not identify the exit reason."
+            answer.root_cause_service = None
+            answer.limitations.insert(
+                0, f"The exit cause for {service} is unconfirmed; the crashloop and "
+                   "deployment signals establish state and timing only.")
+            answer.next_steps.insert(0, NextStep(
+                label=f"Find why {service} exits by checking previous-container logs "
+                      "and the termination reason",
+                kind="investigation",
+                question=f"What termination reason and startup error explain the "
+                         f"{service} crashloop?",
+                reason="The current evidence identifies the failing workload but "
+                       "does not establish the cause of its exits.",
+            ))
+            answer.next_steps = answer.next_steps[:6]
 
     # -- confidence, rebuilt from scratch ----------------------------------
     stated = raw.get("confidence")
@@ -340,6 +406,10 @@ def verify_answer(
         adjust(0.65, 0.0,
                f"{len(unsupported)} reasoning step(s) cite no evidence at all",
                "lowers")
+    if unconfirmed_exit:
+        adjust(0.4, 0.0,
+               "the crashloop's container exit reason was not established by "
+               "a termination signal or cited startup log", "lowers")
 
     # An answer whose headline is "nothing was found" while measurements are
     # sitting in the same run is not merely thin, it is contradicted by the

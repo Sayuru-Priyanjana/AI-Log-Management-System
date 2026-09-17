@@ -294,6 +294,20 @@ def evaluate_hypotheses(candidates: list[Candidate], signals: list[Signal],
             expectation="Rule support is present in this investigation",
             outcome="observed" if supported else "unknown", evidence_ids=supported[:8],
         ))
+        direct_failure_evidence = [sid for sid in candidate.supporting_signals
+                                   if sid.startswith(("pat:", "log:"))]
+        if candidate.category == CauseCategory.STARTUP_FAILURE:
+            checks.append(HypothesisCheck(
+                expectation="A startup log identifies why the container exits",
+                outcome="observed" if direct_failure_evidence else "unknown",
+                evidence_ids=direct_failure_evidence[:5],
+            ))
+        elif candidate.category == CauseCategory.CHANGE_INDUCED:
+            checks.append(HypothesisCheck(
+                expectation="Direct evidence links the change to the failure",
+                outcome="observed" if direct_failure_evidence else "unknown",
+                evidence_ids=direct_failure_evidence[:5],
+            ))
         contradicted = [sid for sid in candidate.contradicting_signals if sid in by_id]
         if contradicted:
             checks.append(HypothesisCheck(
@@ -326,9 +340,13 @@ def evaluate_hypotheses(candidates: list[Candidate], signals: list[Signal],
                                "before downstream symptoms" in c.expectation
                                for c in checks)
         verdict = ("reject" if impossible_order or
-                   (contradictions and contradictions >= observations)
-                   else "keep" if observations >= 2 and not contradictions
-                   else "uncertain")
+                    (contradictions and contradictions >= observations)
+                    else "keep" if observations >= 2 and not contradictions
+                    else "uncertain")
+        if (verdict == "keep" and candidate.category in
+                (CauseCategory.STARTUP_FAILURE, CauseCategory.CHANGE_INDUCED)
+                and not direct_failure_evidence):
+            verdict = "uncertain"
         tests.append(HypothesisTest(candidate_id=candidate.id, verdict=verdict,
                                     checks=checks))
     return tests

@@ -15,6 +15,7 @@ from app.pipeline.intelligence import (
     similarity, evaluate_hypotheses, historical_candidates,
 )
 from app.pipeline.answer_check import verify_answer
+from app.pipeline.hypotheses import HypothesisEngine
 from app.store.investigations import InvestigationStore
 
 
@@ -144,6 +145,88 @@ def test_hypothesis_is_rejected_when_cause_follows_symptom():
     )
     assert answer.confidence <= 0.4
     assert any("rejected" in item.lower() for item in answer.limitations)
+
+
+def test_crashloop_and_rollout_timing_do_not_establish_an_exit_cause():
+    window = TimeWindow(start=NOW, end=NOW + timedelta(minutes=30))
+    windows = InvestigationWindows(
+        requested=window, incident=window,
+        baseline=TimeWindow(start=NOW - timedelta(minutes=30), end=NOW))
+    signals = [
+        signal("sig:CRASHLOOP:doe-pod", SignalType.CRASHLOOP,
+               "doe-result-service", 2),
+        signal("sig:DEPLOYMENT_CHANGE:doe-result-service",
+               SignalType.DEPLOYMENT_CHANGE, "doe-result-service", 2),
+    ]
+    evidence = EvidenceBundle()
+    candidates = HypothesisEngine().generate(plan(), windows, signals, evidence)
+    startup = next(c for c in candidates if c.category is CauseCategory.STARTUP_FAILURE)
+    assert "exit reason is unknown" in startup.hypothesis
+    tests = evaluate_hypotheses(candidates, signals,
+                                build_topology(plan(), evidence, signals))
+    assert next(t for t in tests if t.candidate_id == startup.id).verdict == "uncertain"
+    assert not any(r.role == "root_cause" for r in classify_roles(signals, candidates, tests))
+
+    answer = verify_answer(
+        raw={"headline": "The deployment caused doe-result-service to crashloop.",
+             "detail": "Both began at the same reported time.",
+             "root_cause_service": "doe-result-service", "confidence": 0.9,
+             "reasoning": [{"claim": "The rollout triggered the crashloop",
+                            "evidence_ids": [s.id for s in signals]}]},
+        mode=AnswerMode.ROOT_CAUSE, signals=signals, candidates=candidates,
+        evidence=evidence, windows=windows,
+        exposed_ids={s.id for s in signals}, hypothesis_tests=tests)
+    assert answer.root_cause_service is None
+    assert "not established" in answer.headline
+    assert "matching timestamps" in answer.detail
+    assert "unconfirmed" in answer.reasoning[0].claim
+    assert answer.confidence <= 0.4
+    assert "termination reason" in answer.next_steps[0].label
+
+
+def test_a_cited_fatal_startup_log_preserves_a_supported_crashloop_explanation():
+    window = TimeWindow(start=NOW, end=NOW + timedelta(minutes=30))
+    windows = InvestigationWindows(
+        requested=window, incident=window,
+        baseline=TimeWindow(start=NOW - timedelta(minutes=30), end=NOW))
+    signals = [signal("sig:CRASHLOOP:doe-pod", SignalType.CRASHLOOP,
+                      "doe-result-service", 2)]
+    evidence = EvidenceBundle(logs=LogEvidence(patterns=[LogPattern(
+        id="pat:startup", template="failed to initialize database client",
+        example="failed to initialize database client", level="FATAL",
+        service="doe-result-service", count=3)]))
+    candidates = HypothesisEngine().generate(plan(), windows, signals, evidence)
+    startup = next(c for c in candidates if c.category is CauseCategory.STARTUP_FAILURE)
+    tests = evaluate_hypotheses(candidates, signals,
+                                build_topology(plan(), evidence, signals))
+    assert next(t for t in tests if t.candidate_id == startup.id).verdict == "keep"
+    answer = verify_answer(
+        raw={"headline": "doe-result-service exits because database initialization fails",
+             "root_cause_service": "doe-result-service", "confidence": 0.7,
+             "reasoning": [{"claim": "The startup log records the failure",
+                            "evidence_ids": ["pat:startup"]}]},
+        mode=AnswerMode.ROOT_CAUSE, signals=signals, candidates=candidates,
+        evidence=evidence, windows=windows,
+        exposed_ids={signals[0].id, "pat:startup"}, hypothesis_tests=tests)
+    assert answer.root_cause_service == "doe-result-service"
+    assert "database initialization" in answer.headline
+
+
+def test_a_live_log_citation_is_resolved_when_the_tool_exposed_it():
+    window = TimeWindow(start=NOW, end=NOW + timedelta(minutes=30))
+    windows = InvestigationWindows(requested=window, incident=window)
+    crashloop = signal("sig:CRASHLOOP:doe-pod", SignalType.CRASHLOOP,
+                       "doe-result-service", 2)
+    answer = verify_answer(
+        raw={"headline": "doe-result-service exits on startup",
+             "root_cause_service": "doe-result-service",
+             "reasoning": [{"claim": "The process exits after a startup error",
+                            "evidence_ids": ["log:abc123"]}]},
+        mode=AnswerMode.ROOT_CAUSE, signals=[crashloop], candidates=[],
+        evidence=EvidenceBundle(), windows=windows,
+        exposed_ids={crashloop.id, "log:abc123"})
+    assert answer.root_cause_service == "doe-result-service"
+    assert answer.citations[0].status.value == "resolved"
 
 
 @pytest.mark.asyncio

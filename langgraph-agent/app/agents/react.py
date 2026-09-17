@@ -90,6 +90,10 @@ Available tools:
 - Failures propagate upward through the call graph. If a dependency is broken,
   the services calling it are symptoms. Name the deepest failing component.
 - Prefer the explanation that started first. An effect cannot precede its cause.
+- A crashloop identifies the failing workload, not why its process exits. A
+  deployment at the same reported time is a lead, not proof of causation.
+  Without a termination reason or a relevant startup log, say the exit cause
+  is unknown and describe the deployment link as a hypothesis.
 - Treat a similar past incident as a lead only. Check its proposed cause against
   current signals and hypothesis tests before adopting it.
 - Separate root cause, contributing factor, symptom, impact and consequence.
@@ -127,6 +131,11 @@ MODE_GUIDANCE: dict[AnswerMode, str] = {
         "claims to explain; an effect cannot precede its cause. And prefer the DEEPEST "
         "failing component, because failures propagate upward and everything above it "
         "is a symptom.\n"
+        "For a crashloop, check the service's logs around the first restart and "
+        "Kubernetes events. Name the failing service, but do not call a nearby "
+        "deployment the cause unless a termination reason or startup error "
+        "connects the new version to the exit. If that evidence is missing, "
+        "state that the exit cause is unconfirmed.\n"
         "\n"
         "Every signal is a fact the answer must account for, whether it came from a "
         "log, a Kubernetes event or a metric — get_service_events and "

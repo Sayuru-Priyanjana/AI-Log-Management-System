@@ -353,10 +353,12 @@ class HypothesisEngine:
 
         fatal_patterns = [
             p for p in evidence.logs.patterns
-            if p.level in ("FATAL", "CRITICAL")
-            or "startup" in p.template.lower()
-            or "failed to initialise" in p.template.lower()
-            or "failed to initialize" in p.template.lower()
+            if p.service == crashloops[0].service and (
+                p.level in ("FATAL", "CRITICAL")
+                or "startup" in p.template.lower()
+                or "failed to initialise" in p.template.lower()
+                or "failed to initialize" in p.template.lower()
+            )
         ]
         anchor = crashloops[0]
         score = 0.55 if fatal_patterns else 0.35
@@ -364,7 +366,9 @@ class HypothesisEngine:
         return [Candidate(
             id="pending",
             category=CauseCategory.STARTUP_FAILURE,
-            hypothesis=f"{anchor.service or anchor.pod} fails during startup and restarts in a loop.",
+            hypothesis=(f"{anchor.service or anchor.pod} fails during startup and restarts in a loop."
+                        if fatal_patterns else
+                        f"{anchor.service or anchor.pod} is crashlooping; the container exit reason is unknown."),
             service=anchor.service,
             onset=_earliest(crashloops),
             score=score,
