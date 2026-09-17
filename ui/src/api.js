@@ -204,6 +204,9 @@ export const getTopErrors = (id, start, end) => {
   return getJSON(`/api/systems/${id}/errors/top?start=${snappedStart}&end=${snappedEnd}`);
 };
 export const getLogsContext = (id, timestamp, service) => getJSON(`/api/systems/${id}/logs/context?timestamp=${timestamp}&service=${encodeURIComponent(service)}`);
+export const summarizeLogs = (id, logs) => postJSON(`/api/systems/${id}/logs/summarize`, { logs });
+export const generateTimeline = (id, timestamp, service) => getJSON(`/api/systems/${id}/logs/timeline?timestamp=${timestamp}&service=${encodeURIComponent(service)}`);
+
 
 export async function getSystemLogs(systemId, params = {}) {
   const queryParams = new URLSearchParams();
@@ -216,6 +219,26 @@ export async function getSystemLogs(systemId, params = {}) {
   if (params.end) queryParams.append('end', params.end);
   
   return await getJSON(`/api/systems/${systemId}/logs?${queryParams.toString()}`);
+}
+
+export async function getSystemLogsNLQ(systemId, params = {}) {
+  const queryParams = new URLSearchParams();
+  if (params.query) queryParams.append('query', params.query);
+  if (params.service) queryParams.append('service', params.service);
+  if (params.level) queryParams.append('level', params.level);
+  if (params.limit) queryParams.append('limit', params.limit);
+  if (params.start) queryParams.append('start', params.start);
+  if (params.end) queryParams.append('end', params.end);
+  
+  const path = `/api/systems/${systemId}/logs/nlq?${queryParams.toString()}`;
+  const response = await fetch(`${BASE_URL}${path}`, { 
+    headers: getHeaders({ 'x-agent-backend': 'langgraph-agent' }) 
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`GET ${path} -> ${response.status}: ${body.slice(0, 300)}`);
+  }
+  return response.json();
 }
 
 // Per-system integrations (Teams channel, automation) — unlike /api/settings,

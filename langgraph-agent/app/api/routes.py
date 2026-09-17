@@ -19,6 +19,11 @@ from datetime import datetime, timezone
 from app.models.domain import TimeWindow
 from app.models.analysis import InvestigationResult, InvestigationWindows
 from app.models.plan import InvestigationPlan, InvestigationRequest
+from pydantic import BaseModel
+
+class SummarizeLogsRequest(BaseModel):
+    logs: list[dict]
+
 from app.pipeline.signals import SignalEngine
 
 logger = logging.getLogger(__name__)
@@ -145,6 +150,81 @@ async def refresh_systems(request: Request) -> dict:
     return {"refreshed": len(discovered), "systems": sorted(discovered)}
 
 
+@router.post("/systems/{system_id}/logs/summarize")
+async def summarize_logs(system_id: str, payload: SummarizeLogsRequest, request: Request) -> dict:
+    container = deps(request)
+    llm = getattr(container.pipeline, "llm", None) or container.llm
+    
+    system_prompt = "You are an expert system administrator and site reliability engineer. Summarize the provided system logs."
+    
+    # We only take the first 100 logs just in case to prevent massive payloads
+    logs_to_summarize = payload.logs[:100]
+    log_text = json.dumps(logs_to_summarize, indent=2)
+    
+    prompt = f"Please summarize the following system logs. Identify any critical errors, patterns, or anomalies. Do not just list the logs, explain what is happening at a high level.\n\nLogs:\n{log_text}"
+    
+    response = await llm.generate(system=system_prompt, prompt=prompt)
+    
+    return {"summary": response.text}
+
+
+@router.get("/systems/{system_id}/logs/nlq")
+async def get_system_logs_nlq(
+    system_id: str,
+    request: Request,
+    query: str = "",
+    service: str | None = None,
+    level: str | None = None,
+    limit: int = 100,
+    start: float | None = None,
+    end: float | None = None,
+) -> dict:
+    container = deps(request)
+    llm = getattr(container.pipeline, "llm", None) or container.llm
+    
+    current_query_string = query
+    system_prompt = (
+        "You are an iterative search agent. You translate natural language into OpenSearch `query_string` syntax. "
+        "If the results returned are not what the user asked for (e.g., 0 results), refine the query. "
+        "Output ONLY a JSON object with one key: `query_string`."
+    )
+    
+    for attempt in range(3):
+        # 1. Search OpenSearch
+        try:
+            results = await container.opensearch.search_logs(
+                system_id=system_id,
+                query=current_query_string,
+                service=service,
+                level=level,
+                limit=limit,
+                start=start,
+                end=end,
+                cursor=None
+            )
+        except Exception as e:
+            logger.error("NLQ OpenSearch error: %s", e)
+            return {"logs": [], "total": 0, "error": str(e)}
+        
+        logs = results.get("logs", [])
+        
+        # 2. Iterate if we found nothing
+        if not logs and attempt < 2:
+            prompt = f"The query '{current_query_string}' found 0 logs. Please refine your OpenSearch query_string to be broader or try different keywords based on the original intent: '{query}'."
+            try:
+                resp = await llm.generate(system=system_prompt, prompt=prompt)
+                raw_text = resp.text.strip().strip('```json').strip('```').strip()
+                data = json.loads(raw_text)
+                current_query_string = data.get("query_string", query)
+            except Exception as e:
+                logger.error("NLQ LLM parsing error: %s", e)
+                break # Fallback to returning empty if parsing fails
+            continue
+        
+        # 3. Return the logs
+        return results
+
+    return {"logs": [], "total": 0}
 
 @router.get("/agent/graph")
 async def agent_graph() -> dict:
