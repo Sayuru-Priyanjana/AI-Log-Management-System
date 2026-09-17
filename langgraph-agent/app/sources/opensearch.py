@@ -212,6 +212,85 @@ class OpenSearchClient:
         )
         return int(result.get("count", 0))
 
+    async def search_logs(
+        self,
+        system_id: str,
+        query: str = "",
+        service: str | None = None,
+        level: str | None = None,
+        limit: int = 100,
+        start: float | None = None,
+        end: float | None = None,
+        cursor: Any | None = None,
+    ) -> dict:
+        filters = [{"term": {"system.id": system_id}}]
+        
+        if service and service.lower() != "all":
+            filters.append({"term": {"service.name": service}})
+            
+        if level and level.lower() != "all":
+            filters.append({
+                "bool": {
+                    "should": [
+                        {"term": {"log.level": level.upper()}},
+                        {"term": {"log.level": level.lower()}},
+                        {"term": {"level": level.upper()}},
+                        {"term": {"level": level.lower()}}
+                    ],
+                    "minimum_should_match": 1
+                }
+            })
+            
+        time_range = {}
+        if start is not None:
+            time_range["gte"] = int(start * 1000)
+        if end is not None:
+            time_range["lte"] = int(end * 1000)
+        
+        if time_range:
+            time_range["format"] = "epoch_millis"
+            filters.append({"range": {"@timestamp": time_range}})
+            
+        must = []
+        if query:
+            must.append({"query_string": {"query": query}})
+        else:
+            must.append({"match_all": {}})
+            
+        body = {
+            "size": min(limit, 10000),
+            "sort": [{"@timestamp": {"order": "desc"}}],
+            "query": {
+                "bool": {
+                    "filter": filters,
+                    "must": must
+                }
+            }
+        }
+        
+        if cursor:
+            body["search_after"] = cursor
+            
+        result = await self.search(settings.opensearch_log_index, body)
+        
+        hits = result.get("hits", {}).get("hits", [])
+        total = result.get("hits", {}).get("total", {}).get("value", 0)
+        if isinstance(total, dict):
+            total = total.get("value", 0)
+        
+        logs = []
+        last_cursor = None
+        for hit in hits:
+            source = hit.get("_source", {})
+            logs.append(source)
+            last_cursor = hit.get("sort")
+            
+        return {
+            "logs": logs,
+            "total": total,
+            "cursor": last_cursor
+        }
+
     async def index_document(self, index: str, document: dict, doc_id: str | None = None) -> dict:
         path = f"/{index}/_doc/{doc_id}" if doc_id else f"/{index}/_doc"
         return await self._request("PUT" if doc_id else "POST", path, document)
