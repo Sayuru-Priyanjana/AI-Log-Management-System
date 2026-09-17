@@ -182,6 +182,35 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  holmes-runtime:
+    image: robustadev/holmes:0.39.0
+    entrypoint: ["python", "-u", "server.py"]
+    environment:
+      GEMINI_API_KEY: ${LLM_API_KEY:-}
+      ENABLED_BY_DEFAULT_TOOLSETS: ""
+      ENABLE_TELEMETRY: "false"
+    volumes:
+      - ./holmes-agent/holmes-config.yaml:/root/.holmes/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5050/healthz"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  holmes-agent:
+    build: ./holmes-agent
+    image: log-agent-holmes:latest
+    environment:
+      HOLMES_URL: http://holmes-runtime:5050
+      HOLMES_MODEL: gemini/gemini-3.5-flash-lite
+      OPENSEARCH_URL: http://opensearch:9200
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      holmes-runtime:
+        condition: service_healthy
+
   ui:
     build:
       context: ./ui
@@ -224,6 +253,7 @@ services:
       # Must match the service name above. The gateway picks between the two per
       # request, from the `x-agent-backend` header the UI sets.
       LANGGRAPH_AGENT_URL: http://langgraph-agent:8000   # compose service name above
+      HOLMES_AGENT_URL: http://holmes-agent:8000
       JWT_SECRET: super-secret-jwt-key
       PGHOST: postgres
       PGPORT: 5432
@@ -234,6 +264,7 @@ services:
       - postgres
       - agent
       - langgraph-agent
+      - holmes-agent
 
   # ------------------------------------------------------------------ extras
   # Copies a fixed set of Prometheus series into OpenSearch so Dashboards can

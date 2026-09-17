@@ -292,7 +292,8 @@ export function InvestigationProvider({ children }) {
     result: stored,
     llmUsage: stored.llm || null,
     graph: (stored.graph_path || []).length
-      ? { engine: 'langgraph', path: stored.graph_path, decisions: stored.graph_decisions || [] }
+      ? { engine: stored.engine || 'langgraph', path: stored.graph_path,
+          decisions: stored.graph_decisions || [], ...(stored.graph_topology || {}) }
       : null,
     status: 'complete',
     startedAt: stored.created_at ? new Date(stored.created_at).getTime() : 0,

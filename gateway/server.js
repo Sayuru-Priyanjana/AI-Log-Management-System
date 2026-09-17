@@ -15,16 +15,23 @@ const AGENT_URL = process.env.AGENT_URL || 'http://agent:8000';
 // carries AGENT_URL only. Compose uses a shorter service name and sets the
 // variable explicitly, so neither environment relies on the other's default.
 const LANGGRAPH_AGENT_URL = process.env.LANGGRAPH_AGENT_URL || 'http://logintel-langgraph-agent:8000';
+const HOLMES_AGENT_URL = process.env.HOLMES_AGENT_URL || 'http://logintel-holmes-agent:8000';
+const BACKENDS = { custom: AGENT_URL, langgraph: LANGGRAPH_AGENT_URL, holmes: HOLMES_AGENT_URL };
+let defaultBackend = 'custom';
 
-// Which backend a request belongs to. The UI sets `x-agent-backend` from the
-// Agent Type dropdown, and this is the ONLY place that header is read: the
-// routes below that bypass the proxy and call the agent with `fetch` were
-// hard-coded to AGENT_URL, so selecting the LangGraph backend sent
-// investigations to one container while the health bar, the system list and
-// every dropdown behind them kept reporting the other. The UI then showed a
-// healthy custom agent beside a LangGraph investigation that was failing.
+// The backend choice is server-owned and persisted in Postgres. Browser headers
+// cannot select another engine. A conversation is pinned separately below.
 function agentUrlFor(req) {
-  return req.headers['x-agent-backend'] === 'langgraph' ? LANGGRAPH_AGENT_URL : AGENT_URL;
+  const backend = req.agentBackend || defaultBackend;
+  const path = req.originalUrl.split('?')[0];
+  // Holmes implements investigation execution and identity. Shared settings,
+  // registry and history continue to come from the canonical LogIntel API.
+  if (backend === 'holmes' && !(
+    (req.method === 'POST' && path === '/api/investigations') ||
+    path === '/api/agent/identity' || path === '/api/agent/graph' ||
+    path === '/api/health'
+  )) return AGENT_URL;
+  return BACKENDS[backend] || AGENT_URL;
 }
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-change-in-prod';
 const PORT = process.env.PORT || 3000;
@@ -57,7 +64,19 @@ async function initDB() {
         system_id VARCHAR(100) REFERENCES systems(id) ON DELETE CASCADE,
         PRIMARY KEY (user_id, system_id)
       );
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS investigation_backends (
+        thread_id VARCHAR(128) PRIMARY KEY,
+        system_id VARCHAR(100) NOT NULL,
+        environment VARCHAR(100) NOT NULL,
+        backend VARCHAR(20) NOT NULL
+      );
     `);
+    const selected = await client.query('SELECT value FROM app_settings WHERE key = $1', ['default_agent_backend']);
+    if (selected.rows[0] && BACKENDS[selected.rows[0].value]) defaultBackend = selected.rows[0].value;
     // Seed admin if not exists
     const res = await client.query('SELECT * FROM users WHERE username = $1', ['admin']);
     if (res.rows.length === 0) {
@@ -583,8 +602,9 @@ app.delete('/api/admin/systems/:id', requireAuth, requireAdmin, async (req, res)
 // "Investigation failed" with an empty message, which reads as a bug in the
 // agent rather than as "the container you selected is not deployed".
 function proxyErrorHandler(err, req, res) {
-  const target = agentUrlFor(req);
-  const backend = req.headers['x-agent-backend'] === 'langgraph' ? 'LangGraph' : 'Custom';
+  const configRequest = req.originalUrl.startsWith('/api/promql-queries');
+  const target = configRequest ? HOLMES_AGENT_URL : agentUrlFor(req);
+  const backend = configRequest ? 'holmes' : (req.agentBackend || defaultBackend);
   console.error(`Proxy error -> ${target} (${req.method} ${req.originalUrl}): ${err.message}`);
   if (res.headersSent || res.writableEnded) {
     try { res.end(); } catch { /* the client is already gone */ }
@@ -593,7 +613,7 @@ function proxyErrorHandler(err, req, res) {
   res.status(502).json({
     detail: `The ${backend} agent at ${target} is unreachable (${err.code || err.message}). `
       + `Check that the backend selected in Configuration -> Agent Type is deployed and healthy.`,
-    backend: req.headers['x-agent-backend'] || 'custom',
+    backend,
     target,
   });
 }
@@ -674,20 +694,124 @@ const streamingAgentProxy = createProxyMiddleware({
 });
 
 // Pre-proxy middleware to block developers from querying unauthorized systems
-app.post('/api/investigations', requireAuth, (req, res, next) => {
+app.get('/api/agent-backend', requireAuth, (req, res) => {
+  res.json({ backend: defaultBackend, options: Object.keys(BACKENDS) });
+});
+
+app.get('/api/agent-backend/health', requireAuth, requireAdmin, async (req, res) => {
+  const backend = req.query.backend;
+  if (!Object.hasOwn(BACKENDS, backend)) return res.status(400).json({ detail: 'Unknown agent backend' });
+  try {
+    const response = await fetch(`${BACKENDS[backend]}/api/health`, { signal: AbortSignal.timeout(5000) });
+    const data = response.ok ? await response.json() : {};
+    return res.json({ ok: response.ok && data.status === 'ok', detail: data.status || `HTTP ${response.status}` });
+  } catch (err) {
+    return res.json({ ok: false, detail: err.message });
+  }
+});
+
+app.put('/api/agent-backend', requireAuth, requireAdmin, async (req, res) => {
+  const backend = req.body?.backend;
+  if (!Object.hasOwn(BACKENDS, backend)) return res.status(400).json({ detail: 'Unknown agent backend' });
+  try {
+    if (backend === 'holmes') {
+      const response = await fetch(`${HOLMES_AGENT_URL}/api/health`, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok || (await response.json()).status !== 'ok') {
+        return res.status(409).json({ detail: 'HolmesGPT is not ready' });
+      }
+    }
+    await pool.query(
+      'INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+      ['default_agent_backend', backend],
+    );
+    defaultBackend = backend;
+    res.json({ backend });
+  } catch (err) {
+    console.error('Could not save agent backend:', err);
+    res.status(503).json({ detail: 'Could not save global agent backend' });
+  }
+});
+
+app.post('/api/investigations', requireAuth, async (req, res, next) => {
   if (req.user.role === 'developer') {
-    const sys = req.body?.system?.id;
-    if (sys && !req.user.systems.includes(sys)) {
+    const sys = req.body?.system_id || req.body?.system?.id;
+    if (!sys || !req.user.systems.includes(sys)) {
       return res.status(403).json({ detail: 'Forbidden system' });
     }
   }
-  next();
+  const threadId = req.body?.thread_id;
+  if (typeof threadId !== 'string' || !threadId.trim()) {
+    req.agentBackend = defaultBackend;
+    return next();
+  }
+  if (threadId.length > 128 || !req.body?.system_id || !req.body?.environment) {
+    return res.status(400).json({ detail: 'Invalid investigation scope or thread ID' });
+  }
+  try {
+    let chosen = defaultBackend;
+    const previous = await pool.query(
+      'SELECT system_id, environment, backend FROM investigation_backends WHERE thread_id = $1',
+      [threadId],
+    );
+    if (!previous.rows.length && (req.body.chat_history || []).length) {
+      // Conversations created before backend pinning have no DB row. Recover
+      // their engine from the shared investigation history before routing.
+      const osUrl = process.env.OPENSEARCH_URL || 'http://opensearch:9200';
+      const response = await fetch(`${osUrl}/logintel-investigations/_search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ size: 1,
+          query: { term: { 'thread_id.keyword': threadId } },
+          sort: [{ created_at: { order: 'desc', unmapped_type: 'date' } }],
+          _source: ['engine', 'graph_path', 'plan.system_id', 'plan.environment'] }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return res.status(503).json({ detail: 'Could not locate conversation backend' });
+      const hit = (await response.json()).hits?.hits?.[0]?._source;
+      if (!hit) return res.status(409).json({ detail: 'Conversation backend is unknown; start a new investigation' });
+      if (hit.plan?.system_id !== req.body.system_id || hit.plan?.environment !== req.body.environment) {
+        return res.status(409).json({ detail: 'Conversation belongs to another system or environment' });
+      }
+      chosen = hit.engine === 'holmes' ? 'holmes' : (hit.graph_path?.length ? 'langgraph' : 'custom');
+    }
+    await pool.query(
+      'INSERT INTO investigation_backends (thread_id, system_id, environment, backend) VALUES ($1, $2, $3, $4) ON CONFLICT (thread_id) DO NOTHING',
+      [threadId, req.body.system_id, req.body.environment, chosen],
+    );
+    const pinned = await pool.query(
+      'SELECT system_id, environment, backend FROM investigation_backends WHERE thread_id = $1',
+      [threadId],
+    );
+    const record = pinned.rows[0];
+    if (record.system_id !== req.body.system_id || record.environment !== req.body.environment) {
+      return res.status(409).json({ detail: 'Conversation belongs to another system or environment' });
+    }
+    req.agentBackend = record.backend;
+    next();
+  } catch (err) {
+    console.error('Could not resolve investigation backend:', err);
+    res.status(503).json({ detail: 'Could not resolve investigation backend' });
+  }
 }, streamingAgentProxy);
 
 app.get('/api/settings', requireAuth, requireAdmin, agentProxy);
 app.put('/api/settings', requireAuth, requireAdmin, agentProxy);
 app.post('/api/settings/test', requireAuth, requireAdmin, agentProxy);
 app.get('/api/clusters', requireAuth, requireAdmin, agentProxy);
+const holmesConfigProxy = createProxyMiddleware({
+  target: HOLMES_AGENT_URL,
+  changeOrigin: true,
+  onError: proxyErrorHandler,
+  onProxyReq: (proxyReq, req) => {
+    if (req.body && req.method === 'PUT') {
+      const body = JSON.stringify(req.body);
+      proxyReq.setHeader('Content-Type', 'application/json');
+      proxyReq.setHeader('Content-Length', Buffer.byteLength(body));
+      proxyReq.write(body);
+    }
+  },
+});
+app.get('/api/promql-queries', requireAuth, requireAdmin, holmesConfigProxy);
+app.put('/api/promql-queries', requireAuth, requireAdmin, holmesConfigProxy);
 
 
 // Graceful fallback endpoints for critical UI routes when AI Agent is down

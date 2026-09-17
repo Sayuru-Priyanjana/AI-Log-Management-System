@@ -8,8 +8,6 @@ function getHeaders(custom = {}) {
   const token = localStorage.getItem('jwt');
   const headers = { ...custom };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const backend = localStorage.getItem('ui.agentBackend');
-  if (backend) headers['x-agent-backend'] = backend;
   return headers;
 }
 
@@ -88,9 +86,12 @@ async function deleteJSON(path) {
 }
 
 export const getHealth = () => getJSON('/api/health');
-// The workflow's shape and which backend is answering. Both are served by
-// whichever agent the `x-agent-backend` header selects, so they also settle
-// "did the switch actually take effect?" without reading container logs.
+export const getAgentBackend = () => getJSON('/api/agent-backend');
+export const updateAgentBackend = (backend) => putJSON('/api/agent-backend', { backend });
+export const getAgentBackendHealth = (backend) => getJSON(`/api/agent-backend/health?backend=${encodeURIComponent(backend)}`);
+export const getPromqlQueries = (systemId) => getJSON(`/api/promql-queries?system_id=${encodeURIComponent(systemId)}`);
+export const savePromqlQuery = (query) => putJSON('/api/promql-queries', query);
+// The gateway selects the server-owned global backend for new investigations.
 export const getAgentGraph = () => getJSON('/api/agent/graph');
 export const getAgentIdentity = () => getJSON('/api/agent/identity');
 export const getSystems = () => getJSON('/api/systems');

@@ -94,7 +94,8 @@ export default function RunSummary({ stages, llmUsage, graph, result }) {
   if (nodes) {
     facts.push({
       label: 'Workflow',
-      value: graph?.engine === 'langgraph' ? 'LangGraph' : 'Pipeline',
+      value: (graph?.engine || result?.engine) === 'holmes'
+        ? 'HolmesGPT' : graph?.engine === 'langgraph' ? 'LangGraph' : 'Pipeline',
       note: `${result?.graph_path?.length || nodes} nodes ran`,
     });
   }

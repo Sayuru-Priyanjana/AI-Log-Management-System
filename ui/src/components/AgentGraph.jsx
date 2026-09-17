@@ -91,7 +91,7 @@ export default function AgentGraph({ turn }) {
           title="Open the full workflow">
           <div className="li-graph-preview-head">
             <span className="li-graph-title">Agent workflow</span>
-            <span className="li-graph-engine">{shape.engine === 'langgraph' ? 'LangGraph' : 'Pipeline'}</span>
+            <span className="li-graph-engine">{shape.engine === 'holmes' ? 'HolmesGPT' : shape.engine === 'langgraph' ? 'LangGraph' : 'Pipeline'}</span>
             <span className="li-spacer" />
             <span className="li-muted">
               {done.size}/{nodes.length} nodes
@@ -210,7 +210,8 @@ function GraphModal({ shape, done, decisions, finished, onClose }) {
         <header className="li-graph-modal-head">
           <span className="li-graph-title">Agent workflow</span>
           <span className="li-graph-engine">
-            {shape.engine === 'langgraph' ? 'LangGraph state machine' : 'Deterministic pipeline'}
+            {shape.engine === 'holmes' ? 'HolmesGPT investigation loop'
+              : shape.engine === 'langgraph' ? 'LangGraph state machine' : 'Deterministic pipeline'}
           </span>
           <span className="li-spacer" />
           <button type="button" className="li-graph-close" onClick={onClose} aria-label="Close">✕</button>
@@ -293,10 +294,11 @@ function GraphModal({ shape, done, decisions, finished, onClose }) {
                 <h4>How this answer was reached</h4>
                 {decisions.length === 0 ? (
                   <p className="li-graph-detail">
-                    {shape.engine === 'langgraph'
-                      ? 'No branch has been decided yet.'
-                      : 'This backend runs a fixed sequence — every stage runs, in order, '
-                        + 'with no branch to record. Select a node to see what it does.'}
+                    {shape.engine === 'langgraph' ? 'No branch has been decided yet.'
+                      : shape.engine === 'holmes'
+                        ? 'HolmesGPT chooses scoped tools repeatedly until it can answer. Select a node to see its role.'
+                        : 'This backend runs a fixed sequence — every stage runs, in order, '
+                          + 'with no branch to record. Select a node to see what it does.'}
                   </p>
                 ) : (
                   <ol className="li-graph-decisions">

@@ -170,6 +170,8 @@ spec:
         env:
         - name: AGENT_URL
           value: "http://logintel-ai-agent:8000"
+        - name: HOLMES_AGENT_URL
+          value: "http://logintel-holmes-agent:8000"
         - name: JWT_SECRET
           value: "super-secret-jwt-key"
         - name: PGHOST

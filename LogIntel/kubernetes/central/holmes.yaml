@@ -1,0 +1,99 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logintel-holmes-config
+data:
+  config.yaml: |
+    model: "gemini/gemini-3.5-flash-lite"
+    max_steps: 12
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logintel-holmes-agent
+spec:
+  ports:
+  - port: 8000
+    name: http
+    targetPort: 8000
+  selector:
+    app: logintel-holmes-agent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logintel-holmes-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logintel-holmes-agent
+  template:
+    metadata:
+      labels:
+        app: logintel-holmes-agent
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: adapter
+        image: ghcr.io/sayuru-priyanjana/logintel-holmes-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: HOLMES_URL
+          value: "http://127.0.0.1:5050"
+        - name: OPENSEARCH_URL
+          value: "http://opensearch:9200"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus:9090"
+        - name: HOLMES_MODEL
+          value: "gemini/gemini-3.5-flash-lite"
+        ports:
+        - containerPort: 8000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      - name: holmes-runtime
+        image: robustadev/holmes:0.39.0
+        command: ["python", "-u", "server.py"]
+        env:
+        - name: HOLMES_HOST
+          value: "127.0.0.1"
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: logintel-llm
+              key: api-key
+        - name: ENABLED_BY_DEFAULT_TOOLSETS
+          value: ""
+        - name: ENABLE_TELEMETRY
+          value: "false"
+        volumeMounts:
+        - name: holmes-config
+          mountPath: /root/.holmes/config.yaml
+          subPath: config.yaml
+          readOnly: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      volumes:
+      - name: holmes-config
+        configMap:
+          name: logintel-holmes-config

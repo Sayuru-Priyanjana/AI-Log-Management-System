@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { getSettings } from './api';
+import { getAgentBackend, getSettings, updateAgentBackend } from './api';
 
 /**
  * Theme and time zone, for the whole app.
@@ -62,6 +62,17 @@ export function PreferencesProvider({ children }) {
     return () => { mounted = false; };
   }, []);
 
+  const [agentBackend, setAgentBackendState] = useState('custom');
+  const refreshAgentBackend = useCallback(async () => {
+    const data = await getAgentBackend();
+    if (data?.backend) setAgentBackendState(data.backend);
+    return data;
+  }, []);
+  useEffect(() => {
+    if (!localStorage.getItem('jwt')) return;
+    refreshAgentBackend().catch(() => {});
+  }, [refreshAgentBackend]);
+
   const setTheme = useCallback((next) => {
     setThemeState(next);
     localStorage.setItem(THEME_KEY, next);
@@ -77,10 +88,9 @@ export function PreferencesProvider({ children }) {
     localStorage.setItem('ui.default_hours', next);
   }, []);
 
-  const [agentBackend, setAgentBackendState] = useState(() => localStorage.getItem('ui.agentBackend') || 'custom');
-  const setAgentBackend = useCallback((next) => {
-    setAgentBackendState(next);
-    localStorage.setItem('ui.agentBackend', next);
+  const setAgentBackend = useCallback(async (next) => {
+    const saved = await updateAgentBackend(next);
+    setAgentBackendState(saved.backend);
   }, []);
 
   const value = useMemo(() => ({
@@ -93,8 +103,9 @@ export function PreferencesProvider({ children }) {
     setDefaultHours,
     agentBackend,
     setAgentBackend,
+    refreshAgentBackend,
     ...formatters(zone),
-  }), [theme, setTheme, zone, setZone, defaultHours, setDefaultHours, agentBackend, setAgentBackend]);
+  }), [theme, setTheme, zone, setZone, defaultHours, setDefaultHours, agentBackend, setAgentBackend, refreshAgentBackend]);
 
   return (
     <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>

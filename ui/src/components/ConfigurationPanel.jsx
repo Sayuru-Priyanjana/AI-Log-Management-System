@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  getClusters, getHealth, getSettings, refreshSystems, testConnection, updateSettings,
+  getAgentBackendHealth, getClusters, getHealth, getPromqlQueries, getSettings,
+  getSystems, refreshSystems, savePromqlQuery, testConnection, updateSettings,
 } from '../api';
 import { usePreferences } from '../preferences';
 import { useToast } from '../toast';
@@ -32,7 +33,7 @@ const ZONES = [
  */
 export default function ConfigurationPanel() {
   const toast = useToast();
-  const { zone, setZone, setDefaultHours, agentBackend, setAgentBackend } = usePreferences();
+  const { zone, setZone, setDefaultHours, agentBackend, setAgentBackend, refreshAgentBackend } = usePreferences();
   const [fields, setFields] = useState(null);
   const [groups, setGroups] = useState([]);
   const [health, setHealth] = useState(null);
@@ -40,6 +41,9 @@ export default function ConfigurationPanel() {
   const [draft, setDraft] = useState({});
   const [saving, setSaving] = useState(false);
   const [tests, setTests] = useState({});
+  const [systems, setSystems] = useState([]);
+  const [queryDraft, setQueryDraft] = useState({ system_id: '', id: '', name: '', expression: '' });
+  const [savedQueries, setSavedQueries] = useState([]);
 
   const load = async () => {
     try {
@@ -48,6 +52,7 @@ export default function ConfigurationPanel() {
       setGroups(settings.groups);
       setHealth(healthData);
       if (settings.timezone?.value) setZone(settings.timezone.value);
+      await refreshAgentBackend();
     } catch (err) {
       toast.error('Could not load settings', { detail: err.message });
     }
@@ -56,6 +61,10 @@ export default function ConfigurationPanel() {
     } catch {
       setClusters(null);   // registry empty or unreachable; not fatal here
     }
+    try {
+      const data = await getSystems();
+      setSystems(data.systems || []);
+    } catch { setSystems([]); }
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
@@ -101,6 +110,41 @@ export default function ConfigurationPanel() {
     } catch (err) {
       setTests((t) => ({ ...t, [target]: 'bad' }));
       toast.error('Test failed', { detail: err.message });
+    }
+  };
+
+  const chooseBackend = async (backend) => {
+    try {
+      if (backend === 'holmes') {
+        const status = await getAgentBackendHealth(backend);
+        if (!status.ok) throw new Error(`HolmesGPT is not ready: ${status.detail || 'unreachable'}`);
+      }
+      await setAgentBackend(backend);
+      setHealth(await getHealth());
+      toast.success(`Agent backend set to ${backend} for all workstations`);
+    } catch (err) {
+      toast.error('Could not switch agent', { detail: err.message });
+    }
+  };
+
+  const loadQueries = async (systemId) => {
+    setQueryDraft((old) => ({ ...old, system_id: systemId }));
+    if (!systemId) { setSavedQueries([]); return; }
+    try {
+      const data = await getPromqlQueries(systemId);
+      setSavedQueries(data.queries || []);
+    } catch (err) {
+      toast.error('Could not load PromQL queries', { detail: err.message });
+    }
+  };
+
+  const saveQuery = async () => {
+    try {
+      await savePromqlQuery(queryDraft);
+      await loadQueries(queryDraft.system_id);
+      toast.success('PromQL query saved');
+    } catch (err) {
+      toast.error('Could not save PromQL query', { detail: err.message });
     }
   };
 
@@ -150,14 +194,55 @@ export default function ConfigurationPanel() {
         <div className="card-body">
           <div className="cfg-fields">
             <div className="field">
-              <label>Agent Type <span className="src src--env">ui-preference</span></label>
-              <select className="input" value={agentBackend} onChange={(e) => setAgentBackend(e.target.value)}>
+              <label>Agent Type <span className="src src--env">global</span></label>
+              <select className="input" value={agentBackend} onChange={(e) => chooseBackend(e.target.value)}>
                 <option value="custom">Custom Agent (Deterministic Pipeline)</option>
                 <option value="langgraph">LangGraph Agent (Graph Workflow)</option>
+                <option value="holmes">HolmesGPT Agent</option>
               </select>
-              <span className="hint">This immediately switches the backend for new investigations on this workstation.</span>
+              <span className="hint">Applies to new investigations on every workstation. Existing conversations stay with their original agent.</span>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <header>
+          <h3>HolmesGPT Prometheus Queries</h3>
+          <p>Save PromQL queries for a system. HolmesGPT can call them by ID during an investigation.</p>
+        </header>
+        <div className="card-body">
+          <div className="cfg-fields">
+            <div className="field">
+              <label>System</label>
+              <select className="input" value={queryDraft.system_id} onChange={(e) => loadQueries(e.target.value)}>
+                <option value="">Choose a system</option>
+                {systems.map((system) => <option key={system.id} value={system.id}>{system.name || system.id}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Query ID</label>
+              <input className="input" value={queryDraft.id} placeholder="error_rate"
+                onChange={(e) => setQueryDraft((old) => ({ ...old, id: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Name</label>
+              <input className="input" value={queryDraft.name} placeholder="Error rate"
+                onChange={(e) => setQueryDraft((old) => ({ ...old, name: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>PromQL</label>
+              <textarea className="input" rows={3} value={queryDraft.expression}
+                placeholder={'sum by (system_id) (rate(http_requests_total{system_id="{{system_id}}"}[5m]))'}
+                onChange={(e) => setQueryDraft((old) => ({ ...old, expression: e.target.value }))} />
+              <span className="hint">Include system_id="{'{{system_id}}'}" in the selector and preserve the system_id result label.</span>
+            </div>
+          </div>
+          <button type="button" className="btn btn--primary" disabled={!queryDraft.system_id || !queryDraft.id || !queryDraft.expression}
+            onClick={saveQuery}>Save query</button>
+          {savedQueries.length > 0 && <div className="dim" style={{ marginTop: 12 }}>
+            Available: {savedQueries.map((query) => `${query.id} (${query.name}${query.builtin ? ', built in' : ''})`).join(', ')}
+          </div>}
         </div>
       </div>
 
