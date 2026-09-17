@@ -22,7 +22,6 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
   const [targetLog, setTargetLog] = useState(null);
   const [timeline, setTimeline] = useState(null);
   const [generatingTimeline, setGeneratingTimeline] = useState(false);
-  const [aiSearchMode, setAiSearchMode] = useState(false);
   const [summary, setSummary] = useState(null);
   const [summarizing, setSummarizing] = useState(false);
   const [savedViews, setSavedViews] = useState([]);
@@ -86,12 +85,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
       }
 
       const cursorParam = currentCursor ? JSON.stringify(currentCursor) : null;
-      let result;
-      if (aiSearchMode && query.trim() !== '') {
-        result = await getSystemLogsNLQ(systemId, { query, service, level, limit, start: activeStart, end: activeEnd });
-      } else {
-        result = await getSystemLogs(systemId, { query, service, level, limit, cursor: cursorParam, start: activeStart, end: activeEnd });
-      }
+      const result = await getSystemLogs(systemId, { query, service, level, limit, cursor: cursorParam, start: activeStart, end: activeEnd });
       
       setLogs(result?.logs || []);
       setTotal(result?.total || 0);
@@ -225,25 +219,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
 
         <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--border)', flexShrink: 0 }} />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0, backgroundColor: 'var(--surface-3)', padding: '4px', borderRadius: '4px' }}>
-          <button 
-            type="button" 
-            onClick={() => setAiSearchMode(false)}
-            className={`btn btn--sm ${!aiSearchMode ? 'btn--primary' : ''}`}
-            style={{ padding: '2px 8px', fontSize: '12px', minWidth: 'auto', opacity: !aiSearchMode ? 1 : 0.6 }}
-          >
-            Raw Query
-          </button>
-          <button 
-            type="button" 
-            onClick={() => setAiSearchMode(true)}
-            className={`btn btn--sm ${aiSearchMode ? 'btn--primary' : ''}`}
-            style={{ padding: '2px 8px', fontSize: '12px', minWidth: 'auto', opacity: aiSearchMode ? 1 : 0.6 }}
-            title="Use Natural Language Search"
-          >
-            AI Search ✨
-          </button>
-        </div>
+
 
         <form onSubmit={handleSearch} style={{ display: 'flex', gap: '8px', flex: 1, alignItems: 'center', minWidth: '400px' }}>
           <div style={{ position: 'relative', flex: 1, minWidth: '200px' }}>
