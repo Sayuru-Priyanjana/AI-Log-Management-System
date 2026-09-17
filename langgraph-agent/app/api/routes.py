@@ -168,6 +168,60 @@ async def summarize_logs(system_id: str, payload: SummarizeLogsRequest, request:
     return {"summary": response.text}
 
 
+@router.get("/systems/{system_id}/logs/timeline")
+async def get_logs_timeline(system_id: str, timestamp: int, service: str, request: Request):
+    container = deps(request)
+    llm = getattr(container.pipeline, "llm", None) or container.llm
+    
+    # 60 seconds before up to the exact timestamp
+    start = timestamp - 60
+    end = timestamp
+    
+    query = {
+        "size": 100,
+        "sort": [{"@timestamp": {"order": "desc"}}],
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"system.id": system_id}},
+                    {
+                        "bool": {
+                            "should": [
+                                {"term": {"service.name": service}},
+                                {"term": {"container_name": service}}
+                            ],
+                            "minimum_should_match": 1
+                        }
+                    },
+                    {"range": {"@timestamp": {"gte": start * 1000, "lte": end * 1000, "format": "epoch_millis"}}}
+                ]
+            }
+        }
+    }
+    
+    try:
+        result = await container.opensearch.search(settings.opensearch_log_index, query)
+        hits = result.get("hits", {}).get("hits", [])
+        
+        logs = []
+        for hit in hits:
+            logs.append(hit.get("_source", {}))
+            
+        logs.reverse() # chronological order
+        log_text = json.dumps(logs, indent=2)
+        
+        system_prompt = "You are an SRE. The user clicked on an error log. Analyze the preceding logs and construct a chronological timeline explaining exactly what chain of events caused the error."
+        prompt = f"Here are the logs that happened immediately before the error:\n{log_text}\n\nPlease output a 3-step markdown-formatted timeline explaining the root cause."
+        
+        response = await llm.generate(system=system_prompt, prompt=prompt)
+        return {"timeline": response.text}
+        
+    except Exception as exc:
+        logger.error(f"Failed to fetch timeline: {exc}")
+        return {"timeline": f"Failed to generate timeline: {str(exc)}"}
+
+
+
 @router.get("/systems/{system_id}/logs/nlq")
 async def get_system_logs_nlq(
     system_id: str,
