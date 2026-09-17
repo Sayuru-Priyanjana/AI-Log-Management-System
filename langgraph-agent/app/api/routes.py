@@ -178,7 +178,7 @@ async def get_logs_timeline(system_id: str, timestamp: int, service: str, reques
     end = timestamp
     
     query = {
-        "size": 50,
+        "size": 100,
         "sort": [{"@timestamp": {"order": "desc"}}],
         "query": {
             "bool": {
