@@ -385,7 +385,10 @@ async def investigate(request: InvestigationRequest):
                                 yield ndjson("reasoning", {"type": "observation", "step": step_no,
                                                            "tool": name, "text": json.dumps(observation)[:3000],
                                                            "evidence_ids": ids})
-                            body = {"ask": prompt, "stream": True, "model": HOLMES_MODEL,
+                            # An empty ask tells HolmesGPT this request resumes the
+                            # paused conversation instead of adding the original
+                            # question a second time.
+                            body = {"ask": "", "stream": True, "model": HOLMES_MODEL,
                                     "frontend_tools": frontend_tools(),
                                     "conversation_history": data["conversation_history"],
                                     "frontend_tool_results": results}
