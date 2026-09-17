@@ -4,7 +4,7 @@ $TAG="latest"
 docker buildx use multi-arch-builder
 
 Write-Host "Building logintel-ai-agent..."
-docker buildx build --platform linux/arm64 -t "$REGISTRY/logintel-ai-agent:$TAG" --push ./agent
+docker buildx build --platform linux/arm64 -t "$REGISTRY/logintel-agent:$TAG" --push ./agent
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Building ai-agent-langgraph..."

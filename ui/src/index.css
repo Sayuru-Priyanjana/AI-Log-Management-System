@@ -1638,3 +1638,30 @@ pre.block {
    answer of a five-question thread was impossible. */
 .li-turn-send { display: inline-flex; align-items: center; gap: 5px; }
 .li-turn-send:hover { border-color: var(--accent); color: var(--accent); }
+
+
+/* ==========================================================================
+   Markdown Content
+   ========================================================================== */
+.markdown-body {
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 14px;
+}
+.markdown-body p { margin-bottom: 1em; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  color: var(--text);
+  margin-top: 1.5em; margin-bottom: 0.5em;
+  font-weight: 600;
+}
+.markdown-body h3 { font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.markdown-body ul, .markdown-body ol { padding-left: 2em; margin-bottom: 1em; }
+.markdown-body li { margin-bottom: 0.25em; list-style: disc; }
+.markdown-body strong { font-weight: 600; color: var(--text); }
+.markdown-body code {
+  background: var(--surface-3); padding: 0.2em 0.4em; border-radius: 3px; font-family: var(--mono); font-size: 85%;
+}
+.markdown-body pre {
+  background: var(--surface-3); padding: 16px; overflow: auto; border-radius: 4px; margin-bottom: 1em;
+}
+.markdown-body pre code { background: transparent; padding: 0; }
