@@ -420,7 +420,9 @@ async def test_re_requesting_the_seeded_signals_does_not_cost_a_step():
         if stage_event.stage == "reasoning" and stage_event.data.get("type") == "observation":
             texts.append(stage_event.data["text"])
 
-    assert "already called" in texts[1], "the repeat guard should catch the re-ask"
+    assert any("already called" in text for text in texts), (
+        "the repeat guard should catch the re-ask even when other automatic "
+        "observations precede it")
 
 
 @pytest.mark.asyncio
