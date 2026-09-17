@@ -42,10 +42,10 @@ jobs:
           - image: logintel-holmes-agent
             context: ./holmes-agent
             target: ''
-          - image: logintel-gateway
+          - image: logintel-gateway-holmes
             context: ./gateway
             target: ''
-          - image: logintel-ui
+          - image: logintel-ui-holmes
             context: ./ui
             target: serve
     steps:
