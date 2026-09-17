@@ -39,7 +39,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: adapter
-        image: ghcr.io/sayuru-priyanjana/logintel-holmes-agent:latest
+        image: ghcr.io/sayuru-priyanjana/logintel-holmes-agent:sha-717f44c0c54dbc8242e68691cb85929bd5c8b425
         imagePullPolicy: Always
         env:
         - name: HOLMES_URL

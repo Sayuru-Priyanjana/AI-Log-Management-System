@@ -165,11 +165,13 @@ spec:
       - name: ghcr-secret
       containers:
       - name: gateway
-        image: ghcr.io/sayuru-priyanjana/logintel-gateway:latest
+        image: ghcr.io/sayuru-priyanjana/logintel-gateway-holmes:sha-717f44c0c54dbc8242e68691cb85929bd5c8b425
         imagePullPolicy: Always
         env:
         - name: AGENT_URL
           value: "http://logintel-ai-agent:8000"
+        - name: LANGGRAPH_AGENT_URL
+          value: "http://logintel-langgraph-agent:8000"
         - name: HOLMES_AGENT_URL
           value: "http://logintel-holmes-agent:8000"
         - name: JWT_SECRET
@@ -225,7 +227,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: ui
-        image: ghcr.io/sayuru-priyanjana/logintel-ui:latest
+        image: ghcr.io/sayuru-priyanjana/logintel-ui-holmes:sha-717f44c0c54dbc8242e68691cb85929bd5c8b425
         imagePullPolicy: Always
         resources:
           requests:
