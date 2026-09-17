@@ -251,15 +251,7 @@ export default function LogExplorer({ systemId, services = [], timeframe, start:
           <button type="submit" className="btn btn--sm btn--primary" style={{ flexShrink: 0 }}>Search</button>
         </form>
 
-        <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--border)', flexShrink: 0 }} />
 
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-          <select className="input input--sm" onChange={(e) => applyView(e.target.value)} value="" style={{ width: '130px', backgroundColor: 'var(--surface)' }}>
-            <option value="">Bookmarks...</option>
-            {savedViews.map((v, i) => <option key={i} value={i}>{v.name}</option>)}
-          </select>
-          <button type="button" className="btn btn--sm" onClick={saveView} title="Save current filters as bookmark">💾 Save</button>
-        </div>
 
         <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--border)', flexShrink: 0 }} />
 
