@@ -30,6 +30,11 @@ from app.models.plan import ChatMessage
 from app.models.domain import TimeWindow, ensure_utc
 from app.pipeline.answer_check import verify_answer
 from app.pipeline.episodes import describe_episodes
+from app.pipeline.intelligence import (
+    build_fingerprint, build_topology, classify_roles, historical_candidates,
+    rank_history,
+    evaluate_hypotheses,
+)
 from app.pipeline.recent import RecentStatusProbe
 from app.pipeline.signals import SignalEngine
 from app.pipeline.timeline import build_evidence_timeline, build_timeline
@@ -70,19 +75,20 @@ class GraphNodes:
     async def plan(self, state: dict) -> dict:
         """Classify the question, with the conversation in hand.
 
-        The history comes from two places and they are merged rather than
-        chosen between: the graph's own `memory` channel, restored by the
-        checkpointer for this thread, and whatever the caller sent. The graph's
-        copy is authoritative when it has one — it cannot be truncated or
-        forgotten by a browser tab — and the caller's fills the gap when this
-        process has never seen the thread, which is the case after a restart or
-        on a second replica.
+        History can come from the process checkpoint, persisted thread memory,
+        or the caller. Use the longest valid copy for this system/environment.
         """
         telemetry.set_stage("plan")
         started = time.perf_counter()
 
         request = state["request"]
         remembered = state.get("memory") or []
+        store = getattr(self._p, "store", None)
+        if store is not None and request.thread_id:
+            persisted = await store.get_thread_memory(
+                state["system"].id, request.environment, request.thread_id)
+            if len(persisted) > len(remembered):
+                remembered = [ChatMessage.model_validate(msg) for msg in persisted]
         if remembered and len(remembered) >= len(request.chat_history or []):
             request = request.model_copy(update={"chat_history": remembered})
 
@@ -92,6 +98,7 @@ class GraphNodes:
                                   "answer_mode": mode.value,
                                   "remembered_turns": len(remembered) // 2})
         return {"investigation_plan": plan, "mode": mode, "request": request,
+                "effective_history": request.chat_history,
                 "visited": self._enter(state, "plan"),
                 "timings_ms": self._timed(state, "plan", started)}
 
@@ -169,17 +176,77 @@ class GraphNodes:
                 "visited": self._enter(state, "signals"),
                 "timings_ms": self._timed(state, "signals", started)}
 
+    async def topology(self, state: dict) -> dict:
+        started = time.perf_counter()
+        topology = build_topology(state["investigation_plan"],
+                                  state["evidence_bundle"], state["detected_signals"])
+        await self._emit("topology", topology.model_dump(mode="json"))
+        return {"operational_topology": topology,
+                "visited": self._enter(state, "topology"),
+                "timings_ms": self._timed(state, "topology", started)}
+
+    async def fingerprint(self, state: dict) -> dict:
+        started = time.perf_counter()
+        fingerprint = build_fingerprint(state["investigation_plan"],
+                                        state["evidence_bundle"],
+                                        state["detected_signals"],
+                                        state["operational_topology"])
+        await self._emit("fingerprint", fingerprint.model_dump(mode="json"))
+        return {"incident_fingerprint": fingerprint,
+                "visited": self._enter(state, "fingerprint"),
+                "timings_ms": self._timed(state, "fingerprint", started)}
+
+    async def historical_retrieval(self, state: dict) -> dict:
+        started = time.perf_counter()
+        matches = []
+        errors = list(state.get("errors") or [])
+        store = getattr(self._p, "store", None)
+        if store is not None:
+            try:
+                plan = state["investigation_plan"]
+                documents = await store.history_for_system(plan.system_id,
+                                                           plan.environment)
+                matches = rank_history(state["incident_fingerprint"], documents)
+            except Exception as exc:  # retrieval is context, never a run gate
+                logger.warning("Historical retrieval failed: %s", exc)
+                errors.append(f"historical retrieval failed: {exc}")
+        await self._emit("historical_retrieval", {
+            "matches": [match.model_dump(mode="json") for match in matches],
+            "count": len(matches),
+        })
+        return {"historical_matches": matches, "errors": errors,
+                "visited": self._enter(state, "historical_retrieval"),
+                "timings_ms": self._timed(state, "historical_retrieval", started)}
+
     async def candidates(self, state: dict) -> dict:
         telemetry.set_stage("candidates")
         started = time.perf_counter()
         candidates = self._p.hypotheses.generate(
             state["investigation_plan"], state["resolved_windows"], state["detected_signals"], state["evidence_bundle"])
+        candidates = historical_candidates(candidates,
+                                           state.get("historical_matches") or [],
+                                           state["detected_signals"])
         await self._emit("candidates", {
             "candidates": [c.model_dump(mode="json") for c in candidates],
         })
         return {"ranked_candidates": candidates,
                 "visited": self._enter(state, "candidates"),
                 "timings_ms": self._timed(state, "candidates", started)}
+
+    async def hypothesis_testing(self, state: dict) -> dict:
+        started = time.perf_counter()
+        tests = evaluate_hypotheses(state["ranked_candidates"],
+                                    state["detected_signals"],
+                                    state["operational_topology"])
+        roles = classify_roles(state["detected_signals"],
+                               state["ranked_candidates"], tests)
+        await self._emit("hypothesis_testing", {
+            "tests": [test.model_dump(mode="json") for test in tests],
+            "causal_roles": [role.model_dump(mode="json") for role in roles],
+        })
+        return {"hypothesis_tests": tests, "causal_roles": roles,
+                "visited": self._enter(state, "hypothesis_testing"),
+                "timings_ms": self._timed(state, "hypothesis_testing", started)}
 
     async def reason(self, state: dict) -> dict:
         telemetry.set_stage("reasoning")
@@ -209,6 +276,10 @@ class GraphNodes:
             state["investigation_plan"], state["resolved_windows"], state["evidence_bundle"], state["detected_signals"],
             state["ranked_candidates"], log_tool=self._p.logs, search_window=search_window,
             recent_status=state.get("recent_status"),
+            topology=state.get("operational_topology"),
+            historical_matches=state.get("historical_matches") or [],
+            hypothesis_tests=state.get("hypothesis_tests") or [],
+            causal_roles=state.get("causal_roles") or [],
         )
         # Held so it can be closed explicitly: breaking out of `async for` leaves
         # the generator suspended mid-await, and the event loop later complains
@@ -288,6 +359,7 @@ class GraphNodes:
             steps_used=state.get("steps_used") or 0,
             degraded=state.get("degraded"),
             recent_status=state.get("recent_status"),
+            hypothesis_tests=state.get("hypothesis_tests") or [],
         )
         await self._emit("answer", answer.model_dump(mode="json"))
         arrived_from = "fallback" if "fallback" in (state.get("visited") or []) else "reason"
@@ -323,7 +395,23 @@ class GraphNodes:
             ChatMessage(role="user", content=state["request"].question.strip()[:400]),
             ChatMessage(role="assistant", content=_summarise(answer)),
         ]
+        # OpenSearch provides cross-replica/restart memory. A write failure
+        # leaves the answer intact, and the graph checkpoint still serves this
+        # process. Keep the same bounded summary that enters the checkpoint.
+        store = getattr(self._p, "store", None)
+        if store is not None:
+            history = [{"role": m.role, "content": m.content[:700]}
+                       for m in ((state.get("effective_history") or []) + remembered)[-20:]
+                       if m.role in ("user", "assistant")]
+            await store.save_thread_memory(
+                state["system"].id, state["request"].environment,
+                state["request"].thread_id or state["investigation_id"], history)
 
+        chosen = next((candidate for candidate in candidates
+                       if answer.root_cause_service and
+                       candidate.service == answer.root_cause_service and
+                       (not answer.cause_category or
+                        candidate.category.value == answer.cause_category)), None)
         result = InvestigationResult(
             id=state["investigation_id"],
             # A question with no thread opens one, named after itself.
@@ -333,12 +421,17 @@ class GraphNodes:
             windows=windows,
             signals=signals,
             candidates=candidates,
+            fingerprint=state.get("incident_fingerprint"),
+            topology=state.get("operational_topology"),
+            historical_matches=state.get("historical_matches") or [],
+            hypothesis_tests=state.get("hypothesis_tests") or [],
+            causal_roles=state.get("causal_roles") or [],
             analysis=Analysis(
                 incident_detected=bool(signals),
                 severity=self._p._severity(signals),
                 category=CauseCategory(answer.cause_category)
                 if answer.cause_category else CauseCategory.UNKNOWN,
-                chosen_candidate_id=candidates[0].id if candidates else None,
+                chosen_candidate_id=chosen.id if chosen else None,
                 cause_summary=answer.headline,
                 narrative=answer.detail,
                 timeline=build_timeline(windows, signals, evidence),

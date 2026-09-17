@@ -65,12 +65,13 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
     prometheus = PrometheusClient(settings.prometheus_url)
     registry = SystemRegistry(opensearch)
     system_settings = SystemSettingsStore(opensearch)
+    investigation_store = InvestigationStore(opensearch)
 
     return Dependencies(
         opensearch=opensearch,
         llm=llm,
         registry=registry,
-        store=InvestigationStore(opensearch),
+        store=investigation_store,
         prometheus=prometheus,
         config=config,
         system_settings=system_settings,
@@ -83,6 +84,7 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
             registry=registry,
             system_settings=system_settings,
             prometheus_client=prometheus,
+            store=investigation_store,
         ),
     )
 

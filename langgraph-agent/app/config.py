@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     opensearch_log_index: str = "logintel-logs-*"
     opensearch_event_index: str = "logintel-events-*"
     opensearch_investigation_index: str = "logintel-investigations"
+    opensearch_memory_index: str = "logintel-conversation-memory"
     opensearch_timeout: float = 30.0
 
 

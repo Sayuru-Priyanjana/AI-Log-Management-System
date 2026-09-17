@@ -65,25 +65,36 @@ TOPOLOGY: dict[str, Any] = {
          "emits": "signals",
          "detail": "Measure departures from baseline. Runs before the model, so "
                    "nothing it says can change them."},
-        {"id": "candidates", "label": "Rank candidates", "kind": "deterministic", "row": 4,
+        {"id": "topology", "label": "Operational topology", "kind": "deterministic", "row": 4,
+         "emits": "topology",
+         "detail": "Observed service calls and pod placement, with time-ordered propagation leads."},
+        {"id": "fingerprint", "label": "Incident fingerprint", "kind": "deterministic", "row": 5,
+         "emits": "fingerprint",
+         "detail": "Canonical signals, sequence, log templates, metrics and dependencies."},
+        {"id": "historical_retrieval", "label": "Similar incidents", "kind": "io", "row": 6,
+         "emits": "historical_retrieval",
+         "detail": "Search completed investigations in the same system and environment."},
+        {"id": "candidates", "label": "Rank candidates", "kind": "deterministic", "row": 7,
          "emits": "candidates",
-         "detail": "Rule-generated explanations, scored. The model chooses among "
-                   "these; it does not author them."},
-        {"id": "reason", "label": "Reasoning loop", "kind": "llm", "row": 5,
+         "detail": "Rule-generated explanations scored from current telemetry."},
+        {"id": "hypothesis_testing", "label": "Test hypotheses", "kind": "deterministic", "row": 8,
+         "emits": "hypothesis_testing",
+         "detail": "Check current support, contradictions, timing and propagation; preserve unknowns."},
+        {"id": "reason", "label": "Reasoning loop", "kind": "llm", "row": 9,
          "emits": "reasoning",
          "detail": "ReAct: think, call a tool, read the observation, repeat. "
                    "One LLM round trip per step."},
-        {"id": "fallback", "label": "Rule answer", "kind": "fallback", "row": 5,
+        {"id": "fallback", "label": "Rule answer", "kind": "fallback", "row": 9,
          "emits": None,
          "detail": "Reached only when the loop could not run or did not finish. "
                    "Reports the deterministic ranking, labelled as such."},
-        {"id": "verify", "label": "Verify answer", "kind": "guard", "row": 6,
+        {"id": "verify", "label": "Verify answer", "kind": "guard", "row": 10,
          "emits": "answer",
-         "detail": "Check every citation against the evidence actually exposed, "
-                   "and cap the confidence. Invented IDs are stripped here."},
-        {"id": "finish", "label": "Assemble result", "kind": "terminal", "row": 7,
+         "detail": "Label resolved and unresolved citations, test the proposed cause "
+                   "against current evidence, and cap confidence."},
+        {"id": "finish", "label": "Assemble result", "kind": "terminal", "row": 11,
          "emits": "result",
-         "detail": "Fold the evidence into a timeline and store the run."},
+         "detail": "Fold evidence into a timeline and persist bounded thread memory."},
     ],
     "edges": [
         {"from": "__start__", "to": "plan"},
@@ -93,8 +104,12 @@ TOPOLOGY: dict[str, Any] = {
          "conditional": True},
         {"from": "evidence", "to": "fallback", "when": "every source was unavailable",
          "conditional": True},
-        {"from": "signals", "to": "candidates"},
-        {"from": "candidates", "to": "reason"},
+        {"from": "signals", "to": "topology"},
+        {"from": "topology", "to": "fingerprint"},
+        {"from": "fingerprint", "to": "historical_retrieval"},
+        {"from": "historical_retrieval", "to": "candidates"},
+        {"from": "candidates", "to": "hypothesis_testing"},
+        {"from": "hypothesis_testing", "to": "reason"},
         {"from": "reason", "to": "verify", "when": "the loop produced an answer",
          "conditional": True},
         {"from": "reason", "to": "fallback", "when": "the loop failed or ran out of steps",
@@ -113,8 +128,8 @@ def _append(existing: list | None, incoming: list | None) -> list:
     (which every node that does not touch memory does) cannot wipe the thread.
     """
     if not incoming:
-        return existing or []
-    return (existing or []) + list(incoming)
+        return (existing or [])[-20:]
+    return ((existing or []) + list(incoming))[-20:]
 
 
 class GraphState(TypedDict, total=False):
@@ -137,6 +152,7 @@ class GraphState(TypedDict, total=False):
     # what makes a follow-up's memory a property of the agent rather than of
     # whichever browser tab happened to send the history along with it.
     memory: Annotated[list, _append]
+    effective_history: list
 
     # Named apart from the nodes that produce them. LangGraph refuses a node
     # whose name is also a state key ("'plan' is already being used as a state
@@ -154,7 +170,12 @@ class GraphState(TypedDict, total=False):
     recent_status: Any
     evidence_bundle: Any
     detected_signals: Any
+    operational_topology: Any
+    incident_fingerprint: Any
+    historical_matches: Any
     ranked_candidates: Any
+    hypothesis_tests: Any
+    causal_roles: Any
 
     raw_answer: dict
     exposed_ids: set
@@ -180,40 +201,27 @@ def build_graph(nodes: "GraphNodes", checkpointer: Any = None) -> Any:
     """
     workflow = StateGraph(GraphState)
 
-    workflow.add_node("plan", nodes.plan)
-    workflow.add_node("windows", nodes.windows)
-    workflow.add_node("evidence", nodes.evidence)
-    workflow.add_node("signals", nodes.signals)
-    workflow.add_node("candidates", nodes.candidates)
-    workflow.add_node("reason", nodes.reason)
-    workflow.add_node("fallback", nodes.fallback)
-    workflow.add_node("verify", nodes.verify)
-    workflow.add_node("finish", nodes.finish)
+    # Compile from the same declaration served to the UI. Previously these
+    # edges were listed twice and a diagram edit could silently drift from the
+    # executable graph.
+    for entry in TOPOLOGY["nodes"]:
+        workflow.add_node(entry["id"], getattr(nodes, entry["id"]))
+    routes = {"evidence": nodes.route_after_evidence,
+              "reason": nodes.route_after_reason}
+    for source, router in routes.items():
+        options = {edge["to"]: edge["to"] for edge in TOPOLOGY["edges"]
+                   if edge["from"] == source and edge.get("conditional")}
+        workflow.add_conditional_edges(source, router, options)
+    for edge in TOPOLOGY["edges"]:
+        if edge.get("conditional"):
+            continue
+        source = START if edge["from"] == "__start__" else edge["from"]
+        target = END if edge["to"] == "__end__" else edge["to"]
+        workflow.add_edge(source, target)
 
-    workflow.add_edge(START, "plan")
-    workflow.add_edge("plan", "windows")
-    workflow.add_edge("windows", "evidence")
-    workflow.add_conditional_edges("evidence", nodes.route_after_evidence,
-                                   {"signals": "signals", "fallback": "fallback"})
-    workflow.add_edge("signals", "candidates")
-    workflow.add_edge("candidates", "reason")
-    workflow.add_conditional_edges("reason", nodes.route_after_reason,
-                                   {"verify": "verify", "fallback": "fallback"})
-    workflow.add_edge("fallback", "verify")
-    workflow.add_edge("verify", "finish")
-    workflow.add_edge("finish", END)
-
-    # The checkpointer is what gives a conversation memory inside the agent.
-    # Invoking with the same `thread_id` restores the previous turn's channels,
-    # so `memory` accumulates and a follow-up can be answered with the earlier
-    # questions in hand even if the caller sends none.
-    #
-    # In-memory rather than on disk: this container runs unprivileged with
-    # nothing writable, and the durable record of an investigation is the
-    # document written to OpenSearch when it finishes. The consequence is
-    # honest and worth stating — thread memory is per-process, so a restart or a
-    # second replica loses it, and the client's own `chat_history` is merged in
-    # (see `GraphNodes.plan`) precisely so a cold agent is never amnesiac.
+    # The checkpointer provides fast per-process memory. GraphNodes.plan also
+    # restores scoped thread summaries from OpenSearch after a restart or when
+    # a follow-up lands on another replica.
     return workflow.compile(checkpointer=checkpointer or InMemorySaver())
 
 

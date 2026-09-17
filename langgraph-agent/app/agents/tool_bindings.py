@@ -27,6 +27,8 @@ from app.models.analysis import Candidate, InvestigationWindows, RecentStatus
 from app.models.domain import TimeWindow, ensure_utc
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
+from app.models.intelligence import (CausalRole, HistoricalMatch, HypothesisTest,
+                                     OperationalTopology)
 from app.models.signals import Signal
 from app.util.timefmt import clock
 
@@ -122,7 +124,11 @@ class ToolBindings:
                  evidence: EvidenceBundle, signals: list[Signal] | None = None,
                  candidates: list[Candidate] | None = None,
                  log_tool=None, search_window: TimeWindow | None = None,
-                 recent_status: RecentStatus | None = None) -> None:
+                 recent_status: RecentStatus | None = None,
+                 topology: OperationalTopology | None = None,
+                 historical_matches: list[HistoricalMatch] | None = None,
+                 hypothesis_tests: list[HypothesisTest] | None = None,
+                 causal_roles: list[CausalRole] | None = None) -> None:
         self.plan = plan
         self.windows = windows
         self.evidence = evidence
@@ -143,6 +149,10 @@ class ToolBindings:
         # for it by name rather than being told once and expected to remember —
         # "is it still broken?" is a follow-up the model raises itself.
         self.recent_status = recent_status
+        self.topology = topology
+        self.historical_matches = historical_matches or []
+        self.hypothesis_tests = hypothesis_tests or []
+        self.causal_roles = causal_roles or []
         # Every ID the loop has legitimately been shown.
         self.exposed_ids: set[str] = set()
         self.call_log: list[tuple[str, dict]] = []
@@ -215,13 +225,15 @@ class ToolBindings:
         if not self.candidates:
             return ToolResult("The rule engine produced no candidate explanations.")
 
-        lines = ["Candidate explanations, ranked by deterministic rules. "
-                 "These are computed from the signals, not guessed:"]
+        lines = ["Candidate explanations from current rules, plus any low-ranked "
+                 "historical lead backed by a current signal. Historical origin "
+                 "does not prove the cause:"]
         ids = []
         for candidate in self.candidates:
             lines.append(
                 f"- [{candidate.id}] score={candidate.score:.2f} "
-                f"{candidate.category.value} service={candidate.service or '-'}\n"
+                f"{candidate.category.value} service={candidate.service or '-'} "
+                f"origin={candidate.origin}\n"
                 f"    {candidate.hypothesis}\n"
                 f"    why: {candidate.rationale[:300]}"
             )
@@ -229,6 +241,57 @@ class ToolBindings:
                 lines.append(f"    argues against: {', '.join(candidate.contradicting_signals)}")
             ids.append(candidate.id)
         return ToolResult("\n".join(lines), ids)
+
+    def get_hypothesis_tests(self, _: str = "") -> ToolResult:
+        if not self.hypothesis_tests:
+            return ToolResult("No current hypothesis tests were available.")
+        lines = ["Tests against CURRENT telemetry; unknown is not false:"]
+        ids: list[str] = []
+        for test in self.hypothesis_tests[:10]:
+            lines.append(f"- {test.candidate_id}: {test.verdict.upper()}")
+            ids.append(test.candidate_id)
+            for check in test.checks:
+                lines.append(f"    {check.outcome}: {check.expectation}"
+                             + (f" [{', '.join(check.evidence_ids)}]" if check.evidence_ids else ""))
+                ids.extend(check.evidence_ids)
+        return ToolResult("\n".join(lines), list(dict.fromkeys(ids)))
+
+    def get_similar_incidents(self, _: str = "") -> ToolResult:
+        if not self.historical_matches:
+            return ToolResult("No sufficiently similar prior incident in this system and environment.")
+        lines = ["Historical leads from this system and environment. A past RCA is NOT "
+                 "current evidence; verify its cause against current signals:"]
+        for match in self.historical_matches:
+            lines.append(f"- {match.investigation_id} similarity={match.score:.2f} "
+                         f"past cause={match.cause_category or 'unknown'} "
+                         f"service={match.root_cause_service or '-'}: {match.headline}")
+        # Prior IDs are deliberately not current-evidence citation IDs.
+        return ToolResult("\n".join(lines))
+
+    def get_operational_topology(self, _: str = "") -> ToolResult:
+        if self.topology is None:
+            return ToolResult("No operational topology was built.")
+        lines = ["Observed relationships and timing; propagation is a lead, not proof:"]
+        for edge in self.topology.edges[:40]:
+            lines.append(f"- {edge.source} {edge.relation} {edge.target}")
+        for link in self.topology.propagation[:20]:
+            lines.append(f"- {link.upstream_service} [{link.upstream_signal_id}] "
+                         f"preceded {link.downstream_service} [{link.downstream_signal_id}] "
+                         f"by {link.lag_seconds:.0f}s")
+        ids = list(dict.fromkeys(sid for link in self.topology.propagation[:20]
+                                 for sid in (link.upstream_signal_id,
+                                             link.downstream_signal_id)))
+        return ToolResult("\n".join(lines), ids)
+
+    def get_causal_roles(self, _: str = "") -> ToolResult:
+        if not self.causal_roles:
+            return ToolResult("No current signals were available to classify.")
+        lines = ["Provisional roles from current signals; test the root-cause claim:"]
+        for item in self.causal_roles[:30]:
+            lines.append(f"- {item.role}: {item.service or 'system'} "
+                         f"[{', '.join(item.evidence_ids)}] {item.label}")
+        return ToolResult("\n".join(lines), list(dict.fromkeys(
+            sid for item in self.causal_roles for sid in item.evidence_ids)))
 
     def get_dependencies(self, service_name: str = "all") -> ToolResult:
         """The call graph, observed from the services' own dependency logs."""
@@ -822,6 +885,19 @@ class ToolBindings:
                  "Candidate explanations already ranked by deterministic rules, with "
                  "their supporting and contradicting signals.",
                  {}, "get_hypotheses"),
+        ToolSpec("get_hypothesis_tests",
+                 "Current telemetry checks for each candidate: observed, contradicted, or unknown.",
+                 {}, "get_hypothesis_tests"),
+        ToolSpec("get_similar_incidents",
+                 "Past investigations in the same system and environment. Historical RCAs "
+                 "are leads, not evidence of today's cause.",
+                 {}, "get_similar_incidents"),
+        ToolSpec("get_operational_topology",
+                 "Observed service calls, pod placement, and time-ordered propagation leads.",
+                 {}, "get_operational_topology"),
+        ToolSpec("get_causal_roles",
+                 "Provisional root cause, contributor, symptom, impact and consequence roles.",
+                 {}, "get_causal_roles"),
         ToolSpec("get_dependencies",
                  "The observed call graph and each service's depth. Failures propagate "
                  "upward, so use this to tell a root cause from a symptom.",

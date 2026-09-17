@@ -190,15 +190,20 @@ async def test_a_full_run_reaches_a_verified_structured_answer():
     # The topology is streamed first so the UI can draw the graph before a node
     # has run; the stage order after it is the order the graph executes in.
     assert stages[0] == "graph"
-    assert stages[1:6] == ["plan", "windows", "evidence", "signals", "candidates"]
+    assert stages[1:10] == [
+        "plan", "windows", "evidence", "signals", "topology", "fingerprint",
+        "historical_retrieval", "candidates", "hypothesis_testing",
+    ]
     assert "reasoning" in stages and "answer" in stages
     assert "llm" in stages, "the model's cost must be reported with the run"
     assert result is not None
 
     # The graph is the thing that ran, not a diagram drawn beside it: the nodes
     # it reports having visited are the nodes the answer came through.
-    assert result["graph_path"][:5] == ["plan", "windows", "evidence", "signals",
-                                        "candidates"]
+    assert result["graph_path"][:9] == [
+        "plan", "windows", "evidence", "signals", "topology", "fingerprint",
+        "historical_retrieval", "candidates", "hypothesis_testing",
+    ]
     assert result["graph_path"][-2:] == ["verify", "finish"]
     assert "fallback" not in result["graph_path"], (
         "a run whose loop concluded must not route through the rule answer")
@@ -214,6 +219,9 @@ async def test_a_full_run_reaches_a_verified_structured_answer():
     # the deterministic layers are no longer discarded
     assert result["signals"], "signals must reach the result"
     assert result["candidates"], "candidates must reach the result"
+    assert result["fingerprint"]["system_id"] == "shopdemo"
+    assert result["topology"]["system_id"] == "shopdemo"
+    assert result["hypothesis_tests"], "current evidence must test the candidates"
 
 
 @pytest.mark.asyncio

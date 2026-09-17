@@ -28,6 +28,7 @@ from app.models.answer import (
     StructuredAnswer,
 )
 from app.models.evidence import EvidenceBundle
+from app.models.intelligence import HypothesisTest
 from app.models.signals import Signal
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,7 @@ def verify_answer(
     steps_used: int = 0,
     degraded: str | None = None,
     recent_status: RecentStatus | None = None,
+    hypothesis_tests: list[HypothesisTest] | None = None,
 ) -> StructuredAnswer:
     index = build_evidence_index(signals, candidates, evidence, windows)
     factors: list[ConfidenceFactor] = []
@@ -397,6 +399,24 @@ def verify_answer(
             adjust(0.6, 0.0,
                    f"the rule engine ranked '{top.service}' highest, not "
                    f"'{answer.root_cause_service}' — the two disagree", "lowers")
+
+    # A historical match never raises confidence. The candidate named in the
+    # current answer has to survive tests using this run's own telemetry.
+    if mode is AnswerMode.ROOT_CAUSE and answer.root_cause_service:
+        chosen = next((c for c in candidates
+                       if c.service == answer.root_cause_service), None)
+        tested = next((t for t in (hypothesis_tests or [])
+                       if chosen and t.candidate_id == chosen.id), None)
+        if tested and tested.verdict == "reject":
+            adjust(0.4, 0.0,
+                   f"current telemetry contradicts candidate {chosen.id}; a similar "
+                   "past incident cannot establish this cause", "lowers")
+            answer.limitations.append(
+                f"The current hypothesis test rejected {chosen.id}. Review its "
+                "contradicting signals before treating this as the root cause.")
+        elif tested and tested.verdict == "uncertain":
+            adjust(0.7, 0.0,
+                   f"current telemetry did not settle candidate {chosen.id}", "lowers")
 
     # Classify by the candidate naming the same component, whether or not it was
     # ranked first. Taking the category only from the top candidate meant that

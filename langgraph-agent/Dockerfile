@@ -53,3 +53,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status==200 else 1)"
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# CI can test the exact installed dependency set without putting tests in the
+# deployed image. The default final stage remains the small runtime image.
+FROM base AS test
+COPY tests ./tests
+RUN python -m pytest tests -q -p no:cacheprovider
+
+FROM base AS runtime

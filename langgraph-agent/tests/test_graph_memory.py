@@ -27,7 +27,7 @@ from tests.test_pipeline import (
 )
 
 
-def build(llm, logs, events, metrics):
+def build(llm, logs, events, metrics, store=None):
     return InvestigationPipeline(
         log_tool=FakeLogTool(logs, COUNTS),
         event_tool=FakeTool(events),
@@ -35,7 +35,23 @@ def build(llm, logs, events, metrics):
         orchestrator=OrchestratorAgent(llm),
         react_agent=ReActAgent(llm, max_steps=3),
         registry=FakeRegistry(),
+        store=store,
     )
+
+
+class FakeMemoryStore:
+    def __init__(self):
+        self.memory = {}
+
+    async def get_thread_memory(self, system_id, environment, thread_id):
+        return self.memory.get((system_id, environment, thread_id), [])
+
+    async def save_thread_memory(self, system_id, environment, thread_id, messages):
+        self.memory[(system_id, environment, thread_id)] = messages
+        return True
+
+    async def history_for_system(self, system_id, environment):
+        return []
 
 
 def ask(question, thread_id=None, history=()):
@@ -100,6 +116,27 @@ async def test_a_follow_up_is_remembered_even_when_the_caller_sends_nothing():
     second_plan = planner_prompts(llm)[1]
     assert "why is checkout failing" in second_plan
     assert "payment-db failed" in second_plan
+
+
+@pytest.mark.asyncio
+async def test_memory_survives_a_new_pipeline_and_stays_in_its_environment():
+    logs, events, metrics = dependency_outage_evidence()
+    store = FakeMemoryStore()
+    first_llm = ScriptedLLM(*script(1))
+    first_pipeline = build(first_llm, logs, events, metrics, store=store)
+    await run(first_pipeline, ask("why is checkout failing?", thread_id="shared"))
+
+    # A fresh pipeline has a fresh LangGraph checkpointer, like a new replica.
+    next_llm = ScriptedLLM(*script(2))
+    next_pipeline = build(next_llm, logs, events, metrics, store=store)
+    resumed = await run(next_pipeline, ask("and what caused that?", thread_id="shared"))
+    assert resumed["plan"]["remembered_turns"] == 1
+    assert "why is checkout failing" in planner_prompts(next_llm)[0]
+
+    other_environment = ask("same id, different environment?", thread_id="shared")
+    other_environment = other_environment.model_copy(update={"environment": "prod"})
+    isolated = await run(next_pipeline, other_environment)
+    assert isolated["plan"]["remembered_turns"] == 0
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 
 from app.config import settings
 from app.models.analysis import InvestigationResult
@@ -21,6 +22,47 @@ class InvestigationStore:
     def __init__(self, client: OpenSearchClient) -> None:
         self._client = client
         self._index = settings.opensearch_investigation_index
+        self._memory_index = settings.opensearch_memory_index
+
+    @staticmethod
+    def _memory_id(system_id: str, environment: str, thread_id: str) -> str:
+        value = "\0".join((system_id, environment, thread_id)).encode("utf-8")
+        return hashlib.sha256(value).hexdigest()
+
+    async def get_thread_memory(self, system_id: str, environment: str,
+                                thread_id: str) -> list[dict]:
+        if not all((system_id, environment, thread_id)):
+            return []
+        try:
+            document = await self._client.get_document(
+                self._memory_index, self._memory_id(system_id, environment, thread_id))
+        except OpenSearchError as exc:
+            logger.warning("Could not load conversation memory: %s", exc)
+            return []
+        if not document or document.get("system_id") != system_id or \
+                document.get("environment") != environment or \
+                document.get("thread_id") != thread_id:
+            return []
+        messages = document.get("messages") or []
+        return [msg for msg in messages[-20:]
+                if isinstance(msg, dict) and msg.get("role") in ("user", "assistant")
+                and isinstance(msg.get("content"), str)]
+
+    async def save_thread_memory(self, system_id: str, environment: str,
+                                 thread_id: str, messages: list[dict]) -> bool:
+        if not settings.persist_investigations or not all((system_id, environment, thread_id)):
+            return False
+        try:
+            await self._client.index_document(
+                self._memory_index,
+                {"system_id": system_id, "environment": environment,
+                 "thread_id": thread_id, "messages": messages[-20:]},
+                doc_id=self._memory_id(system_id, environment, thread_id),
+            )
+            return True
+        except OpenSearchError as exc:
+            logger.warning("Could not save conversation memory: %s", exc)
+            return False
 
     async def save(self, result: InvestigationResult) -> bool:
         if not settings.persist_investigations:
@@ -37,6 +79,34 @@ class InvestigationStore:
 
     async def get(self, investigation_id: str) -> dict | None:
         return await self._client.get_document(self._index, investigation_id)
+
+    async def history_for_system(self, system_id: str, environment: str,
+                                 *, limit: int = 80) -> list[dict]:
+        """Recent completed runs in this exact operational scope.
+
+        The system and environment filters are required. A centralized index may
+        contain unrelated tenants, so callers must never retrieve a global page
+        and filter it only after the query.
+        """
+        if not system_id or not environment:
+            return []
+        try:
+            result = await self._client.search(self._index, {
+                "size": max(1, min(limit, 100)),
+                "_source": ["id", "created_at", "plan", "signals", "fingerprint",
+                            "evidence_timeline", "answer", "analysis"],
+                "query": {"bool": {"filter": [
+                    {"term": {"plan.system_id": system_id}},
+                    {"term": {"plan.environment": environment}},
+                    {"term": {"analysis.incident_detected": True}},
+                ]}},
+                "sort": [{"created_at": {"order": "desc"}}],
+            })
+        except OpenSearchError as exc:
+            logger.warning("Could not retrieve prior incidents for %s/%s: %s",
+                           system_id, environment, exc)
+            return []
+        return [hit.get("_source", {}) for hit in result.get("hits", {}).get("hits", [])]
 
     async def delete(self, investigation_id: str) -> bool:
         return await self._client.delete_document(self._index, investigation_id)

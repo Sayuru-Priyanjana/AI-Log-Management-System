@@ -13,6 +13,8 @@ from app.models.analysis import Candidate, InvestigationWindows, RecentStatus
 from app.models.answer import MODE_BY_INTENT, AnswerMode
 from app.models.evidence import EvidenceBundle
 from app.models.plan import InvestigationPlan
+from app.models.intelligence import (CausalRole, HistoricalMatch, HypothesisTest,
+                                     OperationalTopology)
 from app.models.signals import Signal
 from app.util.timefmt import clock
 
@@ -88,6 +90,9 @@ Available tools:
 - Failures propagate upward through the call graph. If a dependency is broken,
   the services calling it are symptoms. Name the deepest failing component.
 - Prefer the explanation that started first. An effect cannot precede its cause.
+- Treat a similar past incident as a lead only. Check its proposed cause against
+  current signals and hypothesis tests before adopting it.
+- Separate root cause, contributing factor, symptom, impact and consequence.
 
 ## Response schema
 
@@ -285,13 +290,20 @@ class ReActAgent:
                   evidence: EvidenceBundle, signals: list[Signal],
                   candidates: list[Candidate], log_tool=None,
                   search_window=None,
-                  recent_status: RecentStatus | None = None) -> AsyncIterator[dict]:
+                  recent_status: RecentStatus | None = None,
+                  topology: OperationalTopology | None = None,
+                  historical_matches: list[HistoricalMatch] | None = None,
+                  hypothesis_tests: list[HypothesisTest] | None = None,
+                  causal_roles: list[CausalRole] | None = None) -> AsyncIterator[dict]:
         # `log_tool` is what makes the live query tools work. It is optional so a
         # caller with no index access still gets the ten in-memory tools; those
         # three then say so rather than failing obscurely.
         bindings = ToolBindings(plan, windows, evidence, signals, candidates,
                                 log_tool=log_tool, search_window=search_window,
-                                recent_status=recent_status)
+                                recent_status=recent_status, topology=topology,
+                                historical_matches=historical_matches,
+                                hypothesis_tests=hypothesis_tests,
+                                causal_roles=causal_roles)
         mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
 
         system = SYSTEM_PROMPT.format(
@@ -392,11 +404,29 @@ class ReActAgent:
                "evidence_ids": opening.evidence_ids, "table": opening.table,
                "automatic": True}
 
+        if hypothesis_tests:
+            tested = await bindings.execute("get_hypothesis_tests", {})
+            transcript.append("Observation (provided automatically, before you asked): "
+                              + tested.text)
+            yield {"type": "observation", "step": 0, "text": tested.text,
+                   "evidence_ids": tested.evidence_ids, "table": None,
+                   "automatic": True}
+        if historical_matches:
+            prior = await bindings.execute("get_similar_incidents", {})
+            transcript.append("Observation (historical leads, NOT current evidence): "
+                              + prior.text)
+            yield {"type": "observation", "step": 0, "text": prior.text,
+                   "evidence_ids": [], "table": None, "automatic": True}
+
         # Registered as already-called so re-asking for it is caught by the repeat
         # guard instead of burning a step to re-read what is already on screen.
         seen_calls: set[str] = {
             f"get_signals:{json.dumps(opening_input, sort_keys=True)}"
         }
+        if hypothesis_tests:
+            seen_calls.add("get_hypothesis_tests:{}")
+        if historical_matches:
+            seen_calls.add("get_similar_incidents:{}")
         empty_calls: dict[str, int] = {}
         repeated = 0
         # The seeded get_signals is already in the call log, so "did the model

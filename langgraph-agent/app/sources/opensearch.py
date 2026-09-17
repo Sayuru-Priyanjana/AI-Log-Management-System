@@ -156,6 +156,24 @@ INVESTIGATION_TEMPLATE = {
 }
 
 
+MEMORY_TEMPLATE = {
+    "index_patterns": ["logintel-conversation-memory*"],
+    "priority": 200,
+    "template": {
+        "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+        "mappings": {
+            "properties": {
+                "system_id": {"type": "keyword"},
+                "environment": {"type": "keyword"},
+                "thread_id": {"type": "keyword"},
+                "messages": {"type": "object", "enabled": False},
+            },
+            "dynamic": False,
+        },
+    },
+}
+
+
 class OpenSearchClient:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or settings.opensearch_url).rstrip("/")
@@ -236,6 +254,7 @@ class OpenSearchClient:
             ("logintel-logs", LOG_TEMPLATE),
             ("logintel-events", EVENT_TEMPLATE),
             ("logintel-investigations", INVESTIGATION_TEMPLATE),
+            ("logintel-conversation-memory", MEMORY_TEMPLATE),
         ):
             await self._request("PUT", f"/_index_template/{name}", template)
             applied.append(name)

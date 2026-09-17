@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -65,7 +66,7 @@ class InvestigationPipeline:
                  registry: SystemRegistry,
                  system_settings: SystemSettingsStore | None = None,
                  metric_tool: MetricTool | None = None,
-                 prometheus_client=None, llm=None) -> None:
+                 prometheus_client=None, llm=None, store=None) -> None:
         self.logs = log_tool
         self.events = event_tool
         self.orchestrator = orchestrator
@@ -76,6 +77,7 @@ class InvestigationPipeline:
         # still reports the right model name rather than "unknown".
         self.llm = llm if llm is not None else getattr(orchestrator, "_llm", None)
         self.registry = registry
+        self.store = store
         self.system_settings = system_settings
         self.prometheus_client = prometheus_client
         # Injected rather than built inside `run`. Constructing it per call made
@@ -140,6 +142,13 @@ class InvestigationPipeline:
             "result": None,
             "search_histogram": [],
             "recent_status": None,
+            "effective_history": [],
+            "operational_topology": None,
+            "incident_fingerprint": None,
+            "historical_matches": [],
+            "ranked_candidates": [],
+            "hypothesis_tests": [],
+            "causal_roles": [],
         }
 
         # The shape first, so the UI can draw the graph before a single node has
@@ -163,9 +172,15 @@ class InvestigationPipeline:
                 # without one gets this run's own id, so a single question is a
                 # conversation of one rather than sharing a bucket with every
                 # other thread-less run.
+                # A caller may reuse a thread id for another system. Include the
+                # validated scope in the checkpoint key so memory cannot cross it.
+                thread_key = hashlib.sha256("\0".join((
+                    system.id, request.environment,
+                    request.thread_id or investigation_id,
+                )).encode("utf-8")).hexdigest()
                 final = await graph.ainvoke(initial, {
                     "recursion_limit": 32,
-                    "configurable": {"thread_id": request.thread_id or investigation_id},
+                    "configurable": {"thread_id": thread_key},
                 })
             except BaseException as exc:            # noqa: BLE001 - reported below
                 failure = exc
