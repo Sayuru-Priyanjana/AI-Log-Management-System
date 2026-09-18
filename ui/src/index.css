@@ -27,18 +27,18 @@
 :root {
   color-scheme: light;
 
-  /* Professional Light Mode Palette - Softer on the eyes */
-  --bg: #F4F4F5; 
+  /* Professional Light Mode Palette - Clean & High Contrast */
+  --bg: #F8F9FA; 
   --surface: #FFFFFF; 
-  --surface-2: #E4E4E7;
-  --surface-3: #D4D4D8;
+  --surface-2: #F1F3F5;
+  --surface-3: #E9ECEF;
 
-  --border: #E4E4E7;
-  --border-strong: #D4D4D8;
+  --border: #DEE2E6;
+  --border-strong: #CED4DA;
 
-  --text: #18181B;
-  --text-2: #3F3F46;
-  --text-3: #71717A;
+  --text: #212529;
+  --text-2: #495057;
+  --text-3: #868E96;
 
   /* Enterprise Primary Actions */
   --accent: #2563EB; 
@@ -111,18 +111,18 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Professional Dark Mode Palette - Neutral Grays (No Blue Tint) */
-  --bg: #09090B; 
-  --surface: #18181B; 
-  --surface-2: #27272A;
-  --surface-3: #3F3F46;
+  /* Professional Dark Mode Palette - Deep Charcoal (No Blue Tint) */
+  --bg: #121212; 
+  --surface: #1E1E1E; 
+  --surface-2: #2D2D2D;
+  --surface-3: #3D3D3D;
 
-  --border: #27272A;
-  --border-strong: #3F3F46;
+  --border: #333333;
+  --border-strong: #444444;
 
-  --text: #FAFAFA;
-  --text-2: #A1A1AA;
-  --text-3: #71717A;
+  --text: #F8F9FA;
+  --text-2: #ADB5BD;
+  --text-3: #6C757D;
 
   --accent: #3B82F6;
   --accent-hover: #60A5FA;
