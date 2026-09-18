@@ -160,7 +160,7 @@ html, body, #root { height: 100%; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -322,8 +322,10 @@ select.input, select.glass-input { cursor: pointer; padding-right: 24px; appeara
   font: inherit; font-size: 14px; font-weight: 500;
   color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--r); cursor: pointer;
+  transition: all 0.2s ease;
 }
-.btn:hover:not(:disabled), .li-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
+.btn:hover:not(:disabled), .li-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.btn:active:not(:disabled), .li-btn:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
 .btn:disabled, .li-btn:disabled, .glass-button:disabled { opacity: .5; cursor: not-allowed; }
 
 .btn--primary, .li-btn--primary, .glass-button {
@@ -352,6 +354,7 @@ select.input, select.glass-input { cursor: pointer; padding-right: 24px; appeara
   padding: 5px 10px; border-bottom: 1px solid var(--border);
   vertical-align: middle; color: var(--text);
 }
+.table tbody tr, .li-table tbody tr { transition: background-color 0.15s ease; }
 .table tbody tr:hover, .li-table tbody tr:hover { background: var(--surface-2); }
 .table-row-hover:hover { background: var(--surface-2) !important; }
 .table tbody tr:last-child td, .li-table tbody tr:last-child td { border-bottom: none; }
