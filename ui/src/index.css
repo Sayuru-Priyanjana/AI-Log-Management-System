@@ -27,18 +27,18 @@
 :root {
   color-scheme: light;
 
-  /* Professional Light Mode Palette */
-  --bg: #F8FAFC; 
+  /* Professional Light Mode Palette - Clean & High Contrast */
+  --bg: #F8F9FA; 
   --surface: #FFFFFF; 
-  --surface-2: #F1F5F9;
-  --surface-3: #E2E8F0;
+  --surface-2: #F1F3F5;
+  --surface-3: #E9ECEF;
 
-  --border: #E2E8F0;
-  --border-strong: #CBD5E1;
+  --border: #DEE2E6;
+  --border-strong: #CED4DA;
 
-  --text: #0F172A;
-  --text-2: #334155;
-  --text-3: #64748B;
+  --text: #212529;
+  --text-2: #495057;
+  --text-3: #868E96;
 
   /* Enterprise Primary Actions */
   --accent: #2563EB; 
@@ -111,18 +111,18 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Professional Dark Mode Palette (Datadog/Linear style) */
-  --bg: #0B0F17; 
-  --surface: #111827; 
-  --surface-2: #1F2937;
-  --surface-3: #374151;
+  /* Professional Dark Mode Palette - Deep Charcoal (No Blue Tint) */
+  --bg: #121212; 
+  --surface: #1E1E1E; 
+  --surface-2: #2D2D2D;
+  --surface-3: #3D3D3D;
 
-  --border: #1F2937;
-  --border-strong: #374151;
+  --border: #333333;
+  --border-strong: #444444;
 
-  --text: #F8FAFC;
-  --text-2: #94A3B8;
-  --text-3: #64748B;
+  --text: #F8F9FA;
+  --text-2: #ADB5BD;
+  --text-3: #6C757D;
 
   --accent: #3B82F6;
   --accent-hover: #60A5FA;
@@ -160,7 +160,7 @@ html, body, #root { height: 100%; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -322,8 +322,10 @@ select.input, select.glass-input { cursor: pointer; padding-right: 24px; appeara
   font: inherit; font-size: 14px; font-weight: 500;
   color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--r); cursor: pointer;
+  transition: all 0.2s ease;
 }
-.btn:hover:not(:disabled), .li-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
+.btn:hover:not(:disabled), .li-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.btn:active:not(:disabled), .li-btn:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
 .btn:disabled, .li-btn:disabled, .glass-button:disabled { opacity: .5; cursor: not-allowed; }
 
 .btn--primary, .li-btn--primary, .glass-button {
@@ -352,6 +354,7 @@ select.input, select.glass-input { cursor: pointer; padding-right: 24px; appeara
   padding: 5px 10px; border-bottom: 1px solid var(--border);
   vertical-align: middle; color: var(--text);
 }
+.table tbody tr, .li-table tbody tr { transition: background-color 0.15s ease; }
 .table tbody tr:hover, .li-table tbody tr:hover { background: var(--surface-2); }
 .table-row-hover:hover { background: var(--surface-2) !important; }
 .table tbody tr:last-child td, .li-table tbody tr:last-child td { border-bottom: none; }
