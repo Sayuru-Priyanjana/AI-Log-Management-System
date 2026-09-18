@@ -1,0 +1,29 @@
+.architecture-editor { margin-top: 20px; }
+.architecture-toolbar { gap: 12px; align-items: end; flex-wrap: wrap; }
+.architecture-toolbar label { display: flex; gap: 8px; align-items: center; }
+.architecture-toolbar select { min-width: 160px; }
+.architecture-canvas-toolbar { gap: 7px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+.architecture-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; margin-top: 15px; }
+.architecture-canvas { width: 100%; min-height: 360px; aspect-ratio: 1000 / 560; background: var(--surface, #151c29); border: 1px solid var(--border); border-radius: 10px; touch-action: none; color: #8ba8d4; }
+.architecture-canvas--pan { cursor: grab; }
+.architecture-canvas--connect { cursor: crosshair; }
+.architecture-lane { fill: #172334; stroke: #3b506b; stroke-width: 1; }
+.architecture-lane--alternate { fill: #1d2c40; }
+.architecture-lane-label { fill: #a8bdd7; font-size: 16px; font-weight: 600; pointer-events: none; }
+.architecture-edge { stroke: #8ba8d4; stroke-width: 2; }
+.architecture-edge--preview { stroke: #5bb5ff; stroke-dasharray: 8 5; pointer-events: none; }
+.architecture-edge-label { fill: #9fb1ca; font-size: 12px; }
+.architecture-node { cursor: grab; }
+.architecture-canvas--connect .architecture-node { cursor: crosshair; }
+.architecture-node rect { fill: #25354b; stroke: #718caf; stroke-width: 2; }
+.architecture-node.is-selected rect { stroke: #5bb5ff; stroke-width: 3; }
+.architecture-node text { fill: #f2f5fa; font-size: 14px; pointer-events: none; }
+.architecture-side { display: flex; flex-direction: column; gap: 10px; max-height: 580px; overflow: auto; }
+.architecture-side .row { gap: 5px; }
+.architecture-side .input { min-width: 0; width: 100%; }
+.architecture-side h4 { margin: 8px 0 0; }
+.architecture-book { display: flex; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.architecture-book label { display: flex; flex-direction: column; gap: 4px; }
+.architecture-link { font-size: 12px; }
+.architecture-namespace { font-size: 13px; padding: 3px 0; }
+@media (max-width: 950px) { .architecture-layout { grid-template-columns: 1fr; } .architecture-side { max-height: none; } }

@@ -19,9 +19,13 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
+from app.sources.prometheus import label_selector
+from app.tools.metrics import MetricTool, summarize, downsample
+from app.models.evidence import MetricPoint, MetricSeries
 
 from app.models.analysis import Candidate, InvestigationWindows, RecentStatus
 from app.models.domain import TimeWindow, ensure_utc
@@ -128,7 +132,8 @@ class ToolBindings:
                  topology: OperationalTopology | None = None,
                  historical_matches: list[HistoricalMatch] | None = None,
                  hypothesis_tests: list[HypothesisTest] | None = None,
-                 causal_roles: list[CausalRole] | None = None) -> None:
+                 causal_roles: list[CausalRole] | None = None,
+                 prometheus_client=None) -> None:
         self.plan = plan
         self.windows = windows
         self.evidence = evidence
@@ -153,6 +158,7 @@ class ToolBindings:
         self.historical_matches = historical_matches or []
         self.hypothesis_tests = hypothesis_tests or []
         self.causal_roles = causal_roles or []
+        self.prometheus_client = prometheus_client
         # Every ID the loop has legitimately been shown.
         self.exposed_ids: set[str] = set()
         self.call_log: list[tuple[str, dict]] = []
@@ -423,6 +429,75 @@ class ToolBindings:
             )
             ids.append(item.id)
         return ToolResult("\n".join(lines), ids)
+
+    async def query_prometheus(self, metric_name: str, operation: str = "raw",
+                               service_name: str = "", label_key: str = "service",
+                               group_by: str = "") -> ToolResult:
+        """Model selected metric, server built and scope enforced PromQL.
+
+        The model never supplies an expression. Every selector is constructed
+        here with the exact system and namespace, and the time range is the
+        already validated incident window. This still supports arbitrary metric
+        names (GC, Kafka lag, disk IO) without cross-system queries.
+        """
+        if self.prometheus_client is None:
+            return ToolResult("Prometheus is unavailable for custom metric queries.")
+        if not re.fullmatch(r"[a-zA-Z_:][a-zA-Z0-9_:]{0,199}", metric_name or ""):
+            return ToolResult("Invalid metric name. Use one Prometheus metric identifier.")
+        if operation not in {"raw", "rate", "increase", "avg_over_time", "max_over_time"}:
+            return ToolResult("Invalid operation. Use raw, rate, increase, avg_over_time or max_over_time.")
+        if label_key not in {"service", "pod", "app", "deployment", "container"}:
+            return ToolResult("Invalid service label. Use service, pod, app, deployment or container.")
+        groups = [item.strip() for item in group_by.split(",") if item.strip()]
+        if len(groups) > 3 or any(item not in {"service", "pod", "app", "namespace", "container", "deployment"}
+                                  for item in groups):
+            return ToolResult("Invalid group_by labels.")
+        if self.live_queries >= 5:
+            return ToolResult("Custom metric query limit reached for this investigation.")
+        self.live_queries += 1
+        namespaces = self.plan.namespaces
+        namespace = (namespaces[0] if len(namespaces) == 1 else
+                     namespaces if namespaces else None)
+        scope = label_selector(system_id=self.plan.system_id, namespace=namespace)
+        selected = service_name or self.plan.service or ""
+        if selected and selected != "all":
+            # An explicit query for a dependency may use its service name;
+            # never let the model widen the system or namespace scope.
+            scope += "," + label_selector(**{label_key: selected})
+        selector = f"{metric_name}{{{scope}}}"
+        expr = selector if operation == "raw" else f"{operation}({selector}[2m])"
+        if groups:
+            expr = f"sum by ({', '.join(groups)}) ({expr})"
+        try:
+            raw = await self.prometheus_client.query_range(
+                expr, self.windows.incident,
+                step=self.prometheus_client.step_for(self.windows.incident),
+            )
+        except Exception as exc:
+            return ToolResult(f"Prometheus query failed: {exc}")
+        rows = []
+        ids = []
+        for item in raw[:8]:
+            labels = {key: value for key, value in item.get("metric", {}).items()
+                      if key != "__name__"}
+            points = [MetricPoint(timestamp=stamp, value=value)
+                      for stamp, value in self.prometheus_client.to_points(item)]
+            if not points:
+                continue
+            digest = hashlib.sha1(json.dumps(labels, sort_keys=True).encode()).hexdigest()[:10]
+            evidence_id = f"met:custom:{metric_name}:{digest}"
+            metric = MetricSeries(
+                id=evidence_id, metric=metric_name, unit="", labels=labels,
+                incident=summarize([point.value for point in points]),
+                points=downsample(points, 60),
+            )
+            self.evidence.metrics.series.append(metric)
+            ids.append(evidence_id)
+            rows.append(f"- [{evidence_id}] {labels}: {metric.incident.last:.4g} latest, "
+                        f"{metric.incident.average:.4g} average ({len(points)} points)")
+        if not rows:
+            return ToolResult(f"No metric series matched the scoped query {expr}.")
+        return ToolResult(f"Scoped PromQL: {expr}\n" + "\n".join(rows), ids)
 
     def get_timeline(self, _: str = "") -> ToolResult:
         """Everything that happened, in order. Answers 'what happened first'."""
@@ -916,6 +991,15 @@ class ToolBindings:
         ToolSpec("get_service_metrics",
                  "Metric series that moved against their baseline.",
                  {"service_name": "service name, or 'all'"}, "get_service_metrics"),
+        ToolSpec("query_prometheus",
+                 "Query any Prometheus metric using a server-built expression. The exact "
+                 "system, namespaces and incident time window are enforced. Use for a "
+                 "metric absent from standard collection, then cite returned IDs.",
+                 {"metric_name": "Prometheus metric identifier",
+                  "operation": "raw | rate | increase | avg_over_time | max_over_time",
+                  "service_name": "service name; defaults to selected service",
+                  "label_key": "label carrying service identity: service | pod | app | deployment | container",
+                  "group_by": "comma-separated labels, optional"}, "query_prometheus"),
         ToolSpec("search_logs",
                  "Find log records matching a substring. Use this when the user asks "
                  "to see, list or extract specific log entries.",
@@ -1012,3 +1096,45 @@ class ToolBindings:
              for s in cls.SPECS],
             indent=2,
         )
+
+    @classmethod
+    def function_declarations(cls) -> list[dict]:
+        """Gemini function declarations for the same dispatch allowlist."""
+        numeric = {"limit", "before_seconds", "after_seconds"}
+        declarations = []
+        for spec in cls.SPECS:
+            declaration = {"name": spec.name, "description": spec.description}
+            if spec.parameters:
+                declaration["parameters"] = {
+                    "type": "OBJECT",
+                    "properties": {name: {"type": "INTEGER" if name in numeric else "STRING",
+                                          "description": description}
+                                   for name, description in spec.parameters.items()},
+                }
+            declarations.append(declaration)
+        declarations.append({
+            "name": "submit_answer",
+            "description": "Finish the investigation with a grounded answer. Cite only evidence IDs already observed.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "headline": {"type": "STRING"},
+                    "detail": {"type": "STRING"},
+                    "root_cause_service": {"type": "STRING"},
+                    "confidence": {"type": "NUMBER"},
+                    "reasoning": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                        "claim": {"type": "STRING"},
+                        "because": {"type": "STRING"},
+                        "kind": {"type": "STRING"},
+                        "evidence_ids": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    }, "required": ["claim"]}},
+                    "limitations": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "next_steps": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                        "label": {"type": "STRING"},
+                        "tool": {"type": "STRING"},
+                    }, "required": ["label"]}},
+                },
+                "required": ["headline"],
+            },
+        })
+        return declarations

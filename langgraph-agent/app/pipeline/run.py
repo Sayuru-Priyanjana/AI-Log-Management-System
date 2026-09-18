@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 
 from app.store.system_settings import SystemSettingsStore
+from app.store.architecture import Architecture, ArchitectureStore
+from app.models.domain import ServiceDescriptor
 
 class StageEvent(BaseModel):
     stage: str
@@ -65,6 +67,7 @@ class InvestigationPipeline:
                  orchestrator: OrchestratorAgent, react_agent: ReActAgent,
                  registry: SystemRegistry,
                  system_settings: SystemSettingsStore | None = None,
+                 architecture: ArchitectureStore | None = None,
                  metric_tool: MetricTool | None = None,
                  prometheus_client=None, llm=None, store=None) -> None:
         self.logs = log_tool
@@ -79,6 +82,7 @@ class InvestigationPipeline:
         self.registry = registry
         self.store = store
         self.system_settings = system_settings
+        self.architecture = architecture
         self.prometheus_client = prometheus_client
         # Injected rather than built inside `run`. Constructing it per call made
         # the metric source impossible to substitute, which took the whole
@@ -111,6 +115,23 @@ class InvestigationPipeline:
         token = telemetry.bind(meter)
 
         system = await self.registry.require(request.system_id)
+        published = Architecture()
+        # Published service names are valid manual selections even before their
+        # first log arrives. The authored map never becomes measured evidence.
+        if self.architecture is not None:
+            try:
+                published = await self.architecture.published(system.id, request.environment)
+            except Exception as exc:
+                logger.warning("Could not load published architecture for %s: %s", system.id, exc)
+            known = set(system.service_names)
+            system = system.model_copy(update={
+                "services": system.services + [ServiceDescriptor(
+                    name=node.name,
+                    namespaces=[node.namespace] if node.namespace else [],
+                )
+                                                for node in published.services
+                                                if node.name not in known],
+            })
         metrics_tool = self.metric_tool or MetricTool(self.prometheus_client)
 
         queue = EventQueue()
@@ -149,6 +170,8 @@ class InvestigationPipeline:
             "ranked_candidates": [],
             "hypothesis_tests": [],
             "causal_roles": [],
+            "published_architecture": published,
+            "matched_playbooks": [],
         }
 
         # The shape first, so the UI can draw the graph before a single node has

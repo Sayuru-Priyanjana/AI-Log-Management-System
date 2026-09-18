@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { deleteSystem, getRegisteredSystems, registerSystem } from '../api';
 import { useToast } from '../toast';
+import ArchitectureEditor from './ArchitectureEditor';
 
 export default function SystemsPage() {
   const toast = useToast();
@@ -13,6 +14,7 @@ export default function SystemsPage() {
   // server will not repeat, and the row is the wrong place to imply otherwise.
   const [issued, setIssued] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(null);
 
   const load = async () => {
     try {
@@ -133,7 +135,7 @@ export default function SystemsPage() {
         <div className="table-scroll">
           <table className="table">
             <thead>
-              <tr><th style={{ width: '30%' }}>ID</th><th>Name</th><th style={{ width: 90 }}></th></tr>
+              <tr><th style={{ width: '30%' }}>ID</th><th>Name</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {loading && <tr><td colSpan="3" className="empty">Loading…</td></tr>}
@@ -145,6 +147,8 @@ export default function SystemsPage() {
                   <td className="mono">{system.id}</td>
                   <td>{system.name}</td>
                   <td className="actions">
+                    <button type="button" className="btn btn--sm" onClick={() => setEditing(system)}>
+                      Architecture &amp; playbooks</button>
                     <button type="button" className="btn btn--sm btn--ghost btn--danger"
                       onClick={() => remove(system)}>Delete</button>
                   </td>
@@ -154,6 +158,7 @@ export default function SystemsPage() {
           </table>
         </div>
       </div>
+      {editing && <ArchitectureEditor system={editing} onClose={() => setEditing(null)} />}
     </div>
   );
 }

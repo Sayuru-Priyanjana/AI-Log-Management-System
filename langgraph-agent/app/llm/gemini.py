@@ -477,3 +477,61 @@ class GeminiClient(LLMClient):
                     self.model, result.prompt_tokens, result.cached_prompt_tokens,
                     result.output_tokens, result.duration_ms)
         return result
+
+    async def generate_with_tools(self, *, system: str, prompt: str,
+                                  declarations: list[dict]) -> LLMResponse:
+        """One native function call, with the same retry/cache/usage policy.
+
+        The ReAct loop replays its bounded transcript in the user prompt, so
+        each request is independent and no provider-side chat state is needed.
+        """
+        from app.llm.telemetry import record
+
+        started = time.perf_counter()
+        cache_name = await self._cache_for(system)
+        payload = self._payload(system, prompt, None, cache_name)
+        payload["tools"] = [{"functionDeclarations": declarations}]
+        payload["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
+        try:
+            response = await self._post(payload)
+            if response.status_code == 403 and cache_name:
+                async with self._lock:
+                    self._cache_name, self._cache_expires_at = None, 0.0
+                payload = self._payload(system, prompt, None, None)
+                payload["tools"] = [{"functionDeclarations": declarations}]
+                payload["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
+                response = await self._post(payload)
+            if response.status_code != 200:
+                raise LLMUnavailable(
+                    f"{self.base_url} returned {response.status_code}: {response.text[:300]}")
+            data = response.json()
+            candidates = data.get("candidates") or []
+            if not candidates:
+                raise LLMUnavailable("Gemini returned no function-call candidate")
+            parts = ((candidates[0].get("content") or {}).get("parts") or [])
+            calls = [part["functionCall"] for part in parts
+                     if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)]
+            usage = data.get("usageMetadata") or {}
+            cached = int(usage.get("cachedContentTokenCount") or 0)
+            result = LLMResponse(
+                text=self._text_from(candidates[0]),
+                tool_call=calls[0] if calls else None,
+                prompt_tokens=max(int(usage.get("promptTokenCount") or 0) - cached, 0),
+                output_tokens=(int(usage.get("candidatesTokenCount") or 0)
+                               + int(usage.get("thoughtsTokenCount") or 0)),
+                cached_prompt_tokens=cached,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                model=data.get("modelVersion") or self.model,
+            )
+            if candidates[0].get("finishReason") == "MAX_TOKENS":
+                result.warnings.append("Gemini stopped at the output token limit")
+            record(model=result.model, prompt_tokens=result.prompt_tokens,
+                   output_tokens=result.output_tokens,
+                   cached_prompt_tokens=result.cached_prompt_tokens,
+                   duration_ms=result.duration_ms)
+            return result
+        except BaseException as exc:
+            record(model=self.model,
+                   duration_ms=(time.perf_counter() - started) * 1000,
+                   failed=type(exc).__name__)
+            raise

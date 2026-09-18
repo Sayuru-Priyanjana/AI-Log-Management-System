@@ -11,6 +11,8 @@ from app.models.answer import AnswerMode, CitationStatus
 from app.models.domain import ServiceDescriptor, SystemDescriptor
 from app.models.evidence import EventEvidence, LogEvidence, LogSnapshot, MetricEvidence
 from app.models.plan import InvestigationRequest
+from app.models.signals import Signal, SignalType, Severity
+from app.models.evidence import EvidenceBundle
 from app.pipeline.run import InvestigationPipeline
 from tests.conftest import T0, at, buckets, event, pattern, series
 
@@ -190,9 +192,9 @@ async def test_a_full_run_reaches_a_verified_structured_answer():
     # The topology is streamed first so the UI can draw the graph before a node
     # has run; the stage order after it is the order the graph executes in.
     assert stages[0] == "graph"
-    assert stages[1:10] == [
+    assert stages[1:11] == [
         "plan", "windows", "evidence", "signals", "topology", "fingerprint",
-        "historical_retrieval", "candidates", "hypothesis_testing",
+        "historical_retrieval", "playbooks", "candidates", "hypothesis_testing",
     ]
     assert "reasoning" in stages and "answer" in stages
     assert "llm" in stages, "the model's cost must be reported with the run"
@@ -200,9 +202,9 @@ async def test_a_full_run_reaches_a_verified_structured_answer():
 
     # The graph is the thing that ran, not a diagram drawn beside it: the nodes
     # it reports having visited are the nodes the answer came through.
-    assert result["graph_path"][:9] == [
+    assert result["graph_path"][:10] == [
         "plan", "windows", "evidence", "signals", "topology", "fingerprint",
-        "historical_retrieval", "candidates", "hypothesis_testing",
+        "historical_retrieval", "playbooks", "candidates", "hypothesis_testing",
     ]
     assert result["graph_path"][-2:] == ["verify", "finish"]
     assert "fallback" not in result["graph_path"], (
@@ -401,6 +403,28 @@ async def test_the_signals_are_in_front_of_the_model_before_it_asks_for_them():
     react_prompt = llm.prompts[1]
     assert "provided automatically" in react_prompt
     assert "DEPENDENCY_UNAVAILABLE" in react_prompt
+
+
+@pytest.mark.asyncio
+async def test_manual_service_selection_seeds_only_its_signals(plan, windows):
+    llm = ScriptedLLM()
+    chosen = Signal(id="sig:ERROR_RATE_SPIKE:checkout-api",
+                    type=SignalType.ERROR_RATE_SPIKE, severity=Severity.HIGH,
+                    service="checkout-api", first_seen=at(720),
+                    description="checkout errors increased")
+    unrelated = Signal(id="sig:CRASHLOOP:other-service",
+                       type=SignalType.CRASHLOOP, severity=Severity.CRITICAL,
+                       service="other-service", first_seen=at(680),
+                       description="unrelated pod restarted")
+    loop = ReActAgent(llm, max_steps=1).run(
+        plan, windows, EvidenceBundle(), [chosen, unrelated], [])
+    opening = await anext(loop)
+    await loop.aclose()
+    assert opening["type"] == "observation"
+    assert chosen.id in opening["evidence_ids"]
+    assert unrelated.id not in opening["evidence_ids"]
+    assert "Selected service: checkout-api" in opening["text"]
+    assert "other services" in opening["text"]
 
 
 @pytest.mark.asyncio

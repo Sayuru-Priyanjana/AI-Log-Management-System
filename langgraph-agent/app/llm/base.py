@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 @dataclass
 class LLMResponse:
     text: str
+    tool_call: dict | None = None
     prompt_tokens: int = 0
     output_tokens: int = 0
     duration_ms: float = 0.0

@@ -16,6 +16,7 @@ from app.models.plan import InvestigationPlan
 from app.models.intelligence import (CausalRole, HistoricalMatch, HypothesisTest,
                                      OperationalTopology)
 from app.models.signals import Signal
+from app.store.architecture import Architecture, Playbook
 from app.util.timefmt import clock
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,21 @@ Available tools:
 When finished, set "is_finished": true, "action": null, and fill "answer":
 
 {answer_schema}
+"""
+
+NATIVE_SYSTEM_PROMPT = """You are a site reliability engineer investigating one running system.
+Choose exactly one declared function on each turn. Call submit_answer when the
+evidence supports a conclusion. Do not write a JSON action in text.
+
+Use the measured signals, logs, Kubernetes events and metrics together. Cite only
+evidence IDs you have seen. Never invent a measurement or an evidence ID. If a
+source returns nothing, inspect investigation scope before declaring absence.
+Check onset order and observed dependencies before naming a root cause. A
+crashloop proves repeated exits, not the exit reason. A nearby deployment is a
+lead until a termination reason or startup log connects it. Historical incidents
+and admin playbooks are leads, not current evidence. Distinguish trigger,
+symptom, impact and unresolved cause. Keep an explicitly selected service as
+the subject; inspect other services only for a plausible causal relationship.
 """
 
 MODE_GUIDANCE: dict[AnswerMode, str] = {
@@ -303,7 +319,10 @@ class ReActAgent:
                   topology: OperationalTopology | None = None,
                   historical_matches: list[HistoricalMatch] | None = None,
                   hypothesis_tests: list[HypothesisTest] | None = None,
-                  causal_roles: list[CausalRole] | None = None) -> AsyncIterator[dict]:
+                  causal_roles: list[CausalRole] | None = None,
+                  matched_playbooks: list[Playbook] | None = None,
+                  expected_architecture: Architecture | None = None,
+                  prometheus_client=None) -> AsyncIterator[dict]:
         # `log_tool` is what makes the live query tools work. It is optional so a
         # caller with no index access still gets the ten in-memory tools; those
         # three then say so rather than failing obscurely.
@@ -312,12 +331,14 @@ class ReActAgent:
                                 recent_status=recent_status, topology=topology,
                                 historical_matches=historical_matches,
                                 hypothesis_tests=hypothesis_tests,
-                                causal_roles=causal_roles)
+                                causal_roles=causal_roles,
+                                prometheus_client=prometheus_client)
         mode = MODE_BY_INTENT.get(plan.intent.value, AnswerMode.ROOT_CAUSE)
 
-        system = SYSTEM_PROMPT.format(
-            tools=bindings.schema(), answer_schema=ANSWER_SCHEMA_HINT
-        )
+        native_tools = callable(getattr(self._llm, "generate_with_tools", None))
+        system = (NATIVE_SYSTEM_PROMPT if native_tools else
+                  SYSTEM_PROMPT.format(tools=bindings.schema(),
+                                       answer_schema=ANSWER_SCHEMA_HINT))
 
         history_lines = []
         if plan.chat_history:
@@ -339,6 +360,41 @@ class ReActAgent:
             f"Whole period asked about: {scanned}",
             f"Stretch analysed in depth against a baseline: {windows.incident}",
         ]
+        if plan.service:
+            transcript.append(
+                f"The user explicitly selected {plan.service}. Answer its condition and impact "
+                "first. Examine other services only to explain a verified upstream cause "
+                "or downstream effect; do not switch the subject to an unrelated alert. "
+                "If this service has no measured departure, say so explicitly."
+            )
+        if expected_architecture and plan.service:
+            mapped_service = next((node for node in expected_architecture.services
+                                   if node.name == plan.service), None)
+            if mapped_service and mapped_service.namespace:
+                transcript.append(
+                    f"Admin-declared namespace for {plan.service}: "
+                    f"{mapped_service.namespace}. Verify against observed labels."
+                )
+            dependencies = [edge.target for edge in expected_architecture.edges
+                            if edge.source == plan.service]
+            callers = [edge.source for edge in expected_architecture.edges
+                       if edge.target == plan.service]
+            if dependencies or callers:
+                transcript.append(
+                    f"Admin-declared map for {plan.service}: depends on "
+                    f"{', '.join(dependencies) or 'none'}; called by "
+                    f"{', '.join(callers) or 'none'}. This is an expectation, "
+                    "not proof of a call or a failure. Verify against observations."
+                )
+        if matched_playbooks:
+            for playbook in matched_playbooks[:3]:
+                transcript.append(
+                    f"Admin playbook {playbook.name} for {playbook.service}: "
+                    + "; ".join(playbook.checks[:8])
+                    + (f"; custom metric hints: {', '.join(playbook.metric_queries)}"
+                       if playbook.metric_queries else "")
+                    + ". Treat these as checks to perform, not established facts."
+                )
         if recent_status is not None:
             transcript.append(
                 f"Current status, measured separately over the last "
@@ -359,9 +415,18 @@ class ReActAgent:
         # surges, sat uncollected. Signals are the whole point of the
         # deterministic layer; whether the loop consults them is not a decision
         # worth delegating.
-        opening_input = {"service_name": "all"}
+        opening_input = {"service_name": plan.service or "all"}
         opening = await bindings.execute("get_signals", opening_input)
         opening_text = opening.text
+        if plan.service:
+            opening_text = f"Selected service: {plan.service}.\n" + opening_text
+            other_count = sum(1 for signal in signals if signal.service != plan.service)
+            if other_count:
+                opening_text += (
+                    f"\n\n{other_count} signal(s) belong to other services. "
+                    "Use get_signals('all') when checking dependencies or shared causes; "
+                    "keep the selected service as the subject of the answer."
+                )
         if opening.evidence_ids:
             # Naming what the list *is* matters as much as showing it. Asked to
             # list the metric spikes, the loop ran three log searches for the
@@ -449,12 +514,20 @@ class ReActAgent:
                       + ("Finish now — this is your last step; answer from what you "
                          "already have." if remaining == 0 else
                          f"{remaining} step(s) left.") + "]")
-            prompt = "\n".join(transcript) + budget + "\n\nJSON:"
+            prompt = "\n".join(transcript) + budget + (
+                "\n\nChoose one declared function." if native_tools else "\n\nJSON:"
+            )
 
             try:
-                response = await self._llm.generate(
-                    system=system, prompt=prompt, schema=RESPONSE_SCHEMA
-                )
+                if native_tools:
+                    response = await self._llm.generate_with_tools(
+                        system=system, prompt=prompt,
+                        declarations=bindings.function_declarations(),
+                    )
+                else:
+                    response = await self._llm.generate(
+                        system=system, prompt=prompt, schema=RESPONSE_SCHEMA
+                    )
             except PromptTruncated as exc:
                 # The transcript outgrew the context window, so the model is now
                 # reasoning from a fragment of its own investigation. Anything it
@@ -467,16 +540,30 @@ class ReActAgent:
                 yield {"type": "error", "code": "llm_unavailable", "message": str(exc)}
                 return
 
-            parsed = self._parse(response.text)
+            if native_tools:
+                call = response.tool_call or {}
+                name = call.get("name")
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                parsed = ({"thought": response.text, "action": None,
+                           "action_input": {}, "is_finished": True, "answer": args}
+                          if name == "submit_answer" else
+                          {"thought": response.text, "action": name,
+                           "action_input": args, "is_finished": False,
+                           "answer": None} if name else None)
+            else:
+                parsed = self._parse(response.text)
             if parsed is None:
                 # One malformed reply is recoverable: tell the model what went
                 # wrong and let it try again rather than abandoning the run.
-                yield {"type": "note", "step": step,
-                       "message": "The model returned unparseable JSON; asking it to retry."}
-                transcript.append(
-                    "System: your last reply was not valid JSON. Reply with the JSON "
-                    "object only, no prose, no code fences."
-                )
+                if native_tools:
+                    message = "The model returned no function call; asking it to choose a tool or submit_answer."
+                    reminder = "System: choose one declared function now."
+                else:
+                    message = "The model returned unparseable JSON; asking it to retry."
+                    reminder = ("System: your last reply was not valid JSON. Reply with "
+                                "the JSON object only, no prose, no code fences.")
+                yield {"type": "note", "step": step, "message": message}
+                transcript.append(reminder)
                 continue
 
             thought = (parsed.get("thought") or "").strip()

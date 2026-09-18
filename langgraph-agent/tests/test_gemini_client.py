@@ -43,6 +43,34 @@ def reply(text="{}", *, prompt=100, output=10, cached=0, thoughts=0,
     }
 
 
+@pytest.mark.asyncio
+async def test_native_function_call_uses_declarations_and_returns_arguments(monkeypatch):
+    monkeypatch.setattr(settings, "llm_prompt_caching", False)
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.append(body)
+        return httpx.Response(200, json={
+            "candidates": [{"content": {"parts": [{"functionCall": {
+                "name": "get_signals", "args": {"service_name": "checkout-api"},
+            }}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 80, "candidatesTokenCount": 12},
+        })
+
+    client = wire(GeminiClient(), handler)
+    result = await client.generate_with_tools(
+        system="investigate", prompt="check checkout",
+        declarations=[{"name": "get_signals", "description": "Read signals",
+                       "parameters": {"type": "OBJECT", "properties": {
+                           "service_name": {"type": "STRING"}}}}],
+    )
+    assert result.tool_call == {"name": "get_signals", "args": {"service_name": "checkout-api"}}
+    assert sent[0]["toolConfig"]["functionCallingConfig"]["mode"] == "ANY"
+    assert "responseMimeType" not in sent[0]["generationConfig"]
+    await client.close()
+
+
 @pytest.fixture(autouse=True)
 def _key(monkeypatch):
     monkeypatch.setattr(settings, "llm_api_key", "test-key")

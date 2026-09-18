@@ -16,6 +16,7 @@ from app.agents.orchestrator import OrchestratorAgent
 from app.api.routes import router
 from app.api.settings_routes import router as settings_router
 from app.api.system_settings_routes import router as system_settings_router
+from app.api.architecture_routes import router as architecture_router
 from app.config import settings
 from app.llm.base import LLMClient
 from app.llm.factory import (
@@ -28,6 +29,7 @@ from app.sources.prometheus import PrometheusClient
 from app.store.investigations import InvestigationStore
 from app.store.runtime_config import RuntimeConfig
 from app.store.system_settings import SystemSettingsStore
+from app.store.architecture import ArchitectureStore
 from app.tools.events import EventTool
 from app.tools.logs import LogTool
 from app.tools.metrics import MetricTool
@@ -51,6 +53,7 @@ class Dependencies:
     prometheus: PrometheusClient
     config: RuntimeConfig
     system_settings: SystemSettingsStore
+    architecture: ArchitectureStore
 
 
 def build_dependencies(config: RuntimeConfig) -> Dependencies:
@@ -65,6 +68,7 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
     prometheus = PrometheusClient(settings.prometheus_url)
     registry = SystemRegistry(opensearch)
     system_settings = SystemSettingsStore(opensearch)
+    architecture = ArchitectureStore(opensearch)
     investigation_store = InvestigationStore(opensearch)
 
     return Dependencies(
@@ -75,6 +79,7 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
         prometheus=prometheus,
         config=config,
         system_settings=system_settings,
+        architecture=architecture,
         pipeline=InvestigationPipeline(
             log_tool=LogTool(opensearch),
             event_tool=EventTool(opensearch),
@@ -83,6 +88,7 @@ def build_dependencies(config: RuntimeConfig) -> Dependencies:
             llm=llm,
             registry=registry,
             system_settings=system_settings,
+            architecture=architecture,
             prometheus_client=prometheus,
             store=investigation_store,
         ),
@@ -182,6 +188,7 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(system_settings_router, prefix="/api")
+app.include_router(architecture_router, prefix="/api")
 
 
 @app.get("/")

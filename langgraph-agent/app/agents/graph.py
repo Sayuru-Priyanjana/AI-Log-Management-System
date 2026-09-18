@@ -74,6 +74,9 @@ TOPOLOGY: dict[str, Any] = {
         {"id": "historical_retrieval", "label": "Similar incidents", "kind": "io", "row": 6,
          "emits": "historical_retrieval",
          "detail": "Search completed investigations in the same system and environment."},
+        {"id": "playbooks", "label": "Match playbooks", "kind": "deterministic", "row": 7,
+         "emits": "playbooks",
+         "detail": "Match published admin guidance to the selected service and measured signal types. Guidance is never treated as evidence."},
         {"id": "candidates", "label": "Rank candidates", "kind": "deterministic", "row": 7,
          "emits": "candidates",
          "detail": "Rule-generated explanations scored from current telemetry."},
@@ -107,7 +110,8 @@ TOPOLOGY: dict[str, Any] = {
         {"from": "signals", "to": "topology"},
         {"from": "topology", "to": "fingerprint"},
         {"from": "fingerprint", "to": "historical_retrieval"},
-        {"from": "historical_retrieval", "to": "candidates"},
+        {"from": "historical_retrieval", "to": "playbooks"},
+        {"from": "playbooks", "to": "candidates"},
         {"from": "candidates", "to": "hypothesis_testing"},
         {"from": "hypothesis_testing", "to": "reason"},
         {"from": "reason", "to": "verify", "when": "the loop produced an answer",
@@ -173,6 +177,8 @@ class GraphState(TypedDict, total=False):
     operational_topology: Any
     incident_fingerprint: Any
     historical_matches: Any
+    published_architecture: Any
+    matched_playbooks: Any
     ranked_candidates: Any
     hypothesis_tests: Any
     causal_roles: Any

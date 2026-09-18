@@ -218,6 +218,29 @@ class GraphNodes:
                 "visited": self._enter(state, "historical_retrieval"),
                 "timings_ms": self._timed(state, "historical_retrieval", started)}
 
+    async def playbooks(self, state: dict) -> dict:
+        started = time.perf_counter()
+        plan = state["investigation_plan"]
+        architecture = state["published_architecture"]
+        signal_types = {signal.type.value for signal in state["detected_signals"]}
+        affected = {signal.service for signal in state["detected_signals"] if signal.service}
+        # An explicit manual selection controls the subject. Otherwise, use
+        # services actually affected in this window. A playbook is only a lead.
+        subjects = {plan.service} if plan.service else affected
+        matched = [playbook for playbook in architecture.playbooks
+                   if playbook.service in subjects
+                   and (not playbook.signal_types
+                        or bool(signal_types.intersection(playbook.signal_types)))]
+        await self._emit("playbooks", {
+            "count": len(matched),
+            "matches": [playbook.model_dump() for playbook in matched],
+            "expected_edges": [edge.model_dump() for edge in architecture.edges],
+            "provenance": "admin-authored guidance, not observed evidence",
+        })
+        return {"matched_playbooks": matched,
+                "visited": self._enter(state, "playbooks"),
+                "timings_ms": self._timed(state, "playbooks", started)}
+
     async def candidates(self, state: dict) -> dict:
         telemetry.set_stage("candidates")
         started = time.perf_counter()
@@ -280,6 +303,9 @@ class GraphNodes:
             historical_matches=state.get("historical_matches") or [],
             hypothesis_tests=state.get("hypothesis_tests") or [],
             causal_roles=state.get("causal_roles") or [],
+            matched_playbooks=state.get("matched_playbooks") or [],
+            expected_architecture=state.get("published_architecture"),
+            prometheus_client=self._p.prometheus_client,
         )
         # Held so it can be closed explicitly: breaking out of `async for` leaves
         # the generator suspended mid-await, and the event loop later complains

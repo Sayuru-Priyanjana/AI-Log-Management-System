@@ -95,6 +95,15 @@ export const savePromqlQuery = (query) => putJSON('/api/promql-queries', query);
 export const getAgentGraph = () => getJSON('/api/agent/graph');
 export const getAgentIdentity = () => getJSON('/api/agent/identity');
 export const getSystems = () => getJSON('/api/systems');
+export const getArchitecture = (systemId, environment) => getJSON(
+  `/api/systems/${encodeURIComponent(systemId)}/architecture?environment=${encodeURIComponent(environment)}`
+);
+export const saveArchitecture = (systemId, environment, draft) => putJSON(
+  `/api/systems/${encodeURIComponent(systemId)}/architecture?environment=${encodeURIComponent(environment)}`, draft
+);
+export const publishArchitecture = (systemId, environment) => postJSON(
+  `/api/systems/${encodeURIComponent(systemId)}/architecture/publish?environment=${encodeURIComponent(environment)}`
+);
 export const getConfig = () => getJSON('/api/config');
 export const getRecentInvestigations = (limit = 20, systemId) => {
   const params = new URLSearchParams({ limit: String(limit) });

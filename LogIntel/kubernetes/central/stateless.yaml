@@ -165,7 +165,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: gateway
-        image: ghcr.io/sayuru-priyanjana/logintel-gateway-holmes:sha-717f44c0c54dbc8242e68691cb85929bd5c8b425
+        image: ghcr.io/sayuru-priyanjana/logintel-gateway-holmes:manual-20260917-1718
         imagePullPolicy: Always
         env:
         - name: AGENT_URL
@@ -227,7 +227,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: ui
-        image: ghcr.io/sayuru-priyanjana/logintel-ui-holmes:sha-717f44c0c54dbc8242e68691cb85929bd5c8b425
+        image: ghcr.io/sayuru-priyanjana/logintel-ui:manual-20260917-231108
         imagePullPolicy: Always
         resources:
           requests:
@@ -305,7 +305,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: agent
-        image: ghcr.io/sayuru-priyanjana/ai-agent-langgraph:sha-b518a58
+        image: ghcr.io/sayuru-priyanjana/ai-agent-langgraph:manual-20260917-231108
         imagePullPolicy: Always
         env:
         - name: REDIS_URL

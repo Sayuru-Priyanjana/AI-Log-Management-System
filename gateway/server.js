@@ -813,6 +813,26 @@ const holmesConfigProxy = createProxyMiddleware({
 app.get('/api/promql-queries', requireAuth, requireAdmin, holmesConfigProxy);
 app.put('/api/promql-queries', requireAuth, requireAdmin, holmesConfigProxy);
 
+// The architecture editor always writes to LangGraph, regardless of which
+// investigation backend is currently selected. Only admins may read drafts or
+// publish operational guidance.
+const langgraphArchitectureProxy = createProxyMiddleware({
+  target: LANGGRAPH_AGENT_URL,
+  changeOrigin: true,
+  onError: proxyErrorHandler,
+  onProxyReq: (proxyReq, req) => {
+    if (req.body && req.method === 'PUT') {
+      const body = JSON.stringify(req.body);
+      proxyReq.setHeader('Content-Type', 'application/json');
+      proxyReq.setHeader('Content-Length', Buffer.byteLength(body));
+      proxyReq.write(body);
+    }
+  },
+});
+app.get('/api/systems/:systemId/architecture', requireAuth, requireAdmin, langgraphArchitectureProxy);
+app.put('/api/systems/:systemId/architecture', requireAuth, requireAdmin, langgraphArchitectureProxy);
+app.post('/api/systems/:systemId/architecture/publish', requireAuth, requireAdmin, langgraphArchitectureProxy);
+
 
 // Graceful fallback endpoints for critical UI routes when AI Agent is down
 app.get('/api/health', requireAuth, async (req, res) => {

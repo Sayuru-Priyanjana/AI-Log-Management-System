@@ -140,7 +140,24 @@ async def list_systems(request: Request) -> dict:
         systems = await container.registry.all()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"registry unavailable: {exc}") from exc
-    return {"systems": [system.model_dump(mode="json") for system in systems]}
+    items = []
+    for system in systems:
+        item = system.model_dump(mode="json")
+        known = {service["name"] for service in item["services"]}
+        for environment in system.environments:
+            try:
+                published = await container.architecture.published(system.id, environment)
+            except Exception as exc:
+                logger.warning("Architecture unavailable for %s/%s: %s", system.id, environment, exc)
+                continue
+            for node in published.services:
+                if node.name not in known:
+                    item["services"].append({"name": node.name,
+                                             "namespaces": [node.namespace] if node.namespace else [],
+                                             "log_count": 0, "tier": None})
+                    known.add(node.name)
+        items.append(item)
+    return {"systems": items}
 
 
 @router.post("/systems/refresh")
