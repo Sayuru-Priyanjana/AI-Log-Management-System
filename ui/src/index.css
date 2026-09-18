@@ -27,18 +27,18 @@
 :root {
   color-scheme: light;
 
-  /* Professional Light Mode Palette */
-  --bg: #F8FAFC; 
+  /* Professional Light Mode Palette - Softer on the eyes */
+  --bg: #F4F4F5; 
   --surface: #FFFFFF; 
-  --surface-2: #F1F5F9;
-  --surface-3: #E2E8F0;
+  --surface-2: #E4E4E7;
+  --surface-3: #D4D4D8;
 
-  --border: #E2E8F0;
-  --border-strong: #CBD5E1;
+  --border: #E4E4E7;
+  --border-strong: #D4D4D8;
 
-  --text: #0F172A;
-  --text-2: #334155;
-  --text-3: #64748B;
+  --text: #18181B;
+  --text-2: #3F3F46;
+  --text-3: #71717A;
 
   /* Enterprise Primary Actions */
   --accent: #2563EB; 
@@ -111,18 +111,18 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Professional Dark Mode Palette (Datadog/Linear style) */
-  --bg: #0B0F17; 
-  --surface: #111827; 
-  --surface-2: #1F2937;
-  --surface-3: #374151;
+  /* Professional Dark Mode Palette - Neutral Grays (No Blue Tint) */
+  --bg: #09090B; 
+  --surface: #18181B; 
+  --surface-2: #27272A;
+  --surface-3: #3F3F46;
 
-  --border: #1F2937;
-  --border-strong: #374151;
+  --border: #27272A;
+  --border-strong: #3F3F46;
 
-  --text: #F8FAFC;
-  --text-2: #94A3B8;
-  --text-3: #64748B;
+  --text: #FAFAFA;
+  --text-2: #A1A1AA;
+  --text-3: #71717A;
 
   --accent: #3B82F6;
   --accent-hover: #60A5FA;
